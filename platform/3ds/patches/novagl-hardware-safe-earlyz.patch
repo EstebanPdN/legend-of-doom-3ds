@@ -1,0 +1,48 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -397,7 +397,13 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+     g.frame_buffers = K;
+     g.frame_slot = 0;
+     g.swap_interval = NOVAGL_VSYNC;
+-    g.early_z_allowed = 1;
++    /* Do not enable PICA's on-chip early-depth path.  Clearing it requires a
++     * raw command sequence which can be submitted before Citro3D has emitted
++     * a framebuffer bind.  Real PICA200 then never completes that command
++     * list (the first-frame supervisor observes a 48-byte list stuck behind a
++     * completed GX memory fill).  Normal depth testing remains fully active;
++     * only the optional early rejection optimisation is disabled. */
++    g.early_z_allowed = 0;
+     g.c3d_frame_flag = 0;
+
+     /* One vertex + index ring PER frame slot (full per-slot capacity), so the
+@@ -905,8 +911,12 @@ void novaSetSwapInterval(int interval) {
+  * runs at a sane, hardware-consistent rate. Compile with -DNOVAGL_VSYNC=0 to
+  * free-run (e.g. for benchmarking); see the guard near the top of the file. */
+
+ void novaSetEarlyZEnabled(int enabled) {
+-    g.early_z_allowed = enabled ? 1 : 0;
++    /* Hardware-safety contract for this port.  Keep the public entry point so
++     * callers remain source-compatible, but never allow the unsafe raw
++     * early-Z clear sequence to become reachable. */
++    (void)enabled;
++    g.early_z_allowed = 0;
+     g.state_dirty_bits |= NOVA_DIRTY_EARLY_DEPTH;
+ }
+
+diff --git a/src/context.h b/src/context.h
+--- a/src/context.h
++++ b/src/context.h
+@@ -561,9 +561,9 @@ struct NovaState {
+     int swap_interval;        /* novaSetSwapInterval: 0 = free-run (no VBlank wait
+                                * at swap), N>0 = wait N VBlanks. Default comes from
+                                * the NOVAGL_VSYNC compile flag. */
+-    int early_z_allowed;      /* novaSetEarlyZEnabled: global early-depth master
+-                               * switch (default 1). Diagnostic for stale
+-                               * early-depth artifacts. */
++    int early_z_allowed;      /* Hardware-safe global early-depth master switch.
++                               * Forced off for this port; ordinary depth testing
++                               * remains enabled. */
+     int ring_synced_this_frame; /* per-frame guard for the linear_alloc_ring
+                                * mid-frame drain (C3D_FrameEnd(0)+FrameBegin
+                                * SYNCDRAW). The drain is the ONLY sanctioned

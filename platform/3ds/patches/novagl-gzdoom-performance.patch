@@ -1,0 +1,223 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 081bf73..f5b64a0 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -401,6 +401,27 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+         GSPGPU_FlushDataCache(g.static_quad_indices, g.static_quad_count * 6 * sizeof(uint16_t));
+     }
+
++    /* Unlike GL_QUADS, GZDoom's four-vertex fans and strips may begin at any
++     * vertex, not only a multiple of four. Prebuild every sequential quad in a
++     * 32K block so the VBO base stays constant across thousands of wall/sprite
++     * draws and only the index pointer changes. */
++    g.static_sequential_quad_count = 32768;
++    g.static_sequential_quad_indices = (uint16_t *)linearAlloc(
++        g.static_sequential_quad_count * 6 * sizeof(uint16_t));
++    if (g.static_sequential_quad_indices) {
++        for (int q = 0; q < g.static_sequential_quad_count; q++) {
++            const uint16_t base = (uint16_t)q;
++            g.static_sequential_quad_indices[q * 6 + 0] = base + 0;
++            g.static_sequential_quad_indices[q * 6 + 1] = base + 1;
++            g.static_sequential_quad_indices[q * 6 + 2] = base + 2;
++            g.static_sequential_quad_indices[q * 6 + 3] = base + 0;
++            g.static_sequential_quad_indices[q * 6 + 4] = base + 2;
++            g.static_sequential_quad_indices[q * 6 + 5] = base + 3;
++        }
++        GSPGPU_FlushDataCache(g.static_sequential_quad_indices,
++            g.static_sequential_quad_count * 6 * sizeof(uint16_t));
++    }
++
+     for (int i = 0; i < 3; i++) {
+         g.tex_env_combine_rgb[i] = GL_MODULATE;
+         g.tex_env_src0_rgb[i] = GL_TEXTURE;
+@@ -975,6 +996,11 @@ void nova_fini(void) {
+         g.static_quad_indices = NULL;
+         g.static_quad_count = 0;
+     }
++    if (g.static_sequential_quad_indices) {
++        linearFree(g.static_sequential_quad_indices);
++        g.static_sequential_quad_indices = NULL;
++        g.static_sequential_quad_count = 0;
++    }
+
+     if (g.dl_store) {
+         free(g.dl_store);
+@@ -1948,6 +1974,51 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+         return;
+ #endif
+
++    /* GZDoom's dominant world layout is FFlatVertex [pos3f|uv2f], 20 bytes.
++     * The generic multistream path rebased BufInfo to `first` on every wall,
++     * forcing citro3d to emit a new buffer-state packet thousands of times per
++     * frame. Bind a stable 32K-vertex block and address ordinary draws with
++     * DrawArrays.first; four-vertex fans/strips use the prebuilt sequential
++     * triangle table so their exact, already-correct triangulation is retained. */
++    if (!force_staged_near_clip && !is_elements && !g.lighting_active &&
++        g.va_vertex.enabled && g.va_vertex.vbo_id > 0 &&
++        g.va_vertex.vbo_id < NOVA_MAX_VBOS &&
++        g.vbos[g.va_vertex.vbo_id].allocated &&
++        !vbo_is_packed_ptc(&g.vbos[g.va_vertex.vbo_id]) &&
++        vbo_gpu_readable(&g.vbos[g.va_vertex.vbo_id]) &&
++        g.va_vertex.size == 3 && g.va_vertex.type == GL_FLOAT &&
++        g.va_vertex.stride == 20 &&
++        g.va_texcoord.enabled && g.va_texcoord.vbo_id == g.va_vertex.vbo_id &&
++        g.va_texcoord.size == 2 && g.va_texcoord.type == GL_FLOAT &&
++        g.va_texcoord.stride == 20 &&
++        (uintptr_t)g.va_texcoord.pointer == (uintptr_t)g.va_vertex.pointer + 12 &&
++        !g.va_color.enabled) {
++        VBOSlot *vbo = &g.vbos[g.va_vertex.vbo_id];
++        const uintptr_t attr_offset = (uintptr_t)g.va_vertex.pointer;
++        const size_t end = attr_offset + (size_t)(first + count) * 20u;
++        if (first >= 0 && end <= (size_t)vbo->size) {
++            uint8_t *base = (uint8_t *)vbo->data + attr_offset;
++            if ((mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) &&
++                count == 4 && g.static_sequential_quad_indices) {
++                const int block_first = first & ~32767;
++                const int relative_first = first - block_first;
++                nova_setup_posuv_fixed_color(base + (size_t)block_first * 20u, 20);
++                C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT,
++                    g.static_sequential_quad_indices + (size_t)relative_first * 6u);
++            } else {
++                nova_setup_posuv_fixed_color(base, 20);
++                C3D_DrawArrays(prim, first, count);
++            }
++            if (g.bound_fbo != 0 && g.bound_fbo < NOVA_MAX_FBOS) {
++                GLuint ctex = g.fbos[g.bound_fbo].color_tex_id;
++                if (ctex > 0 && ctex < NOVA_MAX_TEXTURES)
++                    g.textures[ctex].written_pending_split = 1;
++            }
++            cleanup_vbo_stream();
++            return;
++        }
++    }
++
+     if (!force_staged_near_clip && !is_elements && !g.lighting_active &&
+         g.va_vertex.enabled && g.va_vertex.vbo_id > 0 &&
+         g.va_vertex.vbo_id < NOVA_MAX_VBOS && g.vbos[g.va_vertex.vbo_id].allocated &&
+@@ -1981,9 +2052,20 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+                 draw_packed_run(mode, prim, dst_start, count, 24, 3);
+             }
+         } else {
+-
+-            uint8_t *base = (uint8_t *) vbo->data + first * 24;
+-            draw_packed_run(mode, prim, base, count, 24, 3);
++            uint8_t *base = (uint8_t *)vbo->data;
++            if ((mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) &&
++                count == 4 && g.static_sequential_quad_indices) {
++                const int block_first = first & ~32767;
++                const int relative_first = first - block_first;
++                nova_setup_attr_info(3);
++                nova_setup_buf_info(base + (size_t)block_first * 24u, 24);
++                C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT,
++                    g.static_sequential_quad_indices + (size_t)relative_first * 6u);
++            } else {
++                nova_setup_attr_info(3);
++                nova_setup_buf_info(base, 24);
++                C3D_DrawArrays(prim, first, count);
++            }
+         }
+         /*
+         * Deferred FBO Synchronization (Deferred RAW Hazard Resolution)
+diff --git a/src/context.h b/src/context.h
+index ac45651..44a0a41 100644
+--- a/src/context.h
++++ b/src/context.h
+@@ -628,6 +628,12 @@ extern struct NovaState {
+
+     uint16_t *static_quad_indices;
+     int static_quad_count;
++    /* Six indices for every possible four-vertex run inside a 32K-vertex
++     * block. GZDoom's walls/sprites are tiny fans/strips at arbitrary vertex
++     * offsets; rebasing BufInfo to each one emitted a full vertex-buffer state
++     * packet per draw. This table lets those draws share one block base. */
++    uint16_t *static_sequential_quad_indices;
++    int static_sequential_quad_count;
+
+     bool RenderTargetBottom;
+
+diff --git a/src/utils.c b/src/utils.c
+index c813782..96397bf 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -29,6 +29,7 @@ static GLuint        s_last_tex_bound[3]       = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFF
+ static int   s_attr_pos_elements = -1;
+ static void *s_buf_base          = (void *) -1;
+ static int   s_buf_stride        = -1;
++static int   s_buf_layout        = -1;
+
+ unsigned int nova_next_pow2(unsigned int v) {
+     v--;
+@@ -1704,13 +1705,41 @@ void nova_setup_attr_info(int pos_elements) {
+     s_attr_pos_elements = pos_elements;
+ }
+
++void nova_setup_posuv_fixed_color(void *base, int stride) {
++    /* Sentinel -3 identifies pos3f/uv2f/fixed-color and is distinct from the
++     * packed 24-byte (- ordinary 3) and lit (-4) layouts. */
++    if (s_attr_pos_elements != -3) {
++        AttrInfo_Init(&g.attr_info);
++        AttrInfo_AddLoader(&g.attr_info, 0, GPU_FLOAT, 3);
++        AttrInfo_AddLoader(&g.attr_info, 1, GPU_FLOAT, 2);
++        AttrInfo_AddFixed(&g.attr_info, 2);
++        C3D_SetAttrInfo(&g.attr_info);
++        s_attr_pos_elements = -3;
++    }
++    if (s_buf_base != base || s_buf_stride != stride || s_buf_layout != 2) {
++        C3D_BufInfo *bufInfo = C3D_GetBufInfo();
++        BufInfo_Init(bufInfo);
++        BufInfo_Add(bufInfo, base, stride, 2, 0x10);
++        s_buf_base = base;
++        s_buf_stride = stride;
++        s_buf_layout = 2;
++    }
++    /* Fixed attributes are global PICA state and other draw paths may have
++     * changed slot 2. Setting four scalars is still far cheaper than gathering
++     * the vertex stream or rebuilding BufInfo for every wall. */
++    C3D_FixedAttribSet(2,
++        g.cur_color[0] * 255.0f, g.cur_color[1] * 255.0f,
++        g.cur_color[2] * 255.0f, g.cur_color[3] * 255.0f);
++}
++
+ void nova_setup_buf_info(void *base, int stride) {
+-    if (s_buf_base == base && s_buf_stride == stride) return;
++    if (s_buf_base == base && s_buf_stride == stride && s_buf_layout == 3) return;
+     C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+     BufInfo_Init(bufInfo);
+     BufInfo_Add(bufInfo, base, stride, 3, 0x210);
+     s_buf_base = base;
+     s_buf_stride = stride;
++    s_buf_layout = 3;
+ }
+
+ /* Force the next nova_setup_buf_info to re-apply. Used after the lit draw path
+@@ -1719,6 +1748,7 @@ void nova_setup_buf_info(void *base, int stride) {
+ void nova_invalidate_buf_cache(void) {
+     s_buf_base = (void *) -1;
+     s_buf_stride = -1;
++    s_buf_layout = -1;
+ }
+
+ /* Same for the AttrInfo cache: the multistream zero-copy draw path programs
+@@ -1763,6 +1793,7 @@ void nova_invalidate_state_cache(void) {
+     s_last_tex_bound[2]       = 0xFFFFFFFFu;
+     s_attr_pos_elements       = -1;
+     s_buf_base                = (void *) -1;
++    s_buf_layout              = -1;
+     s_buf_stride              = -1;
+     // Также метим грязным основной кэш матриц/фога/TEV — на всякий случай.
+     g.matrices_dirty = 1;
+diff --git a/src/utils.h b/src/utils.h
+index 4a715d3..134b47d 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -279,6 +279,10 @@ void draw_emulated_quads(int count);
+
+ void nova_setup_attr_info(int pos_elements);
+
++/* GZDoom's native 20-byte FFlatVertex layout: pos3f + uv2f and a fixed color.
++ * Keeping it native avoids gathering/copying and keeps BufInfo stable. */
++void nova_setup_posuv_fixed_color(void *base, int stride);
++
+ /* Lit-draw attribute/buffer layout: adds a normal loader (attr3, 3 floats)
+  * after pos/texcoord/color. */
+ void nova_setup_attr_info_lit(void);

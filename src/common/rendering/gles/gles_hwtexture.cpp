@@ -43,6 +43,7 @@
 #include "gles_samplers.h"
 #include "gles_renderstate.h"
 #include "gles_hwtexture.h"
+#include "printf.h"
 
 namespace OpenGLESRenderer
 {
@@ -77,6 +78,12 @@ unsigned int FHardwareTexture::lastbound[FHardwareTexture::MAX_TEXTURES];
 
 unsigned int FHardwareTexture::CreateTexture(unsigned char * buffer, int w, int h, int texunit, bool mipmap, const char *name)
 {
+#ifdef __3DS__
+	// PICA200 has three fragment texture units. Never let an out-of-range
+	// auxiliary layer fall through after glActiveTexture(GL_TEXTURE3) fails:
+	// doing so would bind its image over whichever valid unit stayed active.
+	if (texunit >= 3) return 0;
+#endif
 	int rh,rw;
 	int texformat = GL_RGBA;// TexFormat[gl_texture_format];
 	bool deletebuffer=false;
@@ -101,6 +108,22 @@ unsigned int FHardwareTexture::CreateTexture(unsigned char * buffer, int w, int 
 
 	rw = GetTexDimension(w);
 	rh = GetTexDimension(h);
+
+#if defined(__3DS__) && defined(LOD3DS_RENDER_TRACE) && LOD3DS_RENDER_TRACE
+	static int sTextureTraceCount = 0;
+	if (sTextureTraceCount < 256)
+	{
+		const int traceIndex = sTextureTraceCount++;
+		Printf("[3DS texture] #%d gl_id=%u source=%dx%d upload=%dx%d mip=%d data=%d\n",
+			traceIndex, glTexID, w, h, rw, rh, mipmap ? 1 : 0,
+			buffer ? 1 : 0);
+		if (buffer && glTextureBytes != 1)
+		{
+			Printf("[3DS texture] #%d first_bgra=%02x,%02x,%02x,%02x\n",
+				traceIndex, buffer[0], buffer[1], buffer[2], buffer[3]);
+		}
+	}
+#endif
 
 	if (!buffer)
 	{
@@ -206,6 +229,9 @@ FHardwareTexture::~FHardwareTexture()
 //===========================================================================
 unsigned int FHardwareTexture::Bind(int texunit, bool needmipmap)
 {
+#ifdef __3DS__
+	if (texunit >= 3) return 0;
+#endif
 	if (glTexID != 0)
 	{
 		if (lastbound[texunit] == glTexID) return glTexID;
@@ -226,6 +252,9 @@ unsigned int FHardwareTexture::Bind(int texunit, bool needmipmap)
 
 void FHardwareTexture::Unbind(int texunit)
 {
+#ifdef __3DS__
+	if (texunit >= 3) return;
+#endif
 	if (lastbound[texunit] != 0)
 	{
 		if (texunit != 0) glActiveTexture(GL_TEXTURE0+texunit);
@@ -287,6 +316,9 @@ void FHardwareTexture::BindToFrameBuffer(int width, int height)
 
 bool FHardwareTexture::BindOrCreate(FTexture *tex, int texunit, int clampmode, int translation, int flags)
 {
+#ifdef __3DS__
+	if (texunit >= 3) return false;
+#endif
 	int usebright = false;
 
 	bool needmipmap = (clampmode <= CLAMP_XY) && !forcenofilter;

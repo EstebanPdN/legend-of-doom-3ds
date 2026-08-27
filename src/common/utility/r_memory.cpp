@@ -21,6 +21,9 @@
 */
 
 #include <stdlib.h>
+#ifdef __3DS__
+#include <malloc.h>
+#endif
 #include "templates.h"
 #include "r_memory.h"
 #include <stdlib.h>
@@ -64,7 +67,11 @@ void RenderMemory::Clear()
 static void* Aligned_Alloc(size_t alignment, size_t size)
 {
 	void* ptr;
-#if defined (_MSC_VER) || defined (__MINGW32__)
+#if defined(__3DS__)
+	ptr = memalign(alignment, size);
+	if (!ptr)
+		throw std::bad_alloc();
+#elif defined (_MSC_VER) || defined (__MINGW32__)
 	ptr = _aligned_malloc(size, alignment);
 	if (!ptr)
 		throw std::bad_alloc();

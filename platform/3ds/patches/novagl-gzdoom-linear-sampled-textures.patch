@@ -1,0 +1,70 @@
+--- a/src/texture.c
++++ b/src/texture.c
+@@ -268,12 +268,16 @@
+         params.maxLevel = (u8) (hdr.mip_levels - 1);
+         params.format = fmt;
+         params.type = GPU_TEX_2D;
+-        /* VRAM first: PICA samples it at full speed and every byte here is a
+-         * byte of linear RAM handed back to vertex buffers (the open world
+-         * was running linear down to a few hundred bytes on geometry alone).
+-         * Keep a reserve for render targets and FBO RTT (local map). */
+-        params.onVram = expected <= NOVA_VRAM_UPLOAD_MAX &&
+-                        vramSpaceFree() > expected + (size_t) (1536 * 1024);
++        /* Static sampled textures stay in linear RAM.  A VRAM allocation would
++         * require a deferred GX copy for every cache hit.  Citro3D's frame
++         * queue has only 32 entries and C3D_TexLoadImage consumes two of them
++         * while a frame is open, so the first busy scene used to panic on the
++         * sixteenth upload.  The shared staging buffer could also be rewritten
++         * before those deferred copies ran, producing the corrupted frame seen
++         * immediately before the crash on hardware.  Linear texture storage is
++         * directly CPU-writable and PICA-readable; reserve VRAM for render
++         * targets, which genuinely need it. */
++        params.onVram = false;
+         if (!C3D_TexInitWithParams(&slot->tex, NULL, params)) {
+             if (params.onVram) {
+                 params.onVram = false;
+@@ -1881,36 +1885,14 @@
+      * orphans unconditionally above, so the slot is never allocated here.) */
+     if (!slot->allocated) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
+-        /* Prefer fast VRAM while retaining a reserve for render targets. The
+-         * New 3DS profile owns a 32 MiB linear arena and clamps source images
+-         * to 256px, so a linear texture is now a safe fallback instead of a
+-         * missing title/sky. The earlier VRAM-only policy rejected the
+-         * 1454x1363 TITLEPIC outright and produced a fully black screen. */
+-        const int max_level = want_mips ? C3D_TexCalcMaxLevel(pot_w, pot_h) : 0;
+-        const size_t tex_bytes = nova_texcache_total_size(
+-            pot_w, pot_h, gpu_fmt, (uint32_t)max_level + 1u);
+-        const size_t vram_reserve = 1536u * 1024u;
+-        bool ok = false;
+-        bool on_vram = false;
+-        if (tex_bytes <= NOVA_VRAM_UPLOAD_MAX &&
+-            (size_t)vramSpaceFree() >= tex_bytes + vram_reserve) {
+-            C3D_TexInitParams params;
+-            memset(&params, 0, sizeof(params));
+-            params.width = (u16)pot_w;
+-            params.height = (u16)pot_h;
+-            params.maxLevel = (u8)max_level;
+-            params.format = gpu_fmt;
+-            params.type = GPU_TEX_2D;
+-            params.onVram = true;
+-            ok = C3D_TexInitWithParams(&slot->tex, NULL, params);
+-            on_vram = ok;
+-        }
+-        if (!ok) {
+-            ok = want_mips
+-                ? C3D_TexInitMipmap(&slot->tex, pot_w, pot_h, gpu_fmt)
+-                : C3D_TexInit(&slot->tex, pot_w, pot_h, gpu_fmt);
+-        }
+-        slot->is_vram = on_vram ? 1 : 0;
++        /* Keep ordinary sampled textures CPU-writable in linear RAM.  This
++         * avoids both the 32-entry GX queue overflow and reuse of an in-flight
++         * upload staging buffer on real hardware.  FBO attachment explicitly
++         * re-homes the exceptional render-target texture in VRAM later. */
++        bool ok = want_mips
++            ? C3D_TexInitMipmap(&slot->tex, pot_w, pot_h, gpu_fmt)
++            : C3D_TexInit(&slot->tex, pot_w, pot_h, gpu_fmt);
++        slot->is_vram = 0;
+ #else
+         bool ok = want_mips
+             ? C3D_TexInitMipmap(&slot->tex, pot_w, pot_h, gpu_fmt)

@@ -286,6 +286,13 @@ public:
 		
 		FirstChar = hexdata.FirstChar;
 		LastChar = hexdata.LastChar;
+#ifdef __3DS__
+		// The desktop console fonts instantiate a texture object for every
+		// Unicode glyph in newconsolefont.hex. That costs tens of megabytes,
+		// well beyond the Old 3DS budget. Latin-1 covers the shipped UI and
+		// keeps custom game fonts unaffected.
+		LastChar = MIN(LastChar, 0xff);
+#endif
 
 		FontHeight = 16;
 		SpaceWidth = 9;
@@ -351,6 +358,9 @@ public:
 
 		FirstChar = hexdata.FirstChar;
 		LastChar = hexdata.LastChar;
+#ifdef __3DS__
+		LastChar = MIN(LastChar, 0xff);
+#endif
 
 		FontHeight = 18;
 		SpaceWidth = 9;

@@ -44,7 +44,7 @@ struct line_t;
 class AActor;
 struct F3DFloor;
 
-enum ETraceResult
+enum ETraceResult : int
 {
 	TRACE_HitNone,
 	TRACE_HitFloor,

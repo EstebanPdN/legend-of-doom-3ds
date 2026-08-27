@@ -383,4 +383,3 @@ sector_t* RenderView(player_t* player)
 	All.Unclock();
 	return retsec;
 }
-

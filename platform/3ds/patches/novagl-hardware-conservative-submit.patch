@@ -1,0 +1,196 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 237cfe8..d7cc66e 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -404,7 +404,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+      * completed GX memory fill).  Normal depth testing remains fully active;
+      * only the optional early rejection optimisation is disabled. */
+     g.early_z_allowed = 0;
+-    g.c3d_frame_flag = 0;
++    g.c3d_frame_flag = (K > 1) ? 0 : C3D_FRAME_SYNCDRAW;
+
+     /* One vertex + index ring PER frame slot (full per-slot capacity), so the
+      * GPU reading slot s's data is never overwritten by the CPU until that slot
+@@ -423,7 +423,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+             if (g.index_buf_slots[i])        { linearFree(g.index_buf_slots[i]);        g.index_buf_slots[i] = NULL; }
+             if (i == 0) { K = 1; } else { K = i; }
+             g.frame_buffers = K;
+-            g.c3d_frame_flag = 0;
++            g.c3d_frame_flag = (K > 1) ? 0 : C3D_FRAME_SYNCDRAW;
+             break;
+         }
+     }
+diff --git a/src/clear.c b/src/clear.c
+index 788fa79..227a9d3 100644
+--- a/src/clear.c
++++ b/src/clear.c
+@@ -18,6 +18,7 @@
+  * as the geometry, avoiding the sync stall entirely and maintaining the
+  * pipeline flow.
+  * ------------------------------------------------------------------------ */
++#if defined(NOVAGL_ASYNC_QUAD_CLEAR) && NOVAGL_ASYNC_QUAD_CLEAR
+ static void nova_clear_quad(int clear_color, int clear_depth) {
+     C3D_TexEnv *env = C3D_GetTexEnv(0);
+     C3D_TexEnvInit(env);
+@@ -112,6 +113,7 @@ static void nova_clear_quad(int clear_color, int clear_depth) {
+      * Invalidate the cache so the next draw forces a clean re-push. */
+     nova_invalidate_state_cache();
+ }
++#endif
+
+ void glClear(GLbitfield mask) {
+     /* Spec: any bit outside the three valid ones is GL_INVALID_VALUE and the
+@@ -179,23 +181,26 @@ void glClear(GLbitfield mask) {
+         /* Commit pending deferred draws into the command list BEFORE clearing */
+         nova_batch_flush();
+
+-        /* If the command buffer already contains draws (a mid-frame clear),
+-         * a hardware GX memory fill would require a FrameSplit, stalling the CPU.
+-         * Use a fullscreen quad instead to keep the pipeline flowing.
+-         *
+-         * Note: Stencil clears fall back to the hardware fill to guarantee
+-         * exact interleaved D24S8 semantics without mutating StencilOp state. */
++#if defined(NOVAGL_ASYNC_QUAD_CLEAR) && NOVAGL_ASYNC_QUAD_CLEAR
+         if (g.p3d_pending && !want_stencil) {
+             int do_color = color_writable && (mask & GL_COLOR_BUFFER_BIT);
+             nova_clear_quad(do_color, want_depth);
+         } else {
+-            /* Frame start: buffer is empty, so a GX memory fill is stall-free and much faster. */
+-            C3D_FrameSplit(0);
++#endif
++            /* Citro3D's supported ordering is command-list submission followed
++             * by the GX memory fill.  C3D_FrameSplit is asynchronous; it puts
++             * preceding draws ahead of the fill in the same GX queue without
++             * a CPU wait.  At frame start there is no PICA list to split, so
++             * submit the fill directly, matching the official examples. */
++            if (g.p3d_pending)
++                C3D_FrameSplit(0);
+             C3D_RenderTargetClear(g.current_target, bits, color, depth);
+             /* The memory fill wiped the depth buffer in VRAM but not the
+              * on-chip early-depth buffer — reset it too (see nova_clear_early_depth). */
+             if (bits & C3D_CLEAR_DEPTH) nova_clear_early_depth();
++#if defined(NOVAGL_ASYNC_QUAD_CLEAR) && NOVAGL_ASYNC_QUAD_CLEAR
+         }
++#endif
+         /* Clearing an FBO writes its colour texture — flag the RAW hazard so
+          * a later sample of it splits first (same rule as draws, utils.c §7). */
+         if ((bits & C3D_CLEAR_COLOR) && g.bound_fbo != 0 && g.bound_fbo < NOVA_MAX_FBOS) {
+diff --git a/src/texture.c b/src/texture.c
+index 3524cd2..a8dbdba 100644
+--- a/src/texture.c
++++ b/src/texture.c
+@@ -881,29 +881,12 @@ int nova_texture_make_vram_target(GLuint texture) {
+
+     C3D_Tex newtex;
+     if (!C3D_TexInitVRAM(&newtex, (u16) slot->pot_w, (u16) slot->pot_h, slot->fmt)) {
+-        /* VRAM exhausted. Butterscotch-style fallback: a linear-RAM colour
+-         * buffer is a valid PICA render target too (citro3d resolves the
+-         * physical address either way — Butterscotch ships exactly this
+-         * C3D_TexInitVRAM→C3D_TexInit fallback for its surfaces). Reuse the
+-         * existing linear storage when it's a flat base-level allocation;
+-         * re-init flat when it carries mips (targets are single-level). */
+-        if (slot->has_mipmap || !slot->tex.data) {
+-            if (!C3D_TexInit(&newtex, (u16) slot->pot_w, (u16) slot->pot_h, slot->fmt)) {
+-                gl_set_error(GL_OUT_OF_MEMORY);
+-                return 0;
+-            }
+-            C3D_TexDelete(&slot->tex);
+-            slot->tex = newtex;
+-        }
+-        slot->has_mipmap = 0;
+-        slot->mip_uploaded_mask = 1;
+-        /* is_vram doubles as "storage is render-target-capable — never re-home
+-         * it again"; set it for the linear fallback too so repeat attaches
+-         * don't re-zero the texture every call. */
+-        slot->is_vram = 1;
+-        apply_slot_params_to_tex(&slot->tex, slot);
+-        zero_texture_storage_safe(&slot->tex);
+-        return 1;
++        /* C3D_RenderTargetCreateFromTex explicitly rejects non-VRAM storage.
++         * Preserve the original sampled texture and report allocation failure;
++         * pretending linear storage is renderable creates an incomplete FBO
++         * whose later GPU use can return garbage or wedge the command queue. */
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return 0;
+     }
+     C3D_TexDelete(&slot->tex);
+     slot->tex = newtex;
+diff --git a/src/utils.c b/src/utils.c
+index 2e0c8a4..eb085bc 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -45,7 +45,9 @@ typedef struct {
+     unsigned serial;
+     int primitive, first, count, indexed, index_type;
+     const void *indices;
+-    unsigned cmd_words;
++    unsigned cmd_words_before, cmd_words_after;
++    unsigned cmd_capture_start, cmd_capture_count;
++    u32 cmd_capture[512];
+     C3D_BufInfo buf_info;
+     C3D_AttrInfo attr_info;
+ } NovaHwDrawSnapshot;
+@@ -87,9 +89,16 @@ static void nova_hw_write_report(const char *result, const char *tag)
+             s_hw_draw.primitive, s_hw_draw.first, s_hw_draw.count,
+             s_hw_draw.indexed, s_hw_draw.index_type, s_hw_draw.indices,
+             s_hw_draw.indices ? (unsigned)osConvertVirtToPhys(s_hw_draw.indices) : 0u);
+-    fprintf(f, "draw_cmd_words=%u live_cmd_words=%u cmd_capacity_words=%u\n",
+-            s_hw_draw.cmd_words, (unsigned)gpuCmdBufOffset,
++    fprintf(f, "draw_cmd_words_before=%u draw_cmd_words_after=%u "
++               "live_cmd_words=%u cmd_capacity_words=%u\n",
++            s_hw_draw.cmd_words_before, s_hw_draw.cmd_words_after,
++            (unsigned)gpuCmdBufOffset,
+             (unsigned)gpuCmdBufSize);
++    fprintf(f, "framebuffer color_paddr=%08X depth_paddr=%08X width=%u height=%u\n",
++            g.current_target ? (unsigned)osConvertVirtToPhys(g.current_target->frameBuf.colorBuf) : 0u,
++            g.current_target ? (unsigned)osConvertVirtToPhys(g.current_target->frameBuf.depthBuf) : 0u,
++            g.current_target ? (unsigned)g.current_target->frameBuf.width : 0u,
++            g.current_target ? (unsigned)g.current_target->frameBuf.height : 0u);
+     fprintf(f, "state shader=%d tex_unit=%d tex0=%u fbo=%u target=%p "
+                "depth=%d stencil=%d alpha=%d cull=%d\n",
+             g.active_shader, g.active_texture_unit,
+@@ -122,6 +131,14 @@ static void nova_hw_write_report(const char *result, const char *tag)
+                 (unsigned)b->offset, (unsigned)b->flags[0],
+                 (unsigned)b->flags[1]);
+     }
++    for (unsigned i = 0; i < s_hw_draw.cmd_capture_count; i += 8) {
++        fprintf(f, "cmd[%u]", s_hw_draw.cmd_capture_start + i);
++        unsigned end = i + 8;
++        if (end > s_hw_draw.cmd_capture_count) end = s_hw_draw.cmd_capture_count;
++        for (unsigned j = i; j < end; ++j)
++            fprintf(f, " %08X", (unsigned)s_hw_draw.cmd_capture[j]);
++        fputc('\n', f);
++    }
+     fprintf(f, "queue max=%u num=%u submitted=%u completed=%u "
+                "first_incomplete=%u\n",
+             (unsigned)q->maxEntries, (unsigned)q->numEntries,
+@@ -194,7 +211,10 @@ void nova_hw_watchdog_before_draw(int primitive, int first, int count,
+     s_hw_draw.indexed = indexed;
+     s_hw_draw.index_type = index_type;
+     s_hw_draw.indices = indices;
+-    s_hw_draw.cmd_words = (unsigned)gpuCmdBufOffset;
++    s_hw_draw.cmd_words_before = (unsigned)gpuCmdBufOffset;
++    s_hw_draw.cmd_words_after = (unsigned)gpuCmdBufOffset;
++    s_hw_draw.cmd_capture_start = 0;
++    s_hw_draw.cmd_capture_count = 0;
+     s_hw_draw.buf_info = *C3D_GetBufInfo();
+     s_hw_draw.attr_info = *C3D_GetAttrInfo();
+     s_hw_last_file = "draw-wrapper";
+@@ -204,7 +224,16 @@ void nova_hw_watchdog_before_draw(int primitive, int first, int count,
+ void nova_hw_watchdog_after_draw(void)
+ {
+     if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
+-    s_hw_draw.cmd_words = (unsigned)gpuCmdBufOffset;
++    s_hw_draw.cmd_words_after = (unsigned)gpuCmdBufOffset;
++    unsigned begin = s_hw_draw.cmd_words_before;
++    unsigned end = s_hw_draw.cmd_words_after;
++    if (end > begin && gpuCmdBuf) {
++        if (end - begin > 512u) begin = end - 512u;
++        s_hw_draw.cmd_capture_start = begin;
++        s_hw_draw.cmd_capture_count = end - begin;
++        memcpy(s_hw_draw.cmd_capture, gpuCmdBuf + begin,
++               s_hw_draw.cmd_capture_count * sizeof(u32));
++    }
+     (C3D_FrameSplit)(0);
+     nova_hw_wait_and_rearm("draw");
+ }

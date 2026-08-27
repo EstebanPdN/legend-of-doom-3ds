@@ -1,0 +1,194 @@
+diff --git a/shaders/NovaGL_shader.pica b/shaders/NovaGL_shader.pica
+--- a/shaders/NovaGL_shader.pica
++++ b/shaders/NovaGL_shader.pica
+@@ -27,18 +27,23 @@
+ .out outTexcoord0  texcoord0
+
+ .constf CONST1 (1.0, 0.0, 0.0, 0.0)
++.constf POSW (0.0, 0.0, 0.0, 1.0)
+ .constf my_normalize (0.00392156, 0.00392156, 0.00392156, 0.00392156)
+
+ .proc main
++    ; Reconstruct OpenGL's implicit homogeneous components explicitly.
++    mov r15, POSW
++    mov r15.xyz, inPosition.xyz
++
+     ; Transform to View Space.
+     ; The attribute loader for this shader is pinned to 3 floats
+     ; (nova_setup_attr_info(3)), so PICA pads inPosition.w = 1.0 for us —
+     ; no need to rebuild (x, y, z, 1) in a temp first. (Arx's TexturedVertex
+     ; rhw never reaches the register: the loader only reads 3 components.)
+-    dp4 r0.x, modelview[0], inPosition
+-    dp4 r0.y, modelview[1], inPosition
+-    dp4 r0.z, modelview[2], inPosition
+-    dp4 r0.w, modelview[3], inPosition
++    dp4 r0.x, modelview[0], r15
++    dp4 r0.y, modelview[1], r15
++    dp4 r0.z, modelview[2], r15
++    dp4 r0.w, modelview[3], r15
+
+     ; Projection (into scratch r14 so we can post-process before output).
+     dp4 r14.x, projection[0], r0
+@@ -99,10 +104,12 @@
+     ; Compute into scratch r11 then copy out — writing outTexcoord0.x/.y
+     ; directly from a dp4 destination wasn't producing the expected result on
+     ; picasso; going via r11 is the safe canonical form.
+-    dp4 r11.x, texmtx[0], inTexcoord
+-    dp4 r11.y, texmtx[1], inTexcoord
++    mov r12, POSW
++    mov r12.xy, inTexcoord.xy
++    dp4 r11.x, texmtx[0], r12
++    dp4 r11.y, texmtx[1], r12
+     mov outTexcoord0.xy, r11.xy
+-    mov outTexcoord0.zw, CONST1.yyyx  ; z = 0, w = 1
++    mov outTexcoord0.zw, POSW.zw
+
+     end
+ .end
+diff --git a/shaders/NovaGL_shader_basic.pica b/shaders/NovaGL_shader_basic.pica
+--- a/shaders/NovaGL_shader_basic.pica
++++ b/shaders/NovaGL_shader_basic.pica
+@@ -27,16 +27,20 @@
+ .out outTexcoord0  texcoord0
+
+ .constf CONST1 (1.0, 0.0, 0.0, 0.0)
++.constf POSW (0.0, 0.0, 0.0, 1.0)
+ .constf my_normalize (0.00392156, 0.00392156, 0.00392156, 0.00392156)
+
+ .proc main
++    mov r15, POSW
++    mov r15.xyz, inPosition.xyz
++
+     ; Single combined MVP transform (into scratch r14 first so we can
+     ; depth-clamp z before output — same trick as the full shader, see
+     ; NovaGL_shader.pica for the rationale). Loader pads inPosition.w = 1.
+-    dp4 r14.x, mvp[0], inPosition
+-    dp4 r14.y, mvp[1], inPosition
+-    dp4 r14.z, mvp[2], inPosition
+-    dp4 r14.w, mvp[3], inPosition
++    dp4 r14.x, mvp[0], r15
++    dp4 r14.y, mvp[1], r15
++    dp4 r14.z, mvp[2], r15
++    dp4 r14.w, mvp[3], r15
+
+     ; GL_DEPTH_CLAMP emulation — PICA valid clip-z range is [-w, 0]
+     ; (NOT GL's [-w, w]); see NovaGL_shader.pica for full rationale.
+@@ -54,7 +58,8 @@
+
+     ; UV passthrough (tex matrix assumed identity). Loader pads inTexcoord
+     ; to (s, t, 0, 1) — exactly the (z=0, w=1) the old 3-mov version built.
+-    mov outTexcoord0, inTexcoord
++    mov outTexcoord0.xy, inTexcoord.xy
++    mov outTexcoord0.zw, POSW.zw
+
+     end
+ .end
+diff --git a/shaders/NovaGL_shader_texmtx.pica b/shaders/NovaGL_shader_texmtx.pica
+--- a/shaders/NovaGL_shader_texmtx.pica
++++ b/shaders/NovaGL_shader_texmtx.pica
+@@ -24,15 +24,19 @@
+ .out outTexcoord0  texcoord0
+
+ .constf CONST1 (1.0, 0.0, 0.0, 0.0)
++.constf POSW (0.0, 0.0, 0.0, 1.0)
+ .constf my_normalize (0.00392156, 0.00392156, 0.00392156, 0.00392156)
+
+ .proc main
++    mov r15, POSW
++    mov r15.xyz, inPosition.xyz
++
+     ; Single combined MVP transform (into scratch r14 so we can depth-clamp
+     ; before output — same trick as the full shader). Loader pads w = 1.
+-    dp4 r14.x, mvp[0], inPosition
+-    dp4 r14.y, mvp[1], inPosition
+-    dp4 r14.z, mvp[2], inPosition
+-    dp4 r14.w, mvp[3], inPosition
++    dp4 r14.x, mvp[0], r15
++    dp4 r14.y, mvp[1], r15
++    dp4 r14.z, mvp[2], r15
++    dp4 r14.w, mvp[3], r15
+
+     ; GL_DEPTH_CLAMP emulation — PICA valid clip-z range is [-w, 0]
+     ; (NOT GL's [-w, w]); see NovaGL_shader.pica for full rationale.
+@@ -51,10 +55,12 @@
+     ; Apply GL_TEXTURE matrix to (s, t, 0, 1) — loader pads inTexcoord to
+     ; exactly that, no temp rebuild needed. Via scratch r11: see the full
+     ; shader for why dp4 must not write output .x/.y directly.
+-    dp4 r11.x, texmtx[0], inTexcoord
+-    dp4 r11.y, texmtx[1], inTexcoord
++    mov r12, POSW
++    mov r12.xy, inTexcoord.xy
++    dp4 r11.x, texmtx[0], r12
++    dp4 r11.y, texmtx[1], r12
+     mov outTexcoord0.xy, r11.xy
+-    mov outTexcoord0.zw, CONST1.yyyx  ; z = 0, w = 1
++    mov outTexcoord0.zw, POSW.zw
+
+     end
+ .end
+diff --git a/shaders/NovaGL_shader_clipspace.pica b/shaders/NovaGL_shader_clipspace.pica
+--- a/shaders/NovaGL_shader_clipspace.pica
++++ b/shaders/NovaGL_shader_clipspace.pica
+@@ -32,6 +32,7 @@
+ .out outTexcoord1  texcoord1
+
+ .constf CONST1 (1.0, 0.0, 0.0, 0.0)
++.constf TEXW (0.0, 0.0, 0.0, 1.0)
+ .constf my_normalize (0.00392156, 0.00392156, 0.00392156, 0.00392156)
+
+ .proc main
+@@ -64,13 +65,15 @@
+     mov outColor, r1
+
+     ; UV passthrough — texcoord loader is 2 floats, PICA pads to (s, t, 0, 1).
+-    mov outTexcoord0, inTexcoord
++    mov outTexcoord0.xy, inTexcoord.xy
++    mov outTexcoord0.zw, TEXW.zw
+     ; PICA texture unit 1 samples with TEXCOORD1, which is a separate
+     ; interpolant — without writing it, any TEV stage referencing
+     ; GPU_TEXTURE1 (fast3d TRILERP mip blends) samples with garbage
+     ; coordinates. Mirror unit 0's UV; N64 mip levels share normalized
+     ; coordinates, so this matches what the RDP did.
+-    mov outTexcoord1, inTexcoord
++    mov outTexcoord1.xy, inTexcoord.xy
++    mov outTexcoord1.zw, TEXW.zw
+
+     end
+ .end
+diff --git a/shaders/NovaGL_shader_lighting.pica b/shaders/NovaGL_shader_lighting.pica
+--- a/shaders/NovaGL_shader_lighting.pica
++++ b/shaders/NovaGL_shader_lighting.pica
+@@ -14,15 +14,19 @@
+ .out outNormalQuat normalquat  ; quaternion rotating (0,0,1) onto the normal
+
+ .constf CONST1 (1.0, 0.0, 0.0, 0.0)
++.constf POSW (0.0, 0.0, 0.0, 1.0)
+ .constf my_normalize (0.00392156, 0.00392156, 0.00392156, 0.00392156)
+
+ .proc main
++    mov r15, POSW
++    mov r15.xyz, inPosition.xyz
++
+     ; --- Eye-space position (modelview * pos). Loader pins 3 floats so PICA
+     ; pads inPosition.w = 1.0 for us. ---
+-    dp4 r0.x, modelview[0], inPosition
+-    dp4 r0.y, modelview[1], inPosition
+-    dp4 r0.z, modelview[2], inPosition
+-    dp4 r0.w, modelview[3], inPosition
++    dp4 r0.x, modelview[0], r15
++    dp4 r0.y, modelview[1], r15
++    dp4 r0.z, modelview[2], r15
++    dp4 r0.w, modelview[3], r15
+
+     ; --- Clip-space position (projection * eye). projection already carries the
+     ; screen tilt + PICA Z-range fixup from apply_gpu_state. ---
+@@ -49,7 +53,8 @@
+     mov outColor, r1
+
+     ; --- Texcoord passthrough (loader pads z=0, w=1). ---
+-    mov outTexcoord0, inTexcoord
++    mov outTexcoord0.xy, inTexcoord.xy
++    mov outTexcoord0.zw, POSW.zw
+
+     ; --- Eye-space normal = normalize(modelview3x3 * normal). dp3 ignores .w,
+     ; so the normal loader's padding doesn't matter. (Assumes an orthonormal

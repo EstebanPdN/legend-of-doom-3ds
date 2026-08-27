@@ -1,0 +1,1138 @@
+diff --git a/include/NovaGL.h b/include/NovaGL.h
+index 20b377b..e39ac46 100644
+--- a/include/NovaGL.h
++++ b/include/NovaGL.h
+@@ -53,6 +53,9 @@ typedef ptrdiff_t GLsizeiptr;
+  * (Was float historically; changed for OSG, which requires GLdouble==double.) */
+ typedef double GLdouble;
+ typedef char GLchar;
++#ifdef NOVAGL_GZDOOM_COMPAT
++typedef void *GLsync;
++#endif
+
+ /* GL_KHR_debug callback signature + the glad loader proc type. NovaGL is a
+  * static GL implementation (functions are linked directly, not fetched through
+@@ -242,6 +245,52 @@ typedef void *(*GLADloadproc)(const char *name);
+ #define GL_FUNC_SUBTRACT            0x800A
+ #define GL_FUNC_REVERSE_SUBTRACT    0x800B
+ #define GL_BLEND_EQUATION_ALPHA     0x883D
++
++#ifdef NOVAGL_GZDOOM_COMPAT
++/* GLES2/3 names referenced by GZDoom even in its no-render-buffer path.  The
++ * bridge either aliases them to an implemented NovaGL format/state or accepts
++ * them as a documented fixed-function no-op. */
++#define GL_BLEND_DST_RGB                         0x80C8
++#define GL_BLEND_SRC_RGB                         0x80C9
++#define GL_BLEND_DST_ALPHA                       0x80CA
++#define GL_BLEND_SRC_ALPHA                       0x80CB
++#define GL_ACTIVE_TEXTURE                        0x84E0
++#define GL_COLOR_ATTACHMENT1                     0x8CE1
++#define GL_COLOR_ATTACHMENT2                     0x8CE2
++#define GL_COPY_READ_BUFFER                      0x8F36
++#define GL_CURRENT_PROGRAM                       0x8B8D
++#define GL_DEPTH_CLAMP                           0x864F
++#define GL_DEPTH_CLEAR_VALUE                     0x0B73
++#define GL_DEPTH_COMPONENT                       0x1902
++#define GL_DEPTH_COMPONENT16                     0x81A5
++#define GL_DEPTH_COMPONENT24                     0x81A6
++#define GL_DEPTH_STENCIL_OES                     0x84F9
++#define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT     0x8CD6
++#define GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT 0x8CD7
++#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS     0x8CD9
++#define GL_FRAMEBUFFER_UNSUPPORTED               0x8CDD
++#define GL_INT_2_10_10_10_REV                    0x8D9F
++#define GL_MAP_PERSISTENT_BIT                    0x0040
++#define GL_R8                                    0x8229
++#define GL_R16F                                  0x822D
++#define GL_R32F                                  0x822E
++#define GL_RG                                    0x8227
++#define GL_RG16F                                 0x822F
++#define GL_RG32F                                 0x8230
++#define GL_RGB10_A2                              0x8059
++#define GL_RGBA16                                0x805B
++#define GL_RGBA16F                               0x881A
++#define GL_RGBA16_SNORM                          0x8F9B
++#define GL_RGBA32F                               0x8814
++#define GL_SAMPLER_BINDING                       0x8919
++#define GL_SHADING_LANGUAGE_VERSION              0x8B8C
++#define GL_STENCIL_ATTACHMENT                    0x8D20
++#define GL_STENCIL_CLEAR_VALUE                   0x0B91
++#define GL_STENCIL_INDEX8                        0x8D48
++#define GL_STENCIL_INDEX8_OES                    0x8D48
++#define GL_TEXTURE_BINDING_2D                    0x8069
++#define GL_UNSIGNED_INT_10_10_10_2               0x8036
++#endif
+ /* OES aliases used by the GLES blend path. */
+ #define GL_FUNC_ADD_OES             0x8006
+ #define GL_BLEND_EQUATION_OES       0x8009
+@@ -1120,6 +1169,10 @@ void glNormal3sv(const GLshort *v);
+
+ void glGetFloatv(GLenum pname, GLfloat *params);
+
++#ifdef NOVAGL_GZDOOM_COMPAT
++void glGetBooleanv(GLenum pname, GLboolean *params);
++#endif
++
+ void glGetIntegerv(GLenum pname, GLint *params);
+
+ const GLubyte *glGetString(GLenum name);
+@@ -1385,6 +1438,15 @@ void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
+
+ void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3);
+
++#ifdef NOVAGL_GZDOOM_COMPAT
++void glUniform2fv(GLint location, GLsizei count, const GLfloat *value);
++void glVertexAttrib4fv(GLuint index, const GLfloat *value);
++void glBindSampler(GLuint unit, GLuint sampler);
++void glSamplerParameteri(GLuint sampler, GLenum pname, GLint param);
++void glSamplerParameterf(GLuint sampler, GLenum pname, GLfloat param);
++void glDrawBuffers(GLsizei n, const GLenum *bufs);
++#endif
++
+ void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
+
+ void glUniform3fv(GLint location, GLsizei count, const GLfloat *value);
+diff --git a/shaders/NovaGL_shader.pica b/shaders/NovaGL_shader.pica
+index d815b87..ec95f3d 100644
+--- a/shaders/NovaGL_shader.pica
++++ b/shaders/NovaGL_shader.pica
+@@ -15,6 +15,8 @@
+                     ; so uploading inv = 0 yields f = 1 (fog fully off) — this
+                     ; is how the C side disables the blend without a shader
+                     ; switch. Do NOT recompute 1/(end-start) here.
++.fvec colorparams[2] ; [0]: GZDoom object-colour multiplier
++                     ; [1]: GZDoom additive RGB (alpha is always zero)
+
+ .alias inPosition  v0
+ .alias inTexcoord  v1
+@@ -60,8 +62,12 @@
+
+     mov outPosition, r14
+
+-    ; Color: byte -> float
++    ; Color: byte -> float, then apply the GZDoom material colour separately
++    ; from the vertex stream. Folding both into glColor only works when no
++    ; colour array is enabled; sky/world VBOs carry their own aColor.
+     mul r1, my_normalize, inColor
++    mul r1, colorparams[0], r1
++    add r1.xyz, colorparams[1].xyz, r1.xyz
+
+     ; --- GL_LINEAR fog ---
+     ; d = |view_pos| (true eye distance)
+diff --git a/shaders/NovaGL_shader_basic.pica b/shaders/NovaGL_shader_basic.pica
+index 4abc7ba..85a6473 100644
+--- a/shaders/NovaGL_shader_basic.pica
++++ b/shaders/NovaGL_shader_basic.pica
+@@ -16,6 +16,7 @@
+ ; =============================================================================
+
+ .fvec mvp[4]
++.fvec colorparams[2]
+
+ .alias inPosition  v0
+ .alias inTexcoord  v1
+@@ -45,8 +46,11 @@
+
+     mov outPosition, r14
+
+-    ; Color: byte -> float
+-    mul outColor, my_normalize, inColor
++    ; Color: byte -> float + GZDoom material colour.
++    mul r1, my_normalize, inColor
++    mul r1, colorparams[0], r1
++    add r1.xyz, colorparams[1].xyz, r1.xyz
++    mov outColor, r1
+
+     ; UV passthrough (tex matrix assumed identity). Loader pads inTexcoord
+     ; to (s, t, 0, 1) — exactly the (z=0, w=1) the old 3-mov version built.
+diff --git a/shaders/NovaGL_shader_clipspace.pica b/shaders/NovaGL_shader_clipspace.pica
+index f3761c8..f550b9a 100644
+--- a/shaders/NovaGL_shader_clipspace.pica
++++ b/shaders/NovaGL_shader_clipspace.pica
+@@ -20,6 +20,7 @@
+ ; =============================================================================
+
+ .fvec projection[4]
++.fvec colorparams[2]
+
+ .alias inPosition  v0
+ .alias inTexcoord  v1
+@@ -56,8 +57,11 @@
+
+     mov outPosition, r14
+
+-    ; Color byte -> float
+-    mul outColor, my_normalize, inColor
++    ; Color byte -> float + GZDoom material colour.
++    mul r1, my_normalize, inColor
++    mul r1, colorparams[0], r1
++    add r1.xyz, colorparams[1].xyz, r1.xyz
++    mov outColor, r1
+
+     ; UV passthrough — texcoord loader is 2 floats, PICA pads to (s, t, 0, 1).
+     mov outTexcoord0, inTexcoord
+diff --git a/shaders/NovaGL_shader_lighting.pica b/shaders/NovaGL_shader_lighting.pica
+index 57fc917..a3bc182 100644
+--- a/shaders/NovaGL_shader_lighting.pica
++++ b/shaders/NovaGL_shader_lighting.pica
+@@ -1,5 +1,6 @@
+ .fvec projection[4]
+ .fvec modelview[4]
++.fvec colorparams[2]
+
+ .alias inPosition  v0
+ .alias inTexcoord  v1
+@@ -40,9 +41,12 @@
+     ; unit; we forward the whole register like the citro3d example.) ---
+     mov outView, -r0
+
+-    ; --- Vertex colour byte -> float (kept for GL_COLOR_MATERIAL-style passes
+-    ; and for non-lit TEV stages). ---
+-    mul outColor, my_normalize, inColor
++    ; --- Vertex colour byte -> float + GZDoom material colour (kept for
++    ; GL_COLOR_MATERIAL-style passes and non-lit TEV stages). ---
++    mul r1, my_normalize, inColor
++    mul r1, colorparams[0], r1
++    add r1.xyz, colorparams[1].xyz, r1.xyz
++    mov outColor, r1
+
+     ; --- Texcoord passthrough (loader pads z=0, w=1). ---
+     mov outTexcoord0, inTexcoord
+diff --git a/shaders/NovaGL_shader_texmtx.pica b/shaders/NovaGL_shader_texmtx.pica
+index 344e38a..42a5ca9 100644
+--- a/shaders/NovaGL_shader_texmtx.pica
++++ b/shaders/NovaGL_shader_texmtx.pica
+@@ -13,6 +13,7 @@
+
+ .fvec mvp[4]
+ .fvec texmtx[4]
++.fvec colorparams[2]
+
+ .alias inPosition  v0
+ .alias inTexcoord  v1
+@@ -41,8 +42,11 @@
+
+     mov outPosition, r14
+
+-    ; Color byte -> float
+-    mul outColor, my_normalize, inColor
++    ; Color byte -> float + GZDoom material colour.
++    mul r1, my_normalize, inColor
++    mul r1, colorparams[0], r1
++    add r1.xyz, colorparams[1].xyz, r1.xyz
++    mov outColor, r1
+
+     ; Apply GL_TEXTURE matrix to (s, t, 0, 1) — loader pads inTexcoord to
+     ; exactly that, no temp rebuild needed. Via scratch r11: see the full
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index b2941cb..414f564 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -37,7 +37,6 @@ add_library(NovaGL STATIC
+         current.c
+         draw.c
+         fog.c
+-        gas.c
+         framebuffer.c
+         display_list.c
+         utils.c
+@@ -137,6 +136,24 @@ if (NOT NOVAGL_SPLASHSCREEN)
+     target_compile_definitions(NovaGL PRIVATE NOVAGL_NO_SPLASHSCREEN=1)
+ endif ()
+
++# Fixed-function bridge used by GZDoom's GLES renderer on Nintendo 3DS.
++# It maps the small subset of shader uniforms/attributes needed for a direct
++# world render onto NovaGL's matrix stacks, TEV colour, alpha test and VBO path.
++option(NOVAGL_GZDOOM_COMPAT "Enable the GZDoom GLES fixed-function bridge" OFF)
++set(NOVAGL_DIAG_DRAW_LIMIT "0" CACHE STRING "Number of initial GL draws to log")
++set(NOVAGL_DIAG_TEX_LIMIT "0" CACHE STRING "Number of initial texture uploads to log")
++option(NOVAGL_DIAG_TEX_DUMP_RAW "Write raw/swizzled texture diagnostics to SD" OFF)
++if (NOVAGL_GZDOOM_COMPAT)
++    target_compile_definitions(NovaGL PUBLIC
++        NOVAGL_GZDOOM_COMPAT=1
++        NOVAGL_TOP_ONLY=1)
++endif ()
++target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_DRAW_LIMIT=${NOVAGL_DIAG_DRAW_LIMIT})
++target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_TEX_LIMIT=${NOVAGL_DIAG_TEX_LIMIT})
++if (NOVAGL_DIAG_TEX_DUMP_RAW)
++    target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_TEX_DUMP_RAW=1)
++endif ()
++
+ target_include_directories(NovaGL
+         PUBLIC
+         "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+@@ -163,4 +180,3 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../include/glad"  DESTINATION inc
+ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../include/GL"    DESTINATION include)
+ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../include/GLES"  DESTINATION include)
+ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../include/GLES2" DESTINATION include)
+-
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 80a9863..92bf501 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -116,7 +116,10 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+
+     C3D_Init(cmd_buf_size);
+
+-    gfxSet3D(true);
++    /* GZDoom renders one native 400x240 top-screen view. Enabling stereo
++     * reserves/advertises a second physical eye buffer despite never drawing
++     * it, which wastes scarce Old 3DS linear memory. */
++    gfxSet3D(false);
+
+     /* Top LCD target. With the app surface DISABLED (the default, see below)
+      * the game renders straight into this target, so it MUST carry a depth/
+@@ -248,9 +251,13 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+            g.app_pot_w, g.app_pot_h, g.app_logical_w, g.app_logical_h);
+ #endif
+
++#if defined(NOVAGL_TOP_ONLY) && NOVAGL_TOP_ONLY
++    g.render_target_bot = NULL;
++#else
+     g.render_target_bot = C3D_RenderTargetCreate(NOVA_SCREEN_BOTTOM_W, NOVA_SCREEN_BOTTOM_H,
+                                                  GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
+     C3D_RenderTargetSetOutput(g.render_target_bot, GFX_BOTTOM, GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
++#endif
+
+     g.shader_dvlb = DVLB_ParseFile((u32 *) NovaGL_shader_shbin, NovaGL_shader_shbin_size);
+
+@@ -262,6 +269,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+         g.uLoc_modelview = shaderInstanceGetUniformLocation(g.shader_program.vertexShader, "modelview");
+         g.uLoc_texmtx    = shaderInstanceGetUniformLocation(g.shader_program.vertexShader, "texmtx");
+         g.uLoc_fogparams = shaderInstanceGetUniformLocation(g.shader_program.vertexShader, "fogparams");
++        g.uLoc_colorparams = shaderInstanceGetUniformLocation(g.shader_program.vertexShader, "colorparams");
+     }
+
+     g.shader_basic_dvlb = DVLB_ParseFile((u32 *) NovaGL_shader_basic_shbin, NovaGL_shader_basic_shbin_size);
+@@ -269,6 +277,8 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+         shaderProgramInit(&g.shader_basic_program);
+         shaderProgramSetVsh(&g.shader_basic_program, &g.shader_basic_dvlb->DVLE[0]);
+         g.uLoc_mvp_basic = shaderInstanceGetUniformLocation(g.shader_basic_program.vertexShader, "mvp");
++        g.uLoc_colorparams_basic = shaderInstanceGetUniformLocation(
++            g.shader_basic_program.vertexShader, "colorparams");
+     }
+
+     g.shader_texmtx_dvlb = DVLB_ParseFile((u32 *) NovaGL_shader_texmtx_shbin, NovaGL_shader_texmtx_shbin_size);
+@@ -277,6 +287,8 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+         shaderProgramSetVsh(&g.shader_texmtx_program, &g.shader_texmtx_dvlb->DVLE[0]);
+         g.uLoc_mvp_texmtx    = shaderInstanceGetUniformLocation(g.shader_texmtx_program.vertexShader, "mvp");
+         g.uLoc_texmtx_texmtx = shaderInstanceGetUniformLocation(g.shader_texmtx_program.vertexShader, "texmtx");
++        g.uLoc_colorparams_texmtx = shaderInstanceGetUniformLocation(
++            g.shader_texmtx_program.vertexShader, "colorparams");
+     }
+
+     g.shader_clipspace_dvlb = DVLB_ParseFile((u32 *) NovaGL_shader_clipspace_shbin, NovaGL_shader_clipspace_shbin_size);
+@@ -285,6 +297,8 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+         shaderProgramSetVsh(&g.shader_clipspace_program, &g.shader_clipspace_dvlb->DVLE[0]);
+         g.uLoc_projection_clipspace = shaderInstanceGetUniformLocation(
+             g.shader_clipspace_program.vertexShader, "projection");
++        g.uLoc_colorparams_clipspace = shaderInstanceGetUniformLocation(
++            g.shader_clipspace_program.vertexShader, "colorparams");
+     }
+
+     g.shader_lighting_dvlb = DVLB_ParseFile((u32 *) NovaGL_shader_lighting_shbin,
+@@ -296,11 +310,19 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+             g.shader_lighting_program.vertexShader, "projection");
+         g.uLoc_modelview_lighting = shaderInstanceGetUniformLocation(
+             g.shader_lighting_program.vertexShader, "modelview");
++        g.uLoc_colorparams_lighting = shaderInstanceGetUniformLocation(
++            g.shader_lighting_program.vertexShader, "colorparams");
+     }
+     g.light_env_built = 0;
+     g.lighting_active = 0;
+     g.light_dirty = 1;
+
++    g.gzdoom_color_mul[0] = g.gzdoom_color_mul[1] =
++        g.gzdoom_color_mul[2] = g.gzdoom_color_mul[3] = 1.0f;
++    g.gzdoom_color_add[0] = g.gzdoom_color_add[1] =
++        g.gzdoom_color_add[2] = g.gzdoom_color_add[3] = 0.0f;
++    g.gzdoom_color_dirty = 1;
++
+     /* Start on the full shader; apply_gpu_state's selector will switch to
+      * a faster variant on the first draw if the state qualifies. */
+     C3D_BindProgram(&g.shader_program);
+@@ -862,6 +884,13 @@ void novaSwapBuffers(void) {
+      * wait sites the tags exist to expose. */
+     C3D_FrameBegin(g.c3d_frame_flag);   /* SYNCDRAW (K==1) waits; async (K>1) doesn't */
+
++    /* FrameEnd retired every draw from the old command list and FrameBegin
++     * opened a fresh one. If this flag leaks across the boundary, the next
++     * frame's glClear is misclassified as a mid-frame clear and rendered as a
++     * quad, needlessly consuming both staging rings and (before its attribute
++     * fix) corrupting the screen. */
++    g.p3d_pending = 0;
++
+     nova_tex_gc_collect();              /* free this slot's orphaned textures   */
+     nova_ring_gc_collect();             /* free ring buffers orphaned by growth */
+     nova_vbo_gc_collect();              /* free VBO storage orphaned by delete/respec */
+@@ -977,7 +1006,7 @@ void nova_fini(void) {
+     }
+     C3D_RenderTargetDelete(g.render_target_top);
+     if (g.render_target_top_right) C3D_RenderTargetDelete(g.render_target_top_right);
+-    C3D_RenderTargetDelete(g.render_target_bot);
++    if (g.render_target_bot) C3D_RenderTargetDelete(g.render_target_bot);
+     C3D_Fini();
+     g.initialized = 0;
+ }
+@@ -1004,8 +1033,13 @@ void nova_set_render_target(int target_mode) {
+         C3D_FrameDrawOn(g.render_target_top_right);
+         g.current_target = g.render_target_top_right;
+     } else if (target_mode == 2) {
+-        C3D_FrameDrawOn(g.render_target_bot);
+-        g.current_target = g.render_target_bot;
++        if (g.render_target_bot) {
++            C3D_FrameDrawOn(g.render_target_bot);
++            g.current_target = g.render_target_bot;
++        } else {
++            C3D_FrameDrawOn(g.render_target_top);
++            g.current_target = g.render_target_top;
++        }
+     } else {
+         /* Eye 0 / main "screen" → the POT app surface (presented to the LCD at
+          * swap). Falls back to the LCD directly if the app surface failed to
+@@ -1296,10 +1330,44 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+         return 0;
+     if (g.active_shader == NOVA_SHADER_CLIPSPACE)
+         return 0;
++    int firstVertex = is_elements ? 0 : first;
++    const void *converted_u16 = NULL;
++
++#ifdef NOVAGL_GZDOOM_COMPAT
++    /* PICA accepts 8/16-bit element indices only. GZDoom stores every index as
++     * uint32, so scan the submitted range, rebase its streams to the minimum
++     * referenced vertex and emit a transient u16 index list.  This keeps the
++     * 20-byte FFlatVertex VBO zero-copy even when global vertex ids exceed
++     * 65535, as long as this draw's local span fits.  Wider spans explicitly
++     * return to NovaGL's existing CPU-gather fallback below. */
++    if (is_elements && type == GL_UNSIGNED_INT) {
++        const uint32_t *src = (const uint32_t *)idx_src;
++        uint32_t min_index = UINT32_MAX, max_index = 0;
++        for (GLsizei i = 0; i < count; ++i) {
++            uint32_t value = src[i];
++            if (value < min_index) min_index = value;
++            if (value > max_index) max_index = value;
++        }
++        if (min_index > 0x7fffffffu || max_index - min_index > 0xffffu)
++            return 0;
++        const int bytes = count * (int)sizeof(uint16_t);
++        if (bytes > g.index_buf_size)
++            return 0;
++        uint16_t *dst = (uint16_t *)linear_alloc_ring(
++            g.index_buf, &g.index_buf_offset, bytes, g.index_buf_size);
++        if (!dst)
++            return 0;
++        for (GLsizei i = 0; i < count; ++i)
++            dst[i] = (uint16_t)(src[i] - min_index);
++        GSPGPU_FlushDataCache(dst, (u32)bytes);
++        converted_u16 = dst;
++        firstVertex = (int)min_index;
++    }
++#else
+     if (is_elements && type == GL_UNSIGNED_INT)
+         return 0;
++#endif
+
+-    const int firstVertex = is_elements ? 0 : first;
+     MsAttr pos, uv, col, nrm;
+     if (ms_resolve_attr(&g.va_vertex, 3, 3, firstVertex, &pos) != 1)
+         return 0;
+@@ -1309,10 +1377,22 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+     const int nrmr = lit ? ms_resolve_attr(&g.va_normal, 3, 3, firstVertex, &nrm) : 0;
+     if (uvr < 0 || colr < 0 || nrmr < 0)
+         return 0;
++    /* Every NovaGL vertex shader normalizes v2 as an unsigned-byte colour.
++     * A direct float colour stream would therefore be divided by 255 twice;
++     * let the packed staging path convert it instead. */
++    if (colr == 1 && col.fmt != GPU_UNSIGNED_BYTE)
++        return 0;
+
+     const void *gpuIdx = NULL;
+     int c3dType = C3D_UNSIGNED_SHORT;
+     if (is_elements) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++        if (type == GL_UNSIGNED_INT) {
++            gpuIdx = converted_u16;
++            c3dType = C3D_UNSIGNED_SHORT;
++        } else
++#endif
++        {
+         const int esz = (type == GL_UNSIGNED_SHORT) ? 2 : 1;
+         c3dType = (type == GL_UNSIGNED_SHORT) ? C3D_UNSIGNED_SHORT : C3D_UNSIGNED_BYTE;
+         if (g.bound_element_array_buffer > 0 && g.bound_element_array_buffer < NOVA_MAX_VBOS &&
+@@ -1330,6 +1410,7 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+             GSPGPU_FlushDataCache(staged, (u32) ibytes);
+             gpuIdx = staged;
+         }
++        }
+     }
+
+     C3D_AttrInfo *ai = C3D_GetAttrInfo();
+@@ -1369,8 +1450,14 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+
+     if (uvr != 1)
+         C3D_FixedAttribSet(1, 0.0f, 0.0f, 0.0f, 1.0f);
+-    if (colr != 1)
+-        C3D_FixedAttribSet(2, g.cur_color[0], g.cur_color[1], g.cur_color[2], g.cur_color[3]);
++    if (colr != 1) {
++        /* Fixed attributes bypass GPU_UNSIGNED_BYTE loader normalization, but
++         * the shaders unconditionally multiply v2 by 1/255. Supply byte-range
++         * values so glColor(1,1,1,1) remains white instead of near-black. */
++        C3D_FixedAttribSet(2,
++            g.cur_color[0] * 255.0f, g.cur_color[1] * 255.0f,
++            g.cur_color[2] * 255.0f, g.cur_color[3] * 255.0f);
++    }
+     if (lit && nrmr != 1)
+         C3D_FixedAttribSet(3, g.cur_normal[0], g.cur_normal[1], g.cur_normal[2], 0.0f);
+
+@@ -1943,4 +2030,4 @@ void glFinish(void) {
+         nova_wait_tag("[W] glFinish<");
+         g.p3d_pending = 0;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/clear.c b/src/clear.c
+index 8c5e9d7..788fa79 100644
+--- a/src/clear.c
++++ b/src/clear.c
+@@ -54,14 +54,23 @@ static void nova_clear_quad(int clear_color, int clear_depth) {
+      * GL far plane (1.0) maps to PICA 0.0
+      * GL near plane (0.0) maps to PICA -1.0 */
+     float pica_z = g.clear_depth - 1.0f;
+-    float r = g.clear_r, gc = g.clear_g, b = g.clear_b, a = g.clear_a;
+-
+-    float quad_verts[4 * 8] = {
+-        /* x,     y,     z,      w,       r, g,  b, a */
+-        -1.0f, -1.0f, pica_z, 1.0f,  r, gc, b, a,
+-         1.0f, -1.0f, pica_z, 1.0f,  r, gc, b, a,
+-         1.0f,  1.0f, pica_z, 1.0f,  r, gc, b, a,
+-        -1.0f,  1.0f, pica_z, 1.0f,  r, gc, b, a,
++    /* The clip-space shader normalizes v2 as an unsigned-byte colour even
++     * when the loader supplies floats. Feed byte-range values here, matching
++     * the fixed-colour path, so a 1.0 clear channel remains fully bright. */
++    float r = g.clear_r * 255.0f, gc = g.clear_g * 255.0f;
++    float b = g.clear_b * 255.0f, a = g.clear_a * 255.0f;
++
++    /* The clip-space shader has the fixed input contract
++     *   v0 = position, v1 = texcoord, v2 = colour.
++     * Keep an explicit dummy UV here. Feeding colour through v1 makes the
++     * shader interpret RG as texture coordinates and leaves v2 undefined;
++     * on PICA that produced the large white chevron seen after frame 1. */
++    float quad_verts[4 * 10] = {
++        /* x,     y,     z,      w,      u, v,   r, g,  b, a */
++        -1.0f, -1.0f, pica_z, 1.0f,  0, 0,  r, gc, b, a,
++         1.0f, -1.0f, pica_z, 1.0f,  0, 0,  r, gc, b, a,
++         1.0f,  1.0f, pica_z, 1.0f,  0, 0,  r, gc, b, a,
++        -1.0f,  1.0f, pica_z, 1.0f,  0, 0,  r, gc, b, a,
+     };
+
+     int bytes = sizeof(quad_verts);
+@@ -72,12 +81,13 @@ static void nova_clear_quad(int clear_color, int clear_depth) {
+
+     AttrInfo_Init(&g.attr_info);
+     AttrInfo_AddLoader(&g.attr_info, 0, GPU_FLOAT, 4); /* position */
+-    AttrInfo_AddLoader(&g.attr_info, 1, GPU_FLOAT, 4); /* color */
++    AttrInfo_AddLoader(&g.attr_info, 1, GPU_FLOAT, 2); /* dummy texcoord */
++    AttrInfo_AddLoader(&g.attr_info, 2, GPU_FLOAT, 4); /* color */
+     C3D_SetAttrInfo(&g.attr_info);
+
+     C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+     BufInfo_Init(bufInfo);
+-    BufInfo_Add(bufInfo, staged, 8 * sizeof(float), 2, 0x10);
++    BufInfo_Add(bufInfo, staged, 10 * sizeof(float), 3, 0x210);
+
+     /* Bypass the heavy MVP transform by using the clipspace passthrough shader */
+     if (g.shader_clipspace_dvlb) {
+@@ -214,4 +224,4 @@ void glClearDepth(GLclampd depth) {
+
+ void glClearStencil(GLint s) {
+     g.clear_stencil = s & 0xFF;
+-}
+\ No newline at end of file
++}
+diff --git a/src/context.h b/src/context.h
+index 554b6fa..42575f4 100644
+--- a/src/context.h
++++ b/src/context.h
+@@ -292,6 +292,7 @@ extern struct NovaState {
+     int uLoc_modelview;
+     int uLoc_texmtx;       /* GL_TEXTURE matrix stack -> vertex shader */
+     int uLoc_fogparams;
++    int uLoc_colorparams;
+
+     /* Basic fast-path shader: single combined MVP dp4 chain, no fog math,
+      * identity tex matrix. Selected when g.fog_enabled == 0 AND
+@@ -299,6 +300,7 @@ extern struct NovaState {
+     DVLB_s *shader_basic_dvlb;
+     shaderProgram_s shader_basic_program;
+     int uLoc_mvp_basic;
++    int uLoc_colorparams_basic;
+
+     /* texmtx variant: MVP combined + tex matrix applied (no fog).
+      * Selected when fog OFF and tex_mtx_is_identity == 0. */
+@@ -306,6 +308,7 @@ extern struct NovaState {
+     shaderProgram_s shader_texmtx_program;
+     int uLoc_mvp_texmtx;
+     int uLoc_texmtx_texmtx;
++    int uLoc_colorparams_texmtx;
+
+     /* clipspace variant: takes already-clip-space input and multiplies it
+      * by `projection` (= tilt * Zfix * caller_proj). Position is forwarded
+@@ -315,6 +318,7 @@ extern struct NovaState {
+     DVLB_s *shader_clipspace_dvlb;
+     shaderProgram_s shader_clipspace_program;
+     int uLoc_projection_clipspace;
++    int uLoc_colorparams_clipspace;
+     int clipspace_mode_enabled;
+
+     /* Lighting variant: outputs view + normalquat; PICA HW fragment lighting
+@@ -324,6 +328,14 @@ extern struct NovaState {
+     shaderProgram_s shader_lighting_program;
+     int uLoc_projection_lighting;
+     int uLoc_modelview_lighting;
++    int uLoc_colorparams_lighting;
++    /* GZDoom keeps per-vertex colour and per-material object/add colours as
++     * independent shader inputs. They cannot be folded into glColor when a
++     * colour array is enabled, so every NovaGL shader receives these two
++     * vectors explicitly. Defaults preserve normal fixed-function callers. */
++    GLfloat gzdoom_color_mul[4];
++    GLfloat gzdoom_color_add[4];
++    int gzdoom_color_dirty;
+     /* C3D lighting objects, (re)built from g.lights[]/g.mat_* by
+      * nova_apply_light_env(). lighting_active mirrors the per-draw decision so
+      * the TEV path knows to source GPU_FRAGMENT_PRIMARY_COLOR. light_dirty is
+@@ -684,6 +696,10 @@ static inline void gl_set_error(GLenum e) {
+ void nova_fbo_gc_collect(void);
+ void nova_fbo_gc_collect_all(void);
+
++#ifdef NOVAGL_GZDOOM_COMPAT
++void nova_gzdoom_set_vertex_color(const GLfloat *value);
++#endif
++
+ /* Animated boot splashscreen (src/splashscreen.c). Runs synchronously at the
+  * tail of nova_init_ex unless compiled out with -DNOVAGL_NO_SPLASHSCREEN=1
+  * (vitaGL's -DNO_SPLASHSCREEN=1 is accepted as an alias). */
+diff --git a/src/raster.c b/src/raster.c
+index 88b53fd..77807a8 100644
+--- a/src/raster.c
++++ b/src/raster.c
+@@ -4,6 +4,7 @@
+
+ #include "NovaGL.h"
+ #include "utils.h"
++#include <string.h>
+
+ /* Value fixed by the GL spec; defined locally if NovaGL.h lacks it. */
+ #ifndef GL_FRONT_AND_BACK
+@@ -421,6 +422,10 @@ void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
+ #ifndef NOVAGL_GL2_RETURN_DUMMY
+ #define NOVAGL_GL2_RETURN_DUMMY 0
+ #endif
++#ifdef NOVAGL_GZDOOM_COMPAT
++#undef NOVAGL_GL2_RETURN_DUMMY
++#define NOVAGL_GL2_RETURN_DUMMY 1
++#endif
+
+ GLuint glCreateShader(GLenum type) {
+     (void) type;
+@@ -478,8 +483,98 @@ void glGetProgramInfoLog(GLuint program, GLsizei maxLength, GLsizei *length, cha
+ void glDeleteShader(GLuint shader) { (void) shader; }
+ void glDeleteProgram(GLuint program) { (void) program; }
+
++#ifdef NOVAGL_GZDOOM_COMPAT
++enum {
++    GZD_U_PROJECTION = 100,
++    GZD_U_VIEW,
++    GZD_U_MODEL,
++    GZD_U_TEXTURE,
++    GZD_U_NORMAL_VIEW,
++    GZD_U_NORMAL_MODEL,
++    GZD_U_OBJECT_COLOR,
++    GZD_U_FOG_COLOR,
++    GZD_U_LIGHT_ATTR,
++    GZD_U_ALPHA_THRESHOLD,
++    GZD_U_ADD_COLOR
++};
++
++static GLfloat gzd_view[16] = {
++    1, 0, 0, 0, 0, 1, 0, 0,
++    0, 0, 1, 0, 0, 0, 0, 1
++};
++static GLfloat gzd_model[16] = {
++    1, 0, 0, 0, 0, 1, 0, 0,
++    0, 0, 1, 0, 0, 0, 0, 1
++};
++static GLfloat gzd_vertex_color[4] = { 1, 1, 1, 1 };
++static GLfloat gzd_object_color[4] = { 1, 1, 1, 1 };
++static GLfloat gzd_add_color[4] = { 0, 0, 0, 0 };
++
++static void gzd_apply_color(void)
++{
++    /* Preserve GZDoom's independent shader inputs. glColor is either the
++     * fixed attribute (no colour array) or ignored in favour of aColor (VBO),
++     * while object/add colour is applied by every NovaGL vertex shader. The
++     * old bridge premultiplied glColor here, so any enabled colour array
++     * silently discarded sky-cap/object colours and rendered them white. */
++    glColor4f(gzd_vertex_color[0], gzd_vertex_color[1],
++              gzd_vertex_color[2], gzd_vertex_color[3]);
++    memcpy(g.gzdoom_color_mul, gzd_object_color, sizeof(g.gzdoom_color_mul));
++    memcpy(g.gzdoom_color_add, gzd_add_color, sizeof(g.gzdoom_color_add));
++    g.gzdoom_color_add[3] = 0.0f; /* additive colour is RGB-only */
++    g.gzdoom_color_dirty = 1;
++}
++
++void nova_gzdoom_set_vertex_color(const GLfloat *value)
++{
++    if (!value) return;
++    memcpy(gzd_vertex_color, value, sizeof(gzd_vertex_color));
++    gzd_apply_color();
++}
++
++/* Column-major product matching GLSL's ViewMatrix * ModelMatrix. */
++static void gzd_apply_modelview(void)
++{
++    GLfloat result[16];
++    for (int col = 0; col < 4; ++col) {
++        for (int row = 0; row < 4; ++row) {
++            GLfloat sum = 0.0f;
++            for (int k = 0; k < 4; ++k)
++                sum += gzd_view[k * 4 + row] * gzd_model[col * 4 + k];
++            result[col * 4 + row] = sum;
++        }
++    }
++    GLenum oldmode = (GLenum)g.matrix_mode;
++    glMatrixMode(GL_MODELVIEW);
++    glLoadMatrixf(result);
++    glMatrixMode(oldmode);
++}
++
++static void gzd_load_matrix(GLenum mode, const GLfloat *value)
++{
++    GLenum oldmode = (GLenum)g.matrix_mode;
++    glMatrixMode(mode);
++    glLoadMatrixf(value);
++    glMatrixMode(oldmode);
++}
++#endif
++
+ GLint glGetUniformLocation(GLuint program, const char *name) {
+     (void) program;
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (!name) return -1;
++    if (!strcmp(name, "ProjectionMatrix")) return GZD_U_PROJECTION;
++    if (!strcmp(name, "ViewMatrix")) return GZD_U_VIEW;
++    if (!strcmp(name, "ModelMatrix")) return GZD_U_MODEL;
++    if (!strcmp(name, "TextureMatrix")) return GZD_U_TEXTURE;
++    if (!strcmp(name, "NormalViewMatrix")) return GZD_U_NORMAL_VIEW;
++    if (!strcmp(name, "NormalModelMatrix")) return GZD_U_NORMAL_MODEL;
++    if (!strcmp(name, "uObjectColor")) return GZD_U_OBJECT_COLOR;
++    if (!strcmp(name, "uFogColor")) return GZD_U_FOG_COLOR;
++    if (!strcmp(name, "uLightAttr")) return GZD_U_LIGHT_ATTR;
++    if (!strcmp(name, "uAlphaThreshold")) return GZD_U_ALPHA_THRESHOLD;
++    if (!strcmp(name, "uAddColor")) return GZD_U_ADD_COLOR;
++#endif
+     (void) name;
+     return -1;
+ }
+@@ -498,6 +593,17 @@ void glUniform1i(GLint location, GLint v0) {
+ }
+
+ void glUniform1f(GLint location, GLfloat v0) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (location == GZD_U_ALPHA_THRESHOLD) {
++        if (v0 >= 0.0f) {
++            glAlphaFunc(GL_GREATER, v0);
++            glEnable(GL_ALPHA_TEST);
++        } else {
++            glDisable(GL_ALPHA_TEST);
++        }
++        return;
++    }
++#endif
+     (void) location;
+     (void) v0;
+ }
+@@ -516,6 +622,11 @@ void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
+ }
+
+ void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++    const GLfloat value[4] = { v0, v1, v2, v3 };
++    glUniform4fv(location, 1, value);
++    return;
++#endif
+     (void) location;
+     (void) v0;
+     (void) v1;
+@@ -524,6 +635,27 @@ void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)
+ }
+
+ void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (count > 0 && value && !transpose) {
++        switch (location) {
++            case GZD_U_PROJECTION: gzd_load_matrix(GL_PROJECTION, value); return;
++            case GZD_U_VIEW:
++                memcpy(gzd_view, value, sizeof(gzd_view));
++                gzd_apply_modelview();
++                return;
++            case GZD_U_MODEL:
++                if (!memcmp(gzd_model, value, sizeof(gzd_model))) return;
++                memcpy(gzd_model, value, sizeof(gzd_model));
++                gzd_apply_modelview();
++                return;
++            case GZD_U_TEXTURE: gzd_load_matrix(GL_TEXTURE, value); return;
++            case GZD_U_NORMAL_VIEW:
++            case GZD_U_NORMAL_MODEL:
++                return; /* basic bridge does not enable PICA fragment lighting */
++            default: break;
++        }
++    }
++#endif
+     (void) location;
+     (void) count;
+     (void) transpose;
+@@ -537,11 +668,48 @@ void glUniform3fv(GLint location, GLsizei count, const GLfloat *value) {
+ }
+
+ void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (count > 0 && value) {
++        switch (location) {
++            case GZD_U_OBJECT_COLOR:
++                memcpy(gzd_object_color, value, sizeof(gzd_object_color));
++                gzd_apply_color();
++                return;
++            case GZD_U_ADD_COLOR:
++                memcpy(gzd_add_color, value, sizeof(gzd_add_color));
++                gzd_apply_color();
++                return;
++            case GZD_U_FOG_COLOR:
++                glFogfv(GL_FOG_COLOR, value);
++                return;
++            case GZD_U_LIGHT_ATTR:
++                /* uObjectColor is already light-level adjusted by GZDoom.
++                 * Multiplying by uLightAttr.a again double-darkens sectors.
++                 * Distance fog and dynamic lights remain explicit fallbacks. */
++                return;
++            default: break;
++        }
++    }
++#endif
+     (void) location;
+     (void) count;
+     (void) value;
+ }
+
++#ifdef NOVAGL_GZDOOM_COMPAT
++void glUniform2fv(GLint location, GLsizei count, const GLfloat *value)
++{
++    (void)location; (void)count; (void)value;
++}
++
++void glBindSampler(GLuint unit, GLuint sampler) { (void)unit; (void)sampler; }
++void glSamplerParameteri(GLuint sampler, GLenum pname, GLint param)
++{ (void)sampler; (void)pname; (void)param; }
++void glSamplerParameterf(GLuint sampler, GLenum pname, GLfloat param)
++{ (void)sampler; (void)pname; (void)param; }
++void glDrawBuffers(GLsizei n, const GLenum *bufs) { (void)n; (void)bufs; }
++#endif
++
+ void glUniform4iv(GLint location, GLsizei count, const GLint *value) {
+     (void) location;
+     (void) count;
+@@ -564,4 +732,4 @@ void glUniformBlockBinding(GLuint program, GLuint uniformBlockIndex, GLuint unif
+     (void) program;
+     (void) uniformBlockIndex;
+     (void) uniformBlockBinding;
+-}
+\ No newline at end of file
++}
+diff --git a/src/state.c b/src/state.c
+index 66cbba8..cd6f0e9 100644
+--- a/src/state.c
++++ b/src/state.c
+@@ -166,6 +166,9 @@ GPU_TESTFUNC stencil_func_to_gpu(GLenum f);
+
+ static int cap_known_unimpl(GLenum cap) {
+     switch (cap) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++        case GL_DEPTH_CLAMP:
++#endif
+         case GL_DITHER:
+         case GL_MULTISAMPLE:
+         case GL_SAMPLE_ALPHA_TO_COVERAGE:
+@@ -427,6 +430,30 @@ void glGetFloatv(GLenum pname, GLfloat *params) {
+     }
+ }
+
++#ifdef NOVAGL_GZDOOM_COMPAT
++void glGetBooleanv(GLenum pname, GLboolean *params) {
++    if (!params) return;
++    switch (pname) {
++        case GL_BLEND:
++        case GL_SCISSOR_TEST:
++        case GL_DEPTH_TEST:
++        case GL_CULL_FACE:
++        case GL_STENCIL_TEST:
++        case GL_ALPHA_TEST:
++        case GL_FOG:
++        case GL_TEXTURE_2D:
++            params[0] = glIsEnabled(pname);
++            return;
++        default: {
++            GLint value = 0;
++            glGetIntegerv(pname, &value);
++            params[0] = value ? GL_TRUE : GL_FALSE;
++            return;
++        }
++    }
++}
++#endif
++
+ void glGetIntegerv(GLenum pname, GLint *params) {
+     if (!params) return;
+
+@@ -479,6 +506,10 @@ void glGetIntegerv(GLenum pname, GLint *params) {
+             params[0] = (GLint) g.bound_read_fbo; return;
+         case GL_ACTIVE_TEXTURE:
+             params[0] = GL_TEXTURE0 + g.active_texture_unit; return;
++#ifdef NOVAGL_GZDOOM_COMPAT
++        case GL_CURRENT_PROGRAM:
++            params[0] = 0; return;
++#endif
+         case GL_CLIENT_ACTIVE_TEXTURE:
+             params[0] = GL_TEXTURE0 + g.client_active_texture_unit; return;
+         case GL_BLEND_SRC: params[0] = (GLint) g.blend_src; return;
+@@ -541,6 +572,10 @@ const GLubyte *glGetString(GLenum name) {
+     if (name == GL_VENDOR) return (const GLubyte *) "NovaGL";
+     if (name == GL_RENDERER) return (const GLubyte *) "PICA200 (3DS)";
+     if (name == GL_VERSION) return (const GLubyte *) "OpenGL ES-CM 1.1 NovaGL by efimandreev0";
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (name == GL_SHADING_LANGUAGE_VERSION)
++        return (const GLubyte *) "NovaGL GZDoom fixed-function bridge";
++#endif
+     if (name == GL_EXTENSIONS)
+         /* GL_ARB_vertex_buffer_object: OSG gates its VBO path on the ARB
+          * name specifically — without it every osg::Geometry draws through
+@@ -805,4 +840,4 @@ void glPopClientAttrib(void) {
+         g.va_texcoord.enabled = s->va_texcoord_enabled;
+         g.va_normal.enabled = s->va_normal_enabled;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/texture.c b/src/texture.c
+index c04b088..5d317dd 100644
+--- a/src/texture.c
++++ b/src/texture.c
+@@ -1337,8 +1337,12 @@ void novaGetTexCoordScale(GLuint texture, float *su, float *sv) {
+ #ifndef NOVA_DIAG_TEX_LIMIT
+ #define NOVA_DIAG_TEX_LIMIT 0
+ #endif
++#ifndef NOVA_DIAG_TEX_DUMP_RAW
++#define NOVA_DIAG_TEX_DUMP_RAW 0
++#endif
+ static int s_diag_tex_count = 0;
+
++#if NOVA_DIAG_TEX_DUMP_RAW
+ static int diag_input_bpp(GLenum format, GLenum type) {
+     if (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+         type == GL_UNSIGNED_SHORT_5_5_5_1 ||
+@@ -1371,6 +1375,7 @@ static void diag_dump_teximage(int idx, GLsizei w, GLsizei h, GLenum format, GLe
+     printf("[NovaDiag] tex#%d: dumped %d bytes (stride=%d) -> %s\n",
+            idx, stride * (int)h, stride, path);
+ }
++#endif
+
+ /* ── Cube-map texture objects (GL_TEXTURE_CUBE_MAP) ───────────────────────
+  * Backed by C3D_TexInitCube. Storage/upload/bind are complete; see api.md for
+@@ -1685,7 +1690,9 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
+                diag_idx, (unsigned)bound, (int)width, (int)height,
+                (unsigned)format, (unsigned)type, (unsigned)internalformat,
+                (int)g.unpack_alignment, pixels, (int)gpu_fmt);
++#if NOVA_DIAG_TEX_DUMP_RAW
+         diag_dump_teximage(diag_idx, width, height, format, type, pixels, g.unpack_alignment);
++#endif
+     }
+
+     slot->orig_width = width;
+@@ -1765,9 +1772,41 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
+     /* (The old "mip-state changed → re-init" check is gone: re-definition
+      * orphans unconditionally above, so the slot is never allocated here.) */
+     if (!slot->allocated) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++        /* Prefer fast VRAM while retaining a reserve for render targets. The
++         * New 3DS profile owns a 32 MiB linear arena and clamps source images
++         * to 256px, so a linear texture is now a safe fallback instead of a
++         * missing title/sky. The earlier VRAM-only policy rejected the
++         * 1454x1363 TITLEPIC outright and produced a fully black screen. */
++        const int max_level = want_mips ? C3D_TexCalcMaxLevel(pot_w, pot_h) : 0;
++        const size_t tex_bytes = nova_texcache_total_size(
++            pot_w, pot_h, gpu_fmt, (uint32_t)max_level + 1u);
++        const size_t vram_reserve = 1536u * 1024u;
++        bool ok = false;
++        bool on_vram = false;
++        if ((size_t)vramSpaceFree() >= tex_bytes + vram_reserve) {
++            C3D_TexInitParams params;
++            memset(&params, 0, sizeof(params));
++            params.width = (u16)pot_w;
++            params.height = (u16)pot_h;
++            params.maxLevel = (u8)max_level;
++            params.format = gpu_fmt;
++            params.type = GPU_TEX_2D;
++            params.onVram = true;
++            ok = C3D_TexInitWithParams(&slot->tex, NULL, params);
++            on_vram = ok;
++        }
++        if (!ok) {
++            ok = want_mips
++                ? C3D_TexInitMipmap(&slot->tex, pot_w, pot_h, gpu_fmt)
++                : C3D_TexInit(&slot->tex, pot_w, pot_h, gpu_fmt);
++        }
++        slot->is_vram = on_vram ? 1 : 0;
++#else
+         bool ok = want_mips
+             ? C3D_TexInitMipmap(&slot->tex, pot_w, pot_h, gpu_fmt)
+             : C3D_TexInit(&slot->tex, pot_w, pot_h, gpu_fmt);
++#endif
+         if (!ok) {
+             gl_set_error(GL_OUT_OF_MEMORY);
+             return;
+@@ -1843,9 +1882,9 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
+                (unsigned)slot->wrap_s, (unsigned)slot->wrap_t,
+                (unsigned)slot->min_filter, (unsigned)slot->mag_filter);
+
+-        // Dump SWIZZLED contents of the C3D_Tex so we can compare against the raw input.
+-        // If raw is readable in GIMP but this swizzled dump (de-swizzled offline) is garbled,
+-        // the bug is inside upload_page_*. If both look correct, the bug is at draw/UV time.
++#if NOVA_DIAG_TEX_DUMP_RAW
++        // Optional binary dump for low-level swizzle work. Metadata diagnostics
++        // stay cheap and never write multi-megabyte texture captures by default.
+         if (slot->allocated && slot->tex.data) {
+             int bpp = gpu_texfmt_bpp(slot->fmt);
+             size_t bytes = (size_t)slot->pot_w * (size_t)slot->pot_h * (size_t)bpp;
+@@ -1861,6 +1900,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
+                        diag_idx, bytes, spath);
+             }
+         }
++#endif
+     }
+ }
+
+@@ -2963,4 +3003,4 @@ void glMultiTexCoord2fARB(GLenum target, GLfloat s, GLfloat t) {
+ }
+
+ void glActiveTextureARB(GLenum texture) { glActiveTexture(texture); }
+-void glClientActiveTextureARB(GLenum texture) { glClientActiveTexture(texture); }
+\ No newline at end of file
++void glClientActiveTextureARB(GLenum texture) { glClientActiveTexture(texture); }
+diff --git a/src/utils.c b/src/utils.c
+index b0b031d..2205439 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -1210,6 +1210,31 @@ void apply_gpu_state(void) {
+         g.matrices_dirty = 1;
+         g.proj_dirty = g.mv_dirty = g.tex_mtx_dirty = 1;
+         g.fog_dirty = 1;
++        g.gzdoom_color_dirty = 1;
++    }
++
++    /* GZDoom object/add colour is independent of the vertex colour stream.
++     * Upload it after program selection because PICA uniform state is local
++     * to the bound shader. This is two vectors only when the material changes
++     * (or a cheaper shader variant becomes active), not per draw. */
++    if (g.gzdoom_color_dirty) {
++        int color_loc = -1;
++        switch (g.active_shader) {
++            case NOVA_SHADER_CLIPSPACE: color_loc = g.uLoc_colorparams_clipspace; break;
++            case NOVA_SHADER_LIGHTING:  color_loc = g.uLoc_colorparams_lighting;  break;
++            case NOVA_SHADER_BASIC:     color_loc = g.uLoc_colorparams_basic;     break;
++            case NOVA_SHADER_TEXMTX:    color_loc = g.uLoc_colorparams_texmtx;    break;
++            default:                    color_loc = g.uLoc_colorparams;           break;
++        }
++        if (color_loc >= 0) {
++            C3D_FVUnifSet(GPU_VERTEX_SHADER, color_loc,
++                          g.gzdoom_color_mul[0], g.gzdoom_color_mul[1],
++                          g.gzdoom_color_mul[2], g.gzdoom_color_mul[3]);
++            C3D_FVUnifSet(GPU_VERTEX_SHADER, color_loc + 1,
++                          g.gzdoom_color_add[0], g.gzdoom_color_add[1],
++                          g.gzdoom_color_add[2], 0.0f);
++        }
++        g.gzdoom_color_dirty = 0;
+     }
+
+     /* --- 2. Matrices & Uniforms ------------------------------------------- */
+diff --git a/src/utils.h b/src/utils.h
+index dc0ea89..4a715d3 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -220,13 +220,30 @@ void apply_gpu_state(void);
+  * an empty command list raises none, and waiting on it deadlocks). The
+  * function-like macros below shadow the citro3d names inside NovaGL only;
+  * the parenthesised calls inside the shims bypass macro expansion. */
++static inline void nova_cmd_buffer_guard_(void)
++{
++    /* GZDoom can issue several thousand small world draws in one frame.  A
++     * single 512 KiB citro3d command list is not large enough for MAP01, and
++     * GPUCMD_Add deliberately panics instead of overflowing it.  Split while
++     * there is still ample room for C3Di_UpdateContext plus the draw packet.
++     * C3D_FrameSplit preserves PICA state and draw order; it only starts a new
++     * command list inside the same logical frame. */
++    /* C3D_GetCmdBufUsage() is updated when a list is submitted; it is not the
++     * live fill level while the CPU is still appending commands.  The libctru
++     * globals are the authoritative word offset/capacity for that purpose. */
++    if (gpuCmdBufSize && gpuCmdBufOffset >= (gpuCmdBufSize * 3u) / 4u)
++        C3D_FrameSplit(0);
++}
++
+ static inline void nova_c3d_draw_arrays_(GPU_Primitive_t primitive, int first, int size)
+ {
++    nova_cmd_buffer_guard_();
+     g.p3d_pending = 1;
+     (C3D_DrawArrays)(primitive, first, size);
+ }
+ static inline void nova_c3d_draw_elements_(GPU_Primitive_t primitive, int count, int type, const void* indices)
+ {
++    nova_cmd_buffer_guard_();
+     g.p3d_pending = 1;
+     (C3D_DrawElements)(primitive, count, type, indices);
+ }
+diff --git a/src/vertex_array.c b/src/vertex_array.c
+index 4045fd9..95cc6e6 100644
+--- a/src/vertex_array.c
++++ b/src/vertex_array.c
+@@ -182,9 +182,15 @@ void glDeleteVertexArrays(GLsizei n, const GLuint *arrays) {
+ // indexes (from glGetAttribLocation, wich we return -1 anyway) fall trough to the
+ // warn. not perfect but cover the typical case.
+ #define NOVA_ATTR_POSITION 0
++#ifdef NOVAGL_GZDOOM_COMPAT
++#define NOVA_ATTR_TEXCOORD 1
++#define NOVA_ATTR_COLOR    2
++#define NOVA_ATTR_NORMAL   4
++#else
+ #define NOVA_ATTR_NORMAL   2
+ #define NOVA_ATTR_COLOR    3
+ #define NOVA_ATTR_TEXCOORD 8
++#endif
+
+ static void warn_unknown_attrib(GLuint index) {
+     static int warned = 0;
+@@ -228,4 +234,15 @@ void glEnableVertexAttribArray(GLuint index) {
+ void glDisableVertexAttribArray(GLuint index) {
+     GLenum cap = generic_attrib_cap(index);
+     if (cap) glDisableClientState(cap);
+-}
+\ No newline at end of file
++}
++
++#ifdef NOVAGL_GZDOOM_COMPAT
++void glVertexAttrib4fv(GLuint index, const GLfloat *value)
++{
++    if (!value) return;
++    if (index == NOVA_ATTR_COLOR)
++        nova_gzdoom_set_vertex_color(value);
++    else if (index == NOVA_ATTR_NORMAL)
++        glNormal3f(value[0], value[1], value[2]);
++}
++#endif

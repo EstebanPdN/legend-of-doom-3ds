@@ -58,8 +58,19 @@ EXTERN_CVAR(Bool, joy_xinput)
 
 // PUBLIC DATA DEFINITIONS -------------------------------------------------
 
-CUSTOM_CVARD(Bool, use_joystick, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL, "enables input from the joystick if it is present") 
+#ifdef __3DS__
+#define DEFAULT_USE_JOYSTICK true
+#else
+#define DEFAULT_USE_JOYSTICK false
+#endif
+
+CUSTOM_CVARD(Bool, use_joystick, DEFAULT_USE_JOYSTICK, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL, "enables input from the joystick if it is present")
 {
+#ifdef __3DS__
+	// The built-in 3DS controls are exposed as SDL joystick input. An old
+	// desktop-style config containing use_joystick=false must not disable them.
+	if (!self) self = true;
+#endif
 #ifdef _WIN32
 	joy_ps2raw.Callback();
 	joy_dinput.Callback();

@@ -38,8 +38,13 @@
 #include "m_joy.h"
 #include "keydef.h"
 
-// Very small deadzone so that floating point magic doesn't happen
+// Physical 3DS sticks need a real center dead zone. Desktop joystick behavior
+// remains unchanged.
+#ifdef __3DS__
+#define MIN_DEADZONE 0.15f
+#else
 #define MIN_DEADZONE 0.000001f
+#endif
 
 class SDLInputJoystick: public IJoystickConfig
 {
@@ -252,7 +257,20 @@ protected:
 	int					NumAxes;
 	int					NumHats;
 };
-const EJoyAxis SDLInputJoystick::DefaultAxes[5] = {JOYAXIS_Side, JOYAXIS_Forward, JOYAXIS_Pitch, JOYAXIS_Yaw, JOYAXIS_Up};
+const EJoyAxis SDLInputJoystick::DefaultAxes[5] =
+{
+	JOYAXIS_Side,
+	JOYAXIS_Forward,
+#ifdef __3DS__
+	// SDL N3DS axes 2/3 are C-stick X/Y respectively.
+	JOYAXIS_Yaw,
+	JOYAXIS_Pitch,
+#else
+	JOYAXIS_Pitch,
+	JOYAXIS_Yaw,
+#endif
+	JOYAXIS_Up
+};
 
 class SDLInputJoystickManager
 {
@@ -298,9 +316,28 @@ protected:
 };
 static SDLInputJoystickManager *JoystickManager;
 
+static bool JoystickInputEnabled()
+{
+#ifdef __3DS__
+	// The built-in Circle Pad and C-Stick are the console's primary movement
+	// controls.  A migrated desktop config can contain use_joystick=false;
+	// button events would still arrive through SDL's event queue while this
+	// flag silently forced every continuous axis to zero.  Never let that
+	// stale setting disable the fixed, built-in 3DS controller.
+	return true;
+#else
+	return use_joystick;
+#endif
+}
+
 void I_StartupJoysticks()
 {
 #ifndef NO_SDL_JOYSTICK
+	#ifdef __3DS__
+	// A 3DS has one built-in controller; disabling joystick input would leave
+	// the application without its primary controls, including on old configs.
+	use_joystick = true;
+	#endif
 	if(SDL_InitSubSystem(SDL_INIT_JOYSTICK) >= 0)
 		JoystickManager = new SDLInputJoystickManager();
 #endif
@@ -328,7 +365,7 @@ void I_GetAxes(float axes[NUM_JOYAXIS])
 	{
 		axes[i] = 0;
 	}
-	if (use_joystick && JoystickManager)
+	if (JoystickInputEnabled() && JoystickManager)
 	{
 		JoystickManager->AddAxes(axes);
 	}
@@ -336,7 +373,7 @@ void I_GetAxes(float axes[NUM_JOYAXIS])
 
 void I_ProcessJoysticks()
 {
-	if (use_joystick && JoystickManager)
+	if (JoystickInputEnabled() && JoystickManager)
 		JoystickManager->ProcessInput();
 }
 

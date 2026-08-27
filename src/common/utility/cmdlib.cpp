@@ -562,7 +562,7 @@ void CreatePath(const char *fn)
 	{
 		return;
 	}
-	p = copy = strdup(fn);
+	p = copy = copystring(fn);
 	do
 	{
 		p = strchr(p + 1, '/');
@@ -867,6 +867,21 @@ FString NicePath(const char *path)
 {
 #ifdef _WIN32
 	return ExpandEnvVars(path);
+#elif defined(__3DS__)
+	if (path == nullptr || *path == '\0')
+	{
+		return FString("");
+	}
+	if (*path != '~')
+	{
+		return ExpandEnvVars(path);
+	}
+	FString where("sdmc:/3ds/legend-of-doom");
+	if (path[1] == '/')
+	{
+		where += ExpandEnvVars(path + 1);
+	}
+	return where;
 #else
 	if (path == NULL || *path == '\0')
 	{
@@ -1084,4 +1099,3 @@ void uppercopy(char* to, const char* from)
 	for (; i < 8; i++)
 		to[i] = 0;
 }
-

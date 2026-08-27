@@ -544,6 +544,19 @@ static inline int joyint(double val)
 	}
 }
 
+#ifdef __3DS__
+// The New 3DS C-stick has only a few millimetres of travel. The desktop
+// defaults below produce about 246 degrees/s horizontally and 394 degrees/s
+// vertically at 35 tics/s, which makes small nub motions jump the camera.
+// Keep both axes at a controllable ~123 degrees/s; the joystick menu's global
+// and per-axis multipliers remain available for personal adjustment.
+static constexpr double JoyYawUnitsPerTic = 640.0;
+static constexpr double JoyPitchUnitsPerTic = 640.0;
+#else
+static constexpr double JoyYawUnitsPerTic = 1280.0;
+static constexpr double JoyPitchUnitsPerTic = 2048.0;
+#endif
+
 FBaseCVar* G_GetUserCVar(int playernum, const char* cvarname)
 {
 	if ((unsigned)playernum >= MAXPLAYERS || !playeringame[playernum])
@@ -708,11 +721,11 @@ void G_BuildTiccmd (ticcmd_t *cmd)
 
 	if (joyaxes[JOYAXIS_Pitch] != 0)
 	{
-		G_AddViewPitch(joyint(joyaxes[JOYAXIS_Pitch] * 2048));
+		G_AddViewPitch(joyint(joyaxes[JOYAXIS_Pitch] * JoyPitchUnitsPerTic));
 	}
 	if (joyaxes[JOYAXIS_Yaw] != 0)
 	{
-		G_AddViewAngle(joyint(-1280 * joyaxes[JOYAXIS_Yaw]));
+		G_AddViewAngle(joyint(-JoyYawUnitsPerTic * joyaxes[JOYAXIS_Yaw]));
 	}
 
 	side -= joyint(sidemove[speed] * joyaxes[JOYAXIS_Side]);

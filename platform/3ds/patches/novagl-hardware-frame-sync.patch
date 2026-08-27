@@ -1,0 +1,50 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -383,7 +383,9 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+     apply_depth_map();
+
+     /* Resolve frame buffering depth K (runtime override > compile default),
+-     * clamp to [1,3]. K==1 -> SYNCDRAW (CPU waits); K>1 -> async (flag 0). */
++     * clamp to [1,3]. C3D_FrameBegin always waits for an occupied GPU queue;
++     * SYNCDRAW additionally waits for the display counters before that check.
++     * NovaGL already performs top-screen VBlank pacing in novaSwapBuffers. */
+     int K = (s_pending_frame_buffers > 0) ? s_pending_frame_buffers : NOVAGL_FRAME_BUFFERS;
+     if (K < 1) K = 1;
+     if (K > 3) K = 3;
+@@ -392,7 +394,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+     g.frame_slot = 0;
+     g.swap_interval = NOVAGL_VSYNC;
+     g.early_z_allowed = 1;
+-    g.c3d_frame_flag = (K > 1) ? 0 : C3D_FRAME_SYNCDRAW;
++    g.c3d_frame_flag = 0;
+
+     /* One vertex + index ring PER frame slot (full per-slot capacity), so the
+      * GPU reading slot s's data is never overwritten by the CPU until that slot
+@@ -411,7 +413,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+             if (g.index_buf_slots[i])        { linearFree(g.index_buf_slots[i]);        g.index_buf_slots[i] = NULL; }
+             if (i == 0) { K = 1; } else { K = i; }
+             g.frame_buffers = K;
+-            g.c3d_frame_flag = (K > 1) ? 0 : C3D_FRAME_SYNCDRAW;
++            g.c3d_frame_flag = 0;
+             break;
+         }
+     }
+@@ -900,7 +902,8 @@ void novaSwapBuffers(void) {
+     /* Rotate to the next frame slot. The vertex/index rings and the orphan GC
+      * buckets for THIS slot were last used `frame_buffers` frames ago, so the
+      * GPU has finished them — they're safe to reuse/free now. (K==1 is the old
+-     * 1-frame deferral, safe because C3D_FrameBegin below runs SYNCDRAW.) */
++     * 1-frame deferral, safe because C3D_FrameBegin below always waits for the
++     * preceding queue even without the redundant display-counter sync.) */
+     g.frame_slot = (g.frame_slot + 1) % g.frame_buffers;
+
+     nova_fbo_gc_collect();              /* free this slot's orphaned FBO targets */
+@@ -911,6 +914,6 @@ void novaSwapBuffers(void) {
+      * wait sites the tags exist to expose. */
+     if (log_stage) nova_hw_stage("swap-before-next-frame-begin", 0.0f);
+-    C3D_FrameBegin(g.c3d_frame_flag);   /* SYNCDRAW (K==1) waits; async (K>1) doesn't */
++    C3D_FrameBegin(g.c3d_frame_flag);   /* zero: queue fence without duplicate display sync */
+     if (log_stage) nova_hw_stage("swap-after-next-frame-begin", C3D_GetCmdBufUsage());
+     ++hw_swap_count;
+ 

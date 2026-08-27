@@ -4,6 +4,9 @@
 #include <string.h>
 #include <float.h>
 #include <math.h>
+#ifdef __3DS__
+#include <alloca.h>
+#endif
 #include <limits.h>
 #include <stdarg.h>
 #include <errno.h>

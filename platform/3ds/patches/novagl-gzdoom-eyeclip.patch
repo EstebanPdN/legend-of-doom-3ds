@@ -1,0 +1,208 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -1179,9 +1179,9 @@
+ }
+
+ /* Clip a model-space polygon against one linear plane. Plane 0 is GZDoom's
+- * world-space user clip plane; plane 1 is PICA's z+w near plane. Interpolating
+- * model vertices by the plane-distance t is exact because both transforms are
+- * linear. A triangle can grow by at most one vertex per plane. */
++ * world-space user clip plane; plane 1 is PICA's z+w near plane; plane 2 is
++ * the perspective eye plane w=epsilon. Interpolating model vertices by the
++ * plane-distance t is exact because all three distances are linear. */
+ static inline float nova_modelv_plane_distance(const NovaModelV *p, int plane,
+                                                 float ax, float ay, float az, float aw) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
+@@ -1218,7 +1218,8 @@
+  * near clipping, then redraw through the SAME shader so fog/texmtx/depth remain
+  * intact. Returns 1 if it handled the batch, else 0. */
+ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t *flat,
+-                                int count, int stride, int pos_elements) {
++                                int count, int stride, int pos_elements,
++                                int force_eye_clip) {
+     (void)prim;
+     if (count < 3) return 0;
+     if (mode != GL_TRIANGLES && mode != GL_TRIANGLE_FAN &&
+@@ -1235,6 +1236,12 @@
+     Mtx_Multiply(&mvp, &g.final_proj_cached, &g.mv_stack[g.mv_sp]);
+     const C3D_FVec rz = mvp.r[2], rw = mvp.r[3];
+     float ax = rz.x + rw.x, ay = rz.y + rw.y, az = rz.z + rw.z, aw = rz.w + rw.w;
++    /* PICA's perspective interpolator loses useful UV precision when a
++     * clipped edge is left almost exactly on w=0. Keep the new edge a small,
++     * stable distance in front of the eye; 1/4096 produced the angle-driven
++     * vertical texture bands captured in dump 234259. */
++    const float eye_epsilon = 1.0f / 16.0f;
++    float ex = rw.x, ey = rw.y, ez = rw.z, ew = rw.w - eye_epsilon;
+
+     const NovaModelV *vin = (const NovaModelV *) flat;
+ #ifdef NOVAGL_GZDOOM_COMPAT
+@@ -1246,7 +1249,7 @@
+     /* Depth clamp covers the ordinary GZDoom world path and no user plane is
+      * active there. In that overwhelmingly common case there is nothing this
+      * CPU clipper can do, so do not rescan the staged vertices. */
+-    if (!near_clip && !user_clip) return 0;
++    if (!near_clip && !user_clip && !force_eye_clip) return 0;
+
+     /* Pass 1 — skip all CPU work unless a referenced vertex actually lies
+      * outside either active plane. */
+@@ -1254,7 +1257,8 @@
+     for (int i = 0; i < count; i++) {
+         const NovaModelV *p = &vin[i];
+         if ((near_clip && ax * p->x + ay * p->y + az * p->z + aw < 0.0f) ||
+-            (user_clip && nova_modelv_plane_distance(p, 0, ax, ay, az, aw) < 0.0f)) {
++            (user_clip && nova_modelv_plane_distance(p, 0, ax, ay, az, aw) < 0.0f) ||
++            (force_eye_clip && nova_modelv_plane_distance(p, 2, ex, ey, ez, ew) < 0.0f)) {
+             crosses = 1;
+             break;
+         }
+@@ -1273,9 +1277,9 @@
+         case GL_QUADS:         in_tris = (count / 4) * 2; break;
+         default:               return 0;
+     }
+-    /* A triangle clipped by two planes has at most five polygon vertices,
+-     * which fan-triangulate to at most nine output vertices. */
+-    int out_bytes = in_tris * 9 * 24;
++    /* A triangle clipped by three planes has at most six polygon vertices,
++     * which fan-triangulate to at most twelve output vertices. */
++    int out_bytes = in_tris * 12 * 24;
+     if (out_bytes > g.client_array_buf_size) return 0;
+     NovaModelV *out = (NovaModelV *) linear_alloc_ring(
+         g.client_array_buf, &g.client_array_buf_offset, out_bytes, g.client_array_buf_size);
+@@ -1331,13 +1335,18 @@
+             poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
+                                               1, ax, ay, az, aw);
+             if (poly_count < 3) continue;
+-        } else {
+-            memcpy(poly_b, poly_a, (size_t)poly_count * sizeof(NovaModelV));
++            memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
+         }
++        if (force_eye_clip) {
++            poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
++                                              2, ex, ey, ez, ew);
++            if (poly_count < 3) continue;
++            memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
++        }
+         for (int k = 1; k + 1 < poly_count; k++) {
+-            out[out_count++] = poly_b[0];
+-            out[out_count++] = poly_b[k];
+-            out[out_count++] = poly_b[k + 1];
++            out[out_count++] = poly_a[0];
++            out[out_count++] = poly_a[k];
++            out[out_count++] = poly_a[k + 1];
+         }
+     }
+     if (out_count == 0) return 1; /* whole batch behind near — nothing to draw */
+@@ -1350,8 +1359,9 @@
+ }
+ #else
+ static inline int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t *flat,
+-                                       int count, int stride, int pos_elements) {
++                                       int count, int stride, int pos_elements, int force_eye_clip) {
+     (void) mode; (void) prim; (void) flat; (void) count; (void) stride; (void) pos_elements;
++    (void) force_eye_clip;
+     return 0;
+ }
+ #endif
+@@ -1678,11 +1688,19 @@
+      * walk when both planes are inactive. */
+     const int near_clip = !g.depth_clamp_enabled;
+     const int user_clip = nova_gzdoom_user_clip_active();
++    /* PICA does not reliably clip primitives that cross w=0.  GZDoom uses
++     * fans for walls, indexed triangles/fans for floors and four-vertex
++     * strips for sprites, so limiting this test to wall fans leaves the exact
++     * camera-dependent floor holes and exploded actors seen in the dumps.
++     * Scan every triangle topology, but only stage the rare MIXED-sign draw;
++     * batches wholly behind the eye are rejected without copying. */
++    const int eye_clip = mode == GL_TRIANGLES || mode == GL_TRIANGLE_FAN ||
++                         mode == GL_TRIANGLE_STRIP || mode == GL_QUADS;
+ #if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
+     const int geom_probe = nova_geom_probe_begin();
+-    if (!near_clip && !user_clip && !geom_probe) return 0;
++    if (!near_clip && !user_clip && !eye_clip && !geom_probe) return 0;
+ #else
+-    if (!near_clip && !user_clip) return 0;
++    if (!near_clip && !user_clip && !eye_clip) return 0;
+ #endif
+
+     const uint8_t *base;
+@@ -1729,6 +1747,10 @@
+     }
+ #endif
+
++    int needs_other_clip = 0;
++    int eye_inside = 0;
++    int eye_outside = 0;
++    uint32_t first_eye_bad = 0;
+     for (GLsizei i = 0; i < count; ++i) {
+         uint32_t vertex_index;
+         if (!is_elements) {
+@@ -1773,17 +1795,30 @@
+             ax * p[0] + ay * p[1] + az * p[2] + aw < 0.0f;
+         int outside_user = user_clip &&
+             nova_gzdoom_user_clip_distance(p[0], p[1], p[2]) < 0.0f;
+-        if (outside_near || outside_user) {
++        const float eye_epsilon = 1.0f / 16.0f;
++        const float eye_distance =
++            rw.x * p[0] + rw.y * p[1] + rw.z * p[2] + rw.w - eye_epsilon;
++        int outside_eye = eye_clip && eye_distance < 0.0f;
++        if (eye_clip) {
++            if (outside_eye) {
++                if (!eye_outside) first_eye_bad = vertex_index;
++                eye_outside = 1;
++            } else {
++                eye_inside = 1;
++            }
++        }
++        if (outside_near || outside_user || outside_eye) {
+ #if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
+             static int s_near_trace_count = 0;
+             if (s_near_trace_count < 16) {
+                 printf("[NovaClip] staged CPU clip count=%d indexed=%d type=0x%X first_bad=%u plane=%s\n",
+                        (int)count, is_elements, (unsigned)type,
+-                       (unsigned)vertex_index, outside_user ? "user" : "near");
++                       (unsigned)vertex_index,
++                       outside_user ? "user" : (outside_eye ? "eye" : "near"));
+                 s_near_trace_count++;
+             }
+ #endif
+-            return 1;
++            if (outside_near || outside_user) needs_other_clip = 1;
+         }
+     }
+ #if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
+@@ -1804,7 +1839,14 @@
+         }
+     }
+ #endif
+-    return 0;
++    if (eye_outside) {
++        /* Every referenced vertex is behind the eye: no triangle can produce
++         * visible pixels, and gathering/clipping it would only burn CPU. */
++        if (!eye_inside) return 3;
++        (void)first_eye_bad;
++        return 2;
++    }
++    return needs_other_clip;
+ }
+ #endif
+
+@@ -1894,6 +1936,8 @@
+ #if defined(NOVAGL_GZDOOM_COMPAT) && !defined(NOVAGL_NO_NEAR_CLIP)
+     force_staged_near_clip = gzdoom_draw_needs_near_clip(
+         mode, first, count, is_elements, type, idx_src);
++    if (force_staged_near_clip == 3)
++        return;
+ #endif
+
+     if (!force_staged_near_clip && !is_elements && !g.lighting_active &&
+@@ -2270,7 +2314,8 @@
+          * Wolfenstein-RPG walls under the real projection) before they reach
+          * PICA, which can't near-clip them. Falls through to the normal draw
+          * when nothing crosses near (the common case). */
+-        if (!nova_basic_near_clip(mode, prim, dst_start, count, internal_stride, pos_elements)) {
++        if (!nova_basic_near_clip(mode, prim, dst_start, count, internal_stride,
++                                  pos_elements, force_staged_near_clip == 2)) {
+             draw_packed_run(mode, prim, dst_start, count, internal_stride, pos_elements);
+         }
+     }

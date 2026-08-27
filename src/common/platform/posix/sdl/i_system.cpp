@@ -58,6 +58,9 @@
 #include "c_cvars.h"
 #include "palutil.h"
 #include "st_start.h"
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 
 #ifndef NO_GTK
@@ -122,7 +125,11 @@ void Unix_I_FatalError(const char* errortext)
 
 void I_ShowFatalError(const char *message)
 {
-#ifdef __APPLE__
+#ifdef __3DS__
+	I_3DSWriteFatalLog(message);
+	fprintf(stderr, "Nintendo 3DS fatal error: %s\n", message);
+	fflush(stderr);
+#elif defined(__APPLE__)
 	Mac_I_FatalError(message);
 #elif defined __unix__
 	Unix_I_FatalError(message);
@@ -137,17 +144,26 @@ void CalculateCPUSpeed()
 
 void CleanProgressBar()
 {
+#ifdef __3DS__
+	return;
+#else
 	if (!isatty(STDOUT_FILENO)) return;
 	struct winsize sizeOfWindow;
 	ioctl(STDOUT_FILENO, TIOCGWINSZ, &sizeOfWindow);
 	fprintf(stdout,"\0337\033[%d;%dH\033[0J\0338",sizeOfWindow.ws_row, 0);
 	fflush(stdout);
+#endif
 }
 
 static int ProgressBarCurPos, ProgressBarMaxPos;
 
 void RedrawProgressBar(int CurPos, int MaxPos)
 {
+#ifdef __3DS__
+	ProgressBarCurPos = CurPos;
+	ProgressBarMaxPos = MaxPos;
+	return;
+#else
 	if (!isatty(STDOUT_FILENO)) return;
 	CleanProgressBar();
 	struct winsize sizeOfWindow;
@@ -169,6 +185,7 @@ void RedrawProgressBar(int CurPos, int MaxPos)
 	fflush(stdout);
 	ProgressBarCurPos = CurPos;
 	ProgressBarMaxPos = MaxPos;
+#endif
 }
 
 void I_PrintStr(const char *cp)
@@ -231,6 +248,9 @@ void I_PrintStr(const char *cp)
 
 int I_PickIWad (WadStuff *wads, int numwads, bool showwin, int defaultiwad)
 {
+#ifdef __3DS__
+	return defaultiwad;
+#else
 	int i;
 
 	if (!showwin)
@@ -321,6 +341,7 @@ int I_PickIWad (WadStuff *wads, int numwads, bool showwin, int defaultiwad)
 	if (scanf ("%d", &i) != 1 || i > numwads)
 		return -1;
 	return i-1;
+#endif
 }
 
 void I_PutInClipboard (const char *str)

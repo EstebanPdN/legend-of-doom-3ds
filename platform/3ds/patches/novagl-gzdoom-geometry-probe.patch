@@ -1,0 +1,267 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -76,7 +76,9 @@ endif ()
+ # Individual knobs (also implied by NOVAGL_SPEEDHACKS via context.h).
+ option(NOVAGL_NO_DEBUG "Strip per-draw GL validation + pointer guards" OFF)
+ if (NOVAGL_NO_DEBUG)
+     target_compile_definitions(NovaGL PRIVATE NOVAGL_NO_DEBUG=1)
++else ()
++    target_compile_definitions(NovaGL PRIVATE NOVAGL_NO_DEBUG=0)
+ endif ()
+
+ option(NOVAGL_DRAW_SPEEDHACK "Tighter vertex-ring alignment + trust caller pointers" OFF)
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 2b91ab8..79d1ea7 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -12,6 +12,7 @@
+
+ #include "context.h"
+ #include <math.h>
++#include <stdio.h>
+
+ #include <3ds.h>
+ #include <citro3d.h>
+@@ -1375,7 +1375,8 @@ typedef struct {
+ } MsAttr;
+
+ /* 1 = streamable, 0 = disabled (use fixed), -1 = enabled but not streamable */
+-static int ms_resolve_attr(const NovaVertArray *va, int minComps, int maxComps, int firstVertex, MsAttr *out) {
++static int ms_resolve_attr(const NovaVertArray *va, int minComps, int maxComps,
++                           int firstVertex, int lastVertex, MsAttr *out) {
+     if (!va->enabled)
+         return 0;
+     if (va->vbo_id <= 0 || va->vbo_id >= NOVA_MAX_VBOS)
+@@ -1399,7 +1400,15 @@ static int ms_resolve_attr(const NovaVertArray *va, int minComps, int maxComps,
+     int stride = va->stride ? va->stride : va->size * esize;
+     if (stride <= 0 || stride > 255)
+         return -1;
+-    const uint8_t *p = (const uint8_t *) slot->data + (uintptr_t) va->pointer + (size_t) firstVertex * (size_t) stride;
++    const uintptr_t attr_offset = (uintptr_t)va->pointer;
++    const size_t elem_bytes = (size_t)va->size * (size_t)esize;
++    if (firstVertex < 0 || lastVertex < firstVertex ||
++        attr_offset > (uintptr_t)slot->size ||
++        (size_t)lastVertex > (SIZE_MAX - (size_t)attr_offset - elem_bytes) / (size_t)stride ||
++        (size_t)attr_offset + (size_t)lastVertex * (size_t)stride + elem_bytes > (size_t)slot->size)
++        return -2; /* referenced vertex lies outside this VBO: skip, never GPU-fetch it */
++    const uint8_t *p = (const uint8_t *)slot->data + attr_offset +
++                       (size_t)firstVertex * (size_t)stride;
+     /* PICA fetch wants element-aligned bases. */
+     if ((uintptr_t) p & (uintptr_t) (esize - 1))
+         return -1;
+@@ -1419,6 +1428,7 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+     if (g.active_shader == NOVA_SHADER_CLIPSPACE)
+         return 0;
+     int firstVertex = is_elements ? 0 : first;
++    int lastVertex = is_elements ? 0 : first + count - 1;
+     const void *converted_u16 = NULL;
+
+ #ifdef NOVAGL_GZDOOM_COMPAT
+@@ -1450,19 +1460,33 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+         GSPGPU_FlushDataCache(dst, (u32)bytes);
+         converted_u16 = dst;
+         firstVertex = (int)min_index;
++        lastVertex = (int)max_index;
+     }
+ #else
+     if (is_elements && type == GL_UNSIGNED_INT)
+         return 0;
+ #endif
+
++    if (is_elements && type != GL_UNSIGNED_INT) {
++        uint32_t max_index = 0;
++        for (GLsizei i = 0; i < count; ++i) {
++            uint32_t value = type == GL_UNSIGNED_SHORT
++                ? ((const uint16_t *)idx_src)[i] : ((const uint8_t *)idx_src)[i];
++            if (value > max_index) max_index = value;
++        }
++        lastVertex = (int)max_index;
++    }
++
+     MsAttr pos, uv, col, nrm;
+-    if (ms_resolve_attr(&g.va_vertex, 3, 3, firstVertex, &pos) != 1)
++    int posr = ms_resolve_attr(&g.va_vertex, 3, 3, firstVertex, lastVertex, &pos);
++    if (posr == -2) return 1;
++    if (posr != 1)
+         return 0;
+     const int lit = g.lighting_active;
+-    const int uvr = ms_resolve_attr(&g.va_texcoord, 2, 2, firstVertex, &uv);
+-    const int colr = ms_resolve_attr(&g.va_color, 4, 4, firstVertex, &col);
+-    const int nrmr = lit ? ms_resolve_attr(&g.va_normal, 3, 3, firstVertex, &nrm) : 0;
++    const int uvr = ms_resolve_attr(&g.va_texcoord, 2, 2, firstVertex, lastVertex, &uv);
++    const int colr = ms_resolve_attr(&g.va_color, 4, 4, firstVertex, lastVertex, &col);
++    const int nrmr = lit ? ms_resolve_attr(&g.va_normal, 3, 3, firstVertex, lastVertex, &nrm) : 0;
++    if (uvr == -2 || colr == -2 || nrmr == -2) return 1;
+     if (uvr < 0 || colr < 0 || nrmr < 0)
+         return 0;
+     /* Every NovaGL vertex shader normalizes v2 as an unsigned-byte colour.
+@@ -1558,6 +1582,60 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+ }
+
+ #if defined(NOVAGL_GZDOOM_COMPAT) && !defined(NOVAGL_NO_NEAR_CLIP)
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++typedef struct {
++    int frame, active, draws, vertices, oob_vertices;
++    int eye_crossing_draws, nonpositive_w, side_outside, z_outside, nonfinite;
++    unsigned cmd_max_words, cmd_last_words, cmd_splits;
++    int first_bad_valid, first_bad_count, first_bad_indexed;
++    unsigned first_bad_min_index, first_bad_max_index;
++    float first_bad_min_w, first_bad_max_w;
++    C3D_Mtx first_bad_mvp;
++} NovaGeomProbe;
++
++static NovaGeomProbe s_geom_probe = { .frame = -1 };
++
++static int nova_geom_probe_begin(void) {
++    if (s_geom_probe.frame != g.frame_index) {
++        if (s_geom_probe.active) {
++            printf("[NovaGeom] frame=%d draws=%d verts=%d oob=%d eyeCrossDraws=%d "
++                   "wNonPos=%d sideOut=%d zOut=%d nonfinite=%d cmdMaxWords=%u splits=%u\n",
++                   s_geom_probe.frame, s_geom_probe.draws, s_geom_probe.vertices,
++                   s_geom_probe.oob_vertices, s_geom_probe.eye_crossing_draws,
++                   s_geom_probe.nonpositive_w, s_geom_probe.side_outside,
++                   s_geom_probe.z_outside, s_geom_probe.nonfinite,
++                   s_geom_probe.cmd_max_words, s_geom_probe.cmd_splits);
++            if (s_geom_probe.first_bad_valid) {
++                printf("[NovaGeom] firstBad count=%d indexed=%d index=%u..%u w=%.6g..%.6g\n",
++                       s_geom_probe.first_bad_count, s_geom_probe.first_bad_indexed,
++                       s_geom_probe.first_bad_min_index, s_geom_probe.first_bad_max_index,
++                       s_geom_probe.first_bad_min_w, s_geom_probe.first_bad_max_w);
++                for (int r = 0; r < 4; ++r)
++                    printf("[NovaGeom] mvp%d=(%.7g %.7g %.7g %.7g)\n", r,
++                           s_geom_probe.first_bad_mvp.r[r].x,
++                           s_geom_probe.first_bad_mvp.r[r].y,
++                           s_geom_probe.first_bad_mvp.r[r].z,
++                           s_geom_probe.first_bad_mvp.r[r].w);
++            }
++            fflush(stdout);
++        }
++        memset(&s_geom_probe, 0, sizeof(s_geom_probe));
++        s_geom_probe.frame = g.frame_index;
++        /* One complete frame every 30 frames: detailed enough to reproduce
++         * distance-dependent corruption without perturbing every frame. */
++        s_geom_probe.active = (g.frame_index % 30) == 0;
++    }
++    if (s_geom_probe.active) {
++        if (s_geom_probe.draws > 0 && gpuCmdBufOffset < s_geom_probe.cmd_last_words)
++            s_geom_probe.cmd_splits++;
++        s_geom_probe.cmd_last_words = gpuCmdBufOffset;
++        if (gpuCmdBufOffset > s_geom_probe.cmd_max_words)
++            s_geom_probe.cmd_max_words = gpuCmdBufOffset;
++    }
++    return s_geom_probe.active;
++}
++#endif
++
+ /* GZDoom submits both 20-byte FFlatVertex [pos3|uv2] and 24-byte packed
+  * [pos3|uv2|color4] streams. The PICA200 has neither a reliable near clipper
+  * nor programmable user clip distances. Their zero-copy paths are valid only
+@@ -1582,7 +1660,12 @@ static int gzdoom_draw_needs_near_clip(GLint first, GLsizei count, int is_elemen
+      * walk when both planes are inactive. */
+     const int near_clip = !g.depth_clamp_enabled;
+     const int user_clip = nova_gzdoom_user_clip_active();
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++    const int geom_probe = nova_geom_probe_begin();
++    if (!near_clip && !user_clip && !geom_probe) return 0;
++#else
+     if (!near_clip && !user_clip) return 0;
++#endif
+
+     const uint8_t *base;
+     size_t available = (size_t)-1;
+@@ -1604,6 +1687,13 @@ static int gzdoom_draw_needs_near_clip(GLint first, GLsizei count, int is_elemen
+     const float ax = rz.x + rw.x, ay = rz.y + rw.y;
+     const float az = rz.z + rw.z, aw = rz.w + rw.w;
+
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++    float draw_min_w = 3.402823466e+38F, draw_max_w = -3.402823466e+38F;
++    uint32_t draw_min_index = UINT32_MAX, draw_max_index = 0;
++    int draw_bad = 0;
++    if (geom_probe) s_geom_probe.draws++;
++#endif
++
+     for (GLsizei i = 0; i < count; ++i) {
+         uint32_t vertex_index;
+         if (!is_elements) {
+@@ -1616,10 +1706,34 @@ static int gzdoom_draw_needs_near_clip(GLint first, GLsizei count, int is_elemen
+             vertex_index = ((const uint8_t *)idx_src)[i];
+         }
+         const size_t byte_offset = (size_t)vertex_index * (size_t)stride;
+-        if (available != (size_t)-1 && byte_offset + 3 * sizeof(float) > available)
++        if (available != (size_t)-1 && byte_offset + 3 * sizeof(float) > available) {
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++            if (geom_probe) s_geom_probe.oob_vertices++;
++#endif
+             return 1; /* malformed range: keep it out of the zero-copy path */
++        }
+         float p[3];
+         memcpy(p, base + byte_offset, sizeof(p));
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++        if (geom_probe) {
++            const float cx = mvp.r[0].x*p[0] + mvp.r[0].y*p[1] + mvp.r[0].z*p[2] + mvp.r[0].w;
++            const float cy = mvp.r[1].x*p[0] + mvp.r[1].y*p[1] + mvp.r[1].z*p[2] + mvp.r[1].w;
++            const float cz = mvp.r[2].x*p[0] + mvp.r[2].y*p[1] + mvp.r[2].z*p[2] + mvp.r[2].w;
++            const float cw = mvp.r[3].x*p[0] + mvp.r[3].y*p[1] + mvp.r[3].z*p[2] + mvp.r[3].w;
++            s_geom_probe.vertices++;
++            if (!(cx == cx && cy == cy && cz == cz && cw == cw)) {
++                s_geom_probe.nonfinite++;
++                draw_bad = 1;
++            }
++            if (cw <= 0.0f) { s_geom_probe.nonpositive_w++; draw_bad = 1; }
++            if (cx < -cw || cx > cw || cy < -cw || cy > cw) s_geom_probe.side_outside++;
++            if (cz < -cw || cz > 0.0f) s_geom_probe.z_outside++;
++            if (cw < draw_min_w) draw_min_w = cw;
++            if (cw > draw_max_w) draw_max_w = cw;
++            if (vertex_index < draw_min_index) draw_min_index = vertex_index;
++            if (vertex_index > draw_max_index) draw_max_index = vertex_index;
++        }
++#endif
+         int outside_near = near_clip &&
+             ax * p[0] + ay * p[1] + az * p[2] + aw < 0.0f;
+         int outside_user = user_clip &&
+@@ -1637,6 +1751,24 @@ static int gzdoom_draw_needs_near_clip(GLint first, GLsizei count, int is_elemen
+             return 1;
+         }
+     }
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++    if (geom_probe) {
++        if (draw_min_w <= 0.0f && draw_max_w > 0.0f) {
++            s_geom_probe.eye_crossing_draws++;
++            draw_bad = 1;
++        }
++        if (draw_bad && !s_geom_probe.first_bad_valid) {
++            s_geom_probe.first_bad_valid = 1;
++            s_geom_probe.first_bad_count = count;
++            s_geom_probe.first_bad_indexed = is_elements;
++            s_geom_probe.first_bad_min_index = draw_min_index;
++            s_geom_probe.first_bad_max_index = draw_max_index;
++            s_geom_probe.first_bad_min_w = draw_min_w;
++            s_geom_probe.first_bad_max_w = draw_max_w;
++            s_geom_probe.first_bad_mvp = mvp;
++        }
++    }
++#endif
+     return 0;
+ }
+ #endif
+@@ -1699,9 +1831,17 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+     const uint8_t *idx_src = NULL;
+     if (is_elements) {
+         if (g.bound_element_array_buffer > 0 && g.bound_element_array_buffer < NOVA_MAX_VBOS) {
+-            if (!g.vbos[g.bound_element_array_buffer].allocated || g.vbos[g.bound_element_array_buffer].data == NULL)
++            const VBOSlot *ebo = &g.vbos[g.bound_element_array_buffer];
++            if (!ebo->allocated || ebo->data == NULL)
+                 return;
+-            idx_src = (const uint8_t *) g.vbos[g.bound_element_array_buffer].data + (uintptr_t) indices;
++            const uintptr_t index_offset = (uintptr_t)indices;
++            const size_t index_size = type == GL_UNSIGNED_INT ? 4u :
++                                      type == GL_UNSIGNED_SHORT ? 2u : 1u;
++            const size_t index_bytes = (size_t)count * index_size;
++            if (index_offset > (uintptr_t)ebo->size ||
++                index_bytes > (size_t)ebo->size - (size_t)index_offset)
++                return; /* malformed EBO range: never read or submit it */
++            idx_src = (const uint8_t *)ebo->data + index_offset;
+         } else {
+             idx_src = (const uint8_t *) indices;
+         }

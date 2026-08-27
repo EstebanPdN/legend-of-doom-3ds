@@ -959,4 +959,3 @@ char* CleanseString(char* str)
 	}
 	return str;
 }
-

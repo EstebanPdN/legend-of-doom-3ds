@@ -1,0 +1,320 @@
+diff --git a/source/loader/i_module.cpp b/source/loader/i_module.cpp
+index 59742ef..88f5ee3 100644
+--- a/source/loader/i_module.cpp
++++ b/source/loader/i_module.cpp
+@@ -33,7 +33,12 @@
+
+ #include "i_module.h"
+
+-#ifdef _WIN32
++#if defined(__3DS__)
++using HMODULE = void*;
++#define LoadLibraryA(x) nullptr
++#define GetProcAddress(a,b) nullptr
++#define FreeLibrary(x) ((void)0)
++#elif defined(_WIN32)
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+ #else
+@@ -41,7 +46,7 @@
+ #endif
+
+
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__3DS__)
+ #define LoadLibraryA(x) dlopen((x), RTLD_LAZY)
+ #define GetProcAddress(a,b) dlsym((a),(b))
+ #define FreeLibrary(x) dlclose((x))
+diff --git a/source/mididevices/music_adlmidi_mididevice.cpp b/source/mididevices/music_adlmidi_mididevice.cpp
+index 7ffb42c..cfe4241 100644
+--- a/source/mididevices/music_adlmidi_mididevice.cpp
++++ b/source/mididevices/music_adlmidi_mididevice.cpp
+@@ -35,6 +35,7 @@
+ // HEADER FILES ------------------------------------------------------------
+
+ #include <stdlib.h>
++#include <stdexcept>
+
+ #include "zmusic/zmusic_internal.h"
+ #include "mididevice.h"
+@@ -322,4 +323,3 @@ DLL_EXPORT int ZMusic_GetADLBanks(const char* const** pNames)
+ }
+
+ #endif
+-
+diff --git a/source/mididevices/music_fluidsynth_mididevice.cpp b/source/mididevices/music_fluidsynth_mididevice.cpp
+index 6a0529e..41f7a5f 100644
+--- a/source/mididevices/music_fluidsynth_mididevice.cpp
++++ b/source/mididevices/music_fluidsynth_mididevice.cpp
+@@ -40,6 +40,7 @@
+ #include "zmusic/zmusic_internal.h"
+ #include "mididevice.h"
+ #include "zmusic/mus2midi.h"
++#include <stdexcept>
+
+ // FluidSynth implementation of a MIDI device -------------------------------
+
+diff --git a/source/mididevices/music_opl_mididevice.cpp b/source/mididevices/music_opl_mididevice.cpp
+index 8ed7446..30fdebe 100644
+--- a/source/mididevices/music_opl_mididevice.cpp
++++ b/source/mididevices/music_opl_mididevice.cpp
+@@ -36,6 +36,7 @@
+ // HEADER FILES ------------------------------------------------------------
+
+ #include "zmusic/zmusic_internal.h"
++#include <stdexcept>
+ #include "mididevice.h"
+ #include "zmusic/mus2midi.h"
+
+@@ -333,4 +334,4 @@ MIDIDevice* CreateOplMIDIDevice(const char* Args)
+ {
+ 	throw std::runtime_error("OPL device not supported in this configuration");
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/source/mididevices/music_opnmidi_mididevice.cpp b/source/mididevices/music_opnmidi_mididevice.cpp
+index fece81a..b126ba2 100644
+--- a/source/mididevices/music_opnmidi_mididevice.cpp
++++ b/source/mididevices/music_opnmidi_mididevice.cpp
+@@ -35,6 +35,7 @@
+ // HEADER FILES ------------------------------------------------------------
+
+ #include "mididevice.h"
++#include <stdexcept>
+ #include "zmusic/zmusic_internal.h"
+
+ #ifdef HAVE_OPN
+diff --git a/source/mididevices/music_timidity_mididevice.cpp b/source/mididevices/music_timidity_mididevice.cpp
+index 34e9ff1..5e8d807 100644
+--- a/source/mididevices/music_timidity_mididevice.cpp
++++ b/source/mididevices/music_timidity_mididevice.cpp
+@@ -36,6 +36,7 @@
+
+ #include <stdlib.h>
+ #include "mididevice.h"
++#include <stdexcept>
+ #include "zmusic/zmusic_internal.h"
+
+ #ifdef HAVE_GUS
+diff --git a/source/mididevices/music_timiditypp_mididevice.cpp b/source/mididevices/music_timiditypp_mididevice.cpp
+index 825e80e..241f9e2 100644
+--- a/source/mididevices/music_timiditypp_mididevice.cpp
++++ b/source/mididevices/music_timiditypp_mididevice.cpp
+@@ -33,6 +33,7 @@
+ */
+
+ #include "mididevice.h"
++#include <stdexcept>
+ #include "zmusic/zmusic_internal.h"
+
+ #ifdef HAVE_TIMIDITY
+@@ -239,4 +240,4 @@ MIDIDevice* CreateTimidityPPMIDIDevice(const char* Args, int samplerate)
+ {
+ 	throw std::runtime_error("Timidity++ device not supported in this configuration");
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/source/mididevices/music_wavewriter_mididevice.cpp b/source/mididevices/music_wavewriter_mididevice.cpp
+index 5a959db..04f9b3e 100644
+--- a/source/mididevices/music_wavewriter_mididevice.cpp
++++ b/source/mididevices/music_wavewriter_mididevice.cpp
+@@ -36,6 +36,7 @@
+ // HEADER FILES ------------------------------------------------------------
+
+ #include "mididevice.h"
++#include <stdexcept>
+ #include "zmusic/m_swap.h"
+ #include "fileio.h"
+ #include <errno.h>
+@@ -95,7 +96,7 @@ MIDIWaveWriter::MIDIWaveWriter(const char *filename, SoftSynthMIDIDevice *playde
+ 		if (fwrite("RIFF\0\0\0\0WAVEfmt ", 1, 16, File) != 16) goto fail;
+
+ 		playDevice->CalcTickRate();
+-		fmt.ChunkLen = LittleLong(uint32_t(sizeof(fmt) - 4));
++		fmt.ChunkLen = LittleLong(static_cast<unsigned int>(sizeof(fmt) - 4));
+ 		fmt.FormatTag = LittleShort((uint16_t)0xFFFE);		// WAVE_FORMAT_EXTENSIBLE
+ 		fmt.Channels = LittleShort((uint16_t)2);
+ 		fmt.SamplesPerSec = LittleLong(SampleRate);
+@@ -144,12 +145,12 @@ bool MIDIWaveWriter::CloseFile()
+ 		uint32_t size;
+
+ 		// data chunk size
+-		size = LittleLong(uint32_t(pos - 8));
++		size = LittleLong(static_cast<unsigned int>(pos - 8));
+ 		if (0 == fseek(File, 4, SEEK_SET))
+ 		{
+ 			if (4 == fwrite(&size, 1, 4, File))
+ 			{
+-				size = LittleLong(uint32_t(pos - 12 - sizeof(FmtChunk) - 8));
++				size = LittleLong(static_cast<unsigned int>(pos - 12 - sizeof(FmtChunk) - 8));
+ 				if (0 == fseek(File, 4 + sizeof(FmtChunk) + 8, SEEK_CUR))
+ 				{
+ 					if (4 == fwrite(&size, 1, 4, File))
+diff --git a/source/mididevices/music_wildmidi_mididevice.cpp b/source/mididevices/music_wildmidi_mididevice.cpp
+index ac33c32..5293d08 100644
+--- a/source/mididevices/music_wildmidi_mididevice.cpp
++++ b/source/mididevices/music_wildmidi_mididevice.cpp
+@@ -35,6 +35,7 @@
+ // HEADER FILES ------------------------------------------------------------
+
+ #include "mididevice.h"
++#include <stdexcept>
+ #include "zmusic/zmusic_internal.h"
+
+ #ifdef HAVE_WILDMIDI
+@@ -284,4 +285,4 @@ MIDIDevice* CreateWildMIDIDevice(const char* Args, int samplerate)
+ {
+ 	throw std::runtime_error("WildMidi device not supported in this configuration");
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/source/musicformats/music_midi.cpp b/source/musicformats/music_midi.cpp
+index 039a56b..defe3e5 100644
+--- a/source/musicformats/music_midi.cpp
++++ b/source/musicformats/music_midi.cpp
+@@ -37,6 +37,7 @@
+ #include <string>
+ #include <algorithm>
+ #include <assert.h>
++#include <stdexcept>
+ #include "zmusic/zmusic_internal.h"
+ #include "zmusic/musinfo.h"
+ #include "mididevices/mididevice.h"
+diff --git a/source/streamsources/music_gme.cpp b/source/streamsources/music_gme.cpp
+index f44eb88..e920107 100644
+--- a/source/streamsources/music_gme.cpp
++++ b/source/streamsources/music_gme.cpp
+@@ -41,6 +41,7 @@
+ #include "streamsource.h"
+ #include <gme/gme.h>
+ #include <mutex>
++#include <stdexcept>
+ #include "fileio.h"
+
+ // MACROS ------------------------------------------------------------------
+diff --git a/source/streamsources/music_libsndfile.cpp b/source/streamsources/music_libsndfile.cpp
+index dea2b12..333718d 100644
+--- a/source/streamsources/music_libsndfile.cpp
++++ b/source/streamsources/music_libsndfile.cpp
+@@ -97,7 +97,7 @@ protected:
+ //
+ //==========================================================================
+
+-bool S_ParseTimeTag(const char* tag, zmusic_bool* as_samples, unsigned int* time)
++bool S_ParseTimeTag(const char* tag, zmusic_bool* as_samples, uint32_t* time)
+ {
+ 	const int time_count = 3;
+ 	const char* bit = tag;
+diff --git a/source/streamsources/music_opl.cpp b/source/streamsources/music_opl.cpp
+index 384c902..6dd493f 100644
+--- a/source/streamsources/music_opl.cpp
++++ b/source/streamsources/music_opl.cpp
+@@ -32,6 +32,7 @@
+ */
+
+ #include "zmusic_internal.h"
++#include <stdexcept>
+
+ #ifdef HAVE_OPL
+
+diff --git a/source/zmusic/m_swap.h b/source/zmusic/m_swap.h
+index de9b778..68c38e7 100644
+--- a/source/zmusic/m_swap.h
++++ b/source/zmusic/m_swap.h
+@@ -208,11 +208,19 @@ inline int BigLong (int x)
+
+ #endif // __BIG_ENDIAN__
+
++// On the 3DS, long and int are both 32-bit, so these conversions are lossless.
++#ifdef __3DS__
++inline unsigned long BigLong(unsigned long x) { return static_cast<unsigned long>(BigLong(static_cast<unsigned int>(x))); }
++inline long BigLong(long x) { return static_cast<long>(BigLong(static_cast<int>(x))); }
++inline unsigned long LittleLong(unsigned long x) { return static_cast<unsigned long>(LittleLong(static_cast<unsigned int>(x))); }
++inline long LittleLong(long x) { return static_cast<long>(LittleLong(static_cast<int>(x))); }
++#else
+ // These may be destructive so they should create errors
+ unsigned long BigLong(unsigned long) = delete;
+ long BigLong(long) = delete;
+ unsigned long LittleLong(unsigned long) = delete;
+ long LittleLong(long) = delete;
++#endif
+
+
+ // Data accessors, since some data is highly likely to be unaligned.
+diff --git a/thirdparty/oplsynth/fmopl.cpp b/thirdparty/oplsynth/fmopl.cpp
+index 353e313..8b4963d 100644
+--- a/thirdparty/oplsynth/fmopl.cpp
++++ b/thirdparty/oplsynth/fmopl.cpp
+@@ -554,8 +554,8 @@ static const int8_t lfo_pm_table[8*8*2] = {
+
+
+ /* work table */
+-static signed int phase_modulation;		/* phase modulation input (SLOT 2) */
+-static signed int output;
++static int32_t phase_modulation;		/* phase modulation input (SLOT 2) */
++static int32_t output;
+
+ static uint32_t	LFO_AM;
+ static int32_t	LFO_PM;
+diff --git a/thirdparty/timidity/instrum.cpp b/thirdparty/timidity/instrum.cpp
+index 9240de4..c8f2b96 100644
+--- a/thirdparty/timidity/instrum.cpp
++++ b/thirdparty/timidity/instrum.cpp
+@@ -219,7 +219,7 @@ failread:
+
+ 	header.WaveForms = LittleShort(header.WaveForms);
+ 	header.MasterVolume = LittleShort(header.MasterVolume);
+-	header.DataSize = LittleLong(header.DataSize);
++	header.DataSize = LittleLong(static_cast<unsigned int>(header.DataSize));
+ 	idata.Instrument = LittleShort(idata.Instrument);
+
+ 	if (header.Instruments != 1 && header.Instruments != 0) /* instruments. To some patch makers, 0 means 1 */
+diff --git a/thirdparty/timidity/timidity/t_swap.h b/thirdparty/timidity/timidity/t_swap.h
+index de9b778..b19be0d 100644
+--- a/thirdparty/timidity/timidity/t_swap.h
++++ b/thirdparty/timidity/timidity/t_swap.h
+@@ -208,11 +208,18 @@ inline int BigLong (int x)
+
+ #endif // __BIG_ENDIAN__
+
++#ifdef __3DS__
++inline unsigned long BigLong(unsigned long x) { return static_cast<unsigned long>(BigLong(static_cast<unsigned int>(x))); }
++inline long BigLong(long x) { return static_cast<long>(BigLong(static_cast<int>(x))); }
++inline unsigned long LittleLong(unsigned long x) { return static_cast<unsigned long>(LittleLong(static_cast<unsigned int>(x))); }
++inline long LittleLong(long x) { return static_cast<long>(LittleLong(static_cast<int>(x))); }
++#else
+ // These may be destructive so they should create errors
+ unsigned long BigLong(unsigned long) = delete;
+ long BigLong(long) = delete;
+ unsigned long LittleLong(unsigned long) = delete;
+ long LittleLong(long) = delete;
++#endif
+
+
+ // Data accessors, since some data is highly likely to be unaligned.
+diff --git a/thirdparty/timidityplus/timiditypp/t_swap.h b/thirdparty/timidityplus/timiditypp/t_swap.h
+index de9b778..b19be0d 100644
+--- a/thirdparty/timidityplus/timiditypp/t_swap.h
++++ b/thirdparty/timidityplus/timiditypp/t_swap.h
+@@ -208,11 +208,18 @@ inline int BigLong (int x)
+
+ #endif // __BIG_ENDIAN__
+
++#ifdef __3DS__
++inline unsigned long BigLong(unsigned long x) { return static_cast<unsigned long>(BigLong(static_cast<unsigned int>(x))); }
++inline long BigLong(long x) { return static_cast<long>(BigLong(static_cast<int>(x))); }
++inline unsigned long LittleLong(unsigned long x) { return static_cast<unsigned long>(LittleLong(static_cast<unsigned int>(x))); }
++inline long LittleLong(long x) { return static_cast<long>(LittleLong(static_cast<int>(x))); }
++#else
+ // These may be destructive so they should create errors
+ unsigned long BigLong(unsigned long) = delete;
+ long BigLong(long) = delete;
+ unsigned long LittleLong(unsigned long) = delete;
+ long LittleLong(long) = delete;
++#endif
+
+
+ // Data accessors, since some data is highly likely to be unaligned.

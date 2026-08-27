@@ -1,6 +1,6 @@
 #ifndef EGAMETYPE
 #define EGAMETYPE
-enum EGameType
+enum EGameType : int
 {
 	GAME_Any	 = 0,
 	GAME_Doom	 = 1,
@@ -14,4 +14,3 @@ enum EGameType
 	GAME_DoomStrifeChex	= GAME_Doom|GAME_Strife|GAME_Chex
 };
 #endif
-

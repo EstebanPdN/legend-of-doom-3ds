@@ -52,6 +52,16 @@ FModule OpenALModule{"OpenAL"};
 
 #include "oalload.h"
 
+#ifdef __3DS__
+CUSTOM_CVAR(Int, snd_channels, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// number of channels available
+{
+	// Bound mixer work and migrate desktop/earlier-build values on Old 3DS.
+	if (self != 32) self = 32;
+}
+CVAR(Bool, snd_waterreverb, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR (String, snd_aldevice, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+CVAR (Bool, snd_efx, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+#else
 CUSTOM_CVAR(Int, snd_channels, 128, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// number of channels available
 {
 	if (self < 64) self = 64;
@@ -59,6 +69,7 @@ CUSTOM_CVAR(Int, snd_channels, 128, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// number 
 CVAR(Bool, snd_waterreverb, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG) 
 CVAR (String, snd_aldevice, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Bool, snd_efx, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+#endif
 CVAR (String, snd_alresampler, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 
 #ifdef _WIN32
@@ -712,6 +723,11 @@ OpenALSoundRenderer::OpenALSoundRenderer()
 	}
 	FreeSfx = Sources;
 	DPrintf(DMSG_NOTIFY, "  Allocated " TEXTCOLOR_BLUE"%u" TEXTCOLOR_NORMAL" sources\n", Sources.Size());
+#ifdef __3DS__
+	// Keep this in the boot log: source allocation is the first end-to-end
+	// confirmation that the NDSP-backed OpenAL context is usable.
+	Printf("[3DS audio] OpenAL source pool: %u sources\n", Sources.Size());
+#endif
 
 	WasInWater = false;
 	if(*snd_efx && ALC.EXT_EFX)
@@ -2102,4 +2118,3 @@ void I_BuildALResamplersList(FOptionValues* opt)
 	}
 #endif
 }
-

@@ -50,6 +50,18 @@ inline constexpr double AngleToFloat(int f)
 	return f * (90. / 0x40000000);
 }
 
+#ifdef __3DS__
+inline constexpr double AngleToFloat(unsigned long f)
+{
+	return f * (90. / 0x40000000);
+}
+
+inline constexpr double AngleToFloat(long f)
+{
+	return f * (90. / 0x40000000);
+}
+#endif
+
 #define FLOAT2FIXED(f)		FloatToFixed(f)
 #define FIXED2FLOAT(f)		float(FixedToFloat(f))
 #define FIXED2DBL(f)		FixedToFloat(f)

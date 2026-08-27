@@ -1,0 +1,770 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 92bf501..1078436 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -339,6 +339,9 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+
+     g.depth_near = 0.0f;
+     g.depth_far = 1.0f;
++    /* OpenGL default. GZDoom enables it during framebuffer setup and
++     * temporarily disables it only while drawing a skybox. */
++    g.depth_clamp_enabled = 0;
+     g.polygon_offset_fill_enabled = 0;
+     apply_depth_map();
+
+@@ -1169,42 +1172,51 @@ static inline NovaModelV nova_modelv_lerp(const NovaModelV *a, const NovaModelV
+     return o;
+ }
+
+-/* Clip a triangle (model-space verts + each vertex's clip-space near distance
+- * d = z+w) against the near plane, fan-triangulate into out[<=6]. Interpolating
+- * the MODEL verts by the clip-space t is exact (MVP is linear, so the model
+- * point at parameter t maps to the clip point at t). Returns vertices written. */
+-static int nova_clip_tri_near_model(const NovaModelV tri[3], const float d[3], NovaModelV out[6]) {
+-    NovaModelV poly[4];
++/* Clip a model-space polygon against one linear plane. Plane 0 is GZDoom's
++ * world-space user clip plane; plane 1 is PICA's z+w near plane. Interpolating
++ * model vertices by the plane-distance t is exact because both transforms are
++ * linear. A triangle can grow by at most one vertex per plane. */
++static inline float nova_modelv_plane_distance(const NovaModelV *p, int plane,
++                                                float ax, float ay, float az, float aw) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (plane == 0)
++        return nova_gzdoom_user_clip_distance(p->x, p->y, p->z);
++#else
++    if (plane == 0) return 1.0f;
++#endif
++    return ax * p->x + ay * p->y + az * p->z + aw;
++}
++
++static int nova_clip_poly_model(const NovaModelV *in, int in_count,
++                                NovaModelV *out, int out_cap, int plane,
++                                float ax, float ay, float az, float aw) {
+     int n = 0;
+-    for (int i = 0; i < 3 && n < 4; i++) {
+-        int j = (i + 1) % 3;
+-        float dc = d[i], dn = d[j];
++    for (int i = 0; i < in_count && n < out_cap; i++) {
++        int j = (i + 1) % in_count;
++        float dc = nova_modelv_plane_distance(&in[i], plane, ax, ay, az, aw);
++        float dn = nova_modelv_plane_distance(&in[j], plane, ax, ay, az, aw);
+         int ci = dc >= 0.0f, ni = dn >= 0.0f;
+-        if (ci) poly[n++] = tri[i];
+-        if (ci != ni && n < 4) {
++        if (ci) out[n++] = in[i];
++        if (ci != ni && n < out_cap) {
+             float denom = dc - dn;
+             float t = (denom != 0.0f) ? (dc / denom) : 0.0f;
+-            poly[n++] = nova_modelv_lerp(&tri[i], &tri[j], t);
++            out[n++] = nova_modelv_lerp(&in[i], &in[j], t);
+         }
+     }
+-    if (n < 3) return 0;
+-    int vc = 0;
+-    for (int i = 1; i + 1 < n; i++) {
+-        out[vc++] = poly[0]; out[vc++] = poly[i]; out[vc++] = poly[i + 1];
+-    }
+-    return vc;
++    return n;
+ }
+
+-/* Near-clip the GPU-MVP triangle path (basic/texmtx/full shaders). `flat` is the
+- * de-indexed [pos3|uv2|col4]=24B buffer nova_draw_internal builds. We replay the
+- * shader's MVP (final_proj·modelview) on the CPU only to get each vertex's
+- * near-plane distance z+w, then clip in MODEL space and redraw via draw_packed_run
+- * — i.e. through the SAME bound shader, so fog/texmtx/depth are untouched (unlike
+- * a clipspace passthrough, which would drop GL_LINEAR fog and the texture matrix).
+- * Returns 1 if it drew the batch (caller must skip its own draw), else 0. */
++/* Clip the GPU-MVP triangle path (basic/texmtx/full shaders). `flat` is the
++ * de-indexed [pos3|uv2|col4]=24B buffer nova_draw_internal builds. We emulate
++ * both GZDoom's programmable portal/reflective-flat plane and PICA's missing
++ * near clipping, then redraw through the SAME shader so fog/texmtx/depth remain
++ * intact. Returns 1 if it handled the batch, else 0. */
+ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t *flat,
+                                 int count, int stride, int pos_elements) {
+-    if (mode != GL_TRIANGLES || count < 3) return 0;
++    (void)prim;
++    if (count < 3) return 0;
++    if (mode != GL_TRIANGLES && mode != GL_TRIANGLE_FAN &&
++        mode != GL_TRIANGLE_STRIP && mode != GL_QUADS) return 0;
+     if (stride != 24 || pos_elements != 3) return 0; /* only the [pos3|uv2|col4] layout */
+     if (g.active_shader != NOVA_SHADER_BASIC &&
+         g.active_shader != NOVA_SHADER_TEXMTX &&
+@@ -1219,18 +1231,45 @@ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t
+     float ax = rz.x + rw.x, ay = rz.y + rw.y, az = rz.z + rw.z, aw = rz.w + rw.w;
+
+     const NovaModelV *vin = (const NovaModelV *) flat;
++#ifdef NOVAGL_GZDOOM_COMPAT
++    const int user_clip = nova_gzdoom_user_clip_active();
++#else
++    const int user_clip = 0;
++#endif
++    const int near_clip = !g.depth_clamp_enabled;
++    /* Depth clamp covers the ordinary GZDoom world path and no user plane is
++     * active there. In that overwhelmingly common case there is nothing this
++     * CPU clipper can do, so do not rescan the staged vertices. */
++    if (!near_clip && !user_clip) return 0;
+
+-    /* Pass 1 — does any vertex cross the near plane (z + w < 0)? */
++    /* Pass 1 — skip all CPU work unless a referenced vertex actually lies
++     * outside either active plane. */
+     int crosses = 0;
+     for (int i = 0; i < count; i++) {
+         const NovaModelV *p = &vin[i];
+-        if (ax * p->x + ay * p->y + az * p->z + aw < 0.0f) { crosses = 1; break; }
++        if ((near_clip && ax * p->x + ay * p->y + az * p->z + aw < 0.0f) ||
++            (user_clip && nova_modelv_plane_distance(p, 0, ax, ay, az, aw) < 0.0f)) {
++            crosses = 1;
++            break;
++        }
+     }
+     if (!crosses) return 0;
+
+-    /* Pass 2 — clip the crossing triangles (worst case 2 out tris per input). */
+-    int in_tris = count / 3;
+-    int out_bytes = in_tris * 6 * 24;
++    /* Pass 2 — expand every accepted GL primitive to an explicit triangle
++     * list and clip it.  PICA cannot near-clip fans/strips either; limiting
++     * this path to GL_TRIANGLES was the reason GZDoom's portal/sky quads
++     * exploded into screen-sized polygons whenever they crossed the camera. */
++    int in_tris;
++    switch (mode) {
++        case GL_TRIANGLES:     in_tris = count / 3; break;
++        case GL_TRIANGLE_FAN:
++        case GL_TRIANGLE_STRIP: in_tris = count - 2; break;
++        case GL_QUADS:         in_tris = (count / 4) * 2; break;
++        default:               return 0;
++    }
++    /* A triangle clipped by two planes has at most five polygon vertices,
++     * which fan-triangulate to at most nine output vertices. */
++    int out_bytes = in_tris * 9 * 24;
+     if (out_bytes > g.client_array_buf_size) return 0;
+     NovaModelV *out = (NovaModelV *) linear_alloc_ring(
+         g.client_array_buf, &g.client_array_buf_offset, out_bytes, g.client_array_buf_size);
+@@ -1240,18 +1279,67 @@ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t
+     if (!out) return 0;
+     int out_count = 0;
+     for (int t = 0; t < in_tris; t++) {
+-        const NovaModelV *tri = &vin[t * 3];
+-        float d[3];
+-        for (int k = 0; k < 3; k++) {
+-            const NovaModelV *p = &tri[k];
+-            d[k] = ax * p->x + ay * p->y + az * p->z + aw;
++        NovaModelV tri_storage[3];
++        const NovaModelV *tri = tri_storage;
++        if (mode == GL_TRIANGLES) {
++            tri = &vin[t * 3];
++        } else if (mode == GL_TRIANGLE_FAN) {
++            tri_storage[0] = vin[0];
++            tri_storage[1] = vin[t + 1];
++            tri_storage[2] = vin[t + 2];
++        } else if (mode == GL_TRIANGLE_STRIP) {
++            if ((t & 1) == 0) {
++                tri_storage[0] = vin[t];
++                tri_storage[1] = vin[t + 1];
++            } else {
++                /* Preserve the strip's alternating winding when converting
++                 * to a standalone triangle list. */
++                tri_storage[0] = vin[t + 1];
++                tri_storage[1] = vin[t];
++            }
++            tri_storage[2] = vin[t + 2];
++        } else { /* GL_QUADS: (0,1,2) and (0,2,3) per group. */
++            int q = (t / 2) * 4;
++            if ((t & 1) == 0) {
++                tri_storage[0] = vin[q + 0];
++                tri_storage[1] = vin[q + 1];
++                tri_storage[2] = vin[q + 2];
++            } else {
++                tri_storage[0] = vin[q + 0];
++                tri_storage[1] = vin[q + 2];
++                tri_storage[2] = vin[q + 3];
++            }
++        }
++        NovaModelV poly_a[6], poly_b[6];
++        poly_a[0] = tri[0];
++        poly_a[1] = tri[1];
++        poly_a[2] = tri[2];
++        int poly_count = 3;
++        if (user_clip) {
++            poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
++                                              0, ax, ay, az, aw);
++            if (poly_count < 3) continue;
++            memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
++        }
++        if (near_clip) {
++            poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
++                                              1, ax, ay, az, aw);
++            if (poly_count < 3) continue;
++        } else {
++            memcpy(poly_b, poly_a, (size_t)poly_count * sizeof(NovaModelV));
++        }
++        for (int k = 1; k + 1 < poly_count; k++) {
++            out[out_count++] = poly_b[0];
++            out[out_count++] = poly_b[k];
++            out[out_count++] = poly_b[k + 1];
+         }
+-        out_count += nova_clip_tri_near_model(tri, d, &out[out_count]);
+     }
+     if (out_count == 0) return 1; /* whole batch behind near — nothing to draw */
+
+     GSPGPU_FlushDataCache(out, (u32) (out_count * 24));
+-    draw_packed_run(mode, prim, (uint8_t *) out, out_count, 24, pos_elements);
++    /* Clipping fan/strip/quad input produces a plain triangle list. */
++    draw_packed_run(GL_TRIANGLES, GPU_TRIANGLES,
++                    (uint8_t *) out, out_count, 24, pos_elements);
+     return 1;
+ }
+ #else
+@@ -1469,6 +1557,90 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+     return 1;
+ }
+
++#if defined(NOVAGL_GZDOOM_COMPAT) && !defined(NOVAGL_NO_NEAR_CLIP)
++/* GZDoom submits both 20-byte FFlatVertex [pos3|uv2] and 24-byte packed
++ * [pos3|uv2|color4] streams. The PICA200 has neither a reliable near clipper
++ * nor programmable user clip distances. Their zero-copy paths are valid only
++ * when every referenced vertex lies inside both active planes. Safe batches
++ * remain zero-copy; only crossing batches fall through to CPU clipping. */
++static int gzdoom_draw_needs_near_clip(GLint first, GLsizei count, int is_elements,
++                                       GLenum type, const uint8_t *idx_src) {
++    if (count <= 0 || !g.va_vertex.enabled || g.va_vertex.size < 3 ||
++        g.va_vertex.type != GL_FLOAT)
++        return 0;
++
++    const int stride = calc_stride(g.va_vertex.stride, g.va_vertex.size,
++                                   g.va_vertex.type);
++    if (stride != 20 && stride != 24) return 0; /* known GZDoom layouts only */
++    if (g.active_shader != NOVA_SHADER_BASIC &&
++        g.active_shader != NOVA_SHADER_TEXMTX &&
++        g.active_shader != NOVA_SHADER_FULL)
++        return 0;
++
++    /* This function only decides whether either emulated clip plane requires
++     * the staged path. Avoid VBO resolution, matrix math, and a full index
++     * walk when both planes are inactive. */
++    const int near_clip = !g.depth_clamp_enabled;
++    const int user_clip = nova_gzdoom_user_clip_active();
++    if (!near_clip && !user_clip) return 0;
++
++    const uint8_t *base;
++    size_t available = (size_t)-1;
++    if (g.va_vertex.vbo_id > 0 && g.va_vertex.vbo_id < NOVA_MAX_VBOS) {
++        const VBOSlot *slot = &g.vbos[g.va_vertex.vbo_id];
++        if (!slot->allocated || !slot->data) return 0;
++        const uintptr_t offset = (uintptr_t)g.va_vertex.pointer;
++        if (offset >= (uintptr_t)slot->size) return 0;
++        base = (const uint8_t *)slot->data + offset;
++        available = (size_t)slot->size - (size_t)offset;
++    } else {
++        base = (const uint8_t *)g.va_vertex.pointer;
++        if (!base || !NOVA_PTR_OK(base)) return 0;
++    }
++
++    C3D_Mtx mvp;
++    Mtx_Multiply(&mvp, &g.final_proj_cached, &g.mv_stack[g.mv_sp]);
++    const C3D_FVec rz = mvp.r[2], rw = mvp.r[3];
++    const float ax = rz.x + rw.x, ay = rz.y + rw.y;
++    const float az = rz.z + rw.z, aw = rz.w + rw.w;
++
++    for (GLsizei i = 0; i < count; ++i) {
++        uint32_t vertex_index;
++        if (!is_elements) {
++            vertex_index = (uint32_t)(first + i);
++        } else if (type == GL_UNSIGNED_INT) {
++            vertex_index = ((const uint32_t *)idx_src)[i];
++        } else if (type == GL_UNSIGNED_SHORT) {
++            vertex_index = ((const uint16_t *)idx_src)[i];
++        } else {
++            vertex_index = ((const uint8_t *)idx_src)[i];
++        }
++        const size_t byte_offset = (size_t)vertex_index * (size_t)stride;
++        if (available != (size_t)-1 && byte_offset + 3 * sizeof(float) > available)
++            return 1; /* malformed range: keep it out of the zero-copy path */
++        float p[3];
++        memcpy(p, base + byte_offset, sizeof(p));
++        int outside_near = near_clip &&
++            ax * p[0] + ay * p[1] + az * p[2] + aw < 0.0f;
++        int outside_user = user_clip &&
++            nova_gzdoom_user_clip_distance(p[0], p[1], p[2]) < 0.0f;
++        if (outside_near || outside_user) {
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++            static int s_near_trace_count = 0;
++            if (s_near_trace_count < 16) {
++                printf("[NovaClip] staged CPU clip count=%d indexed=%d type=0x%X first_bad=%u plane=%s\n",
++                       (int)count, is_elements, (unsigned)type,
++                       (unsigned)vertex_index, outside_user ? "user" : "near");
++                s_near_trace_count++;
++            }
++#endif
++            return 1;
++        }
++    }
++    return 0;
++}
++#endif
++
+
+ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements, GLenum type, const GLvoid *indices) {
+     /* If this app mixes the clipspace fast-lane with the generic draw path,
+@@ -1540,7 +1712,16 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+     GPU_Primitive_t prim = gl_to_gpu_primitive(mode);
+     if (mode == GL_LINES || mode == GL_LINE_STRIP) prim = GPU_TRIANGLES;
+
+-    if (!is_elements && !g.lighting_active &&
++    /* The specialized 24-byte paths run before the generic multistream path.
++     * Decide whether clipping is required before any of them: otherwise an
++     * FSkyVertex triangle fan can reach PICA without the near-plane clipper. */
++    int force_staged_near_clip = 0;
++#if defined(NOVAGL_GZDOOM_COMPAT) && !defined(NOVAGL_NO_NEAR_CLIP)
++    force_staged_near_clip = gzdoom_draw_needs_near_clip(
++        first, count, is_elements, type, idx_src);
++#endif
++
++    if (!force_staged_near_clip && !is_elements && !g.lighting_active &&
+         g.va_vertex.enabled && g.va_vertex.vbo_id > 0 &&
+         g.va_vertex.vbo_id < NOVA_MAX_VBOS && g.vbos[g.va_vertex.vbo_id].allocated &&
+         vbo_gpu_readable(&g.vbos[g.va_vertex.vbo_id]) && /* heap-backed VBO -> CPU-gather path */
+@@ -1594,7 +1775,7 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+         return;
+     }
+
+-    if (is_elements && !g.lighting_active &&
++    if (!force_staged_near_clip && is_elements && !g.lighting_active &&
+         (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_BYTE) &&
+         (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN) &&
+         g.shade_model != GL_FLAT &&
+@@ -1646,7 +1827,8 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+         }
+     }
+
+-    if (try_draw_multistream(mode, prim, first, count, is_elements, type, idx_src)) {
++    if (!force_staged_near_clip &&
++        try_draw_multistream(mode, prim, first, count, is_elements, type, idx_src)) {
+         cleanup_vbo_stream();
+         return;
+     }
+@@ -1943,8 +2125,10 @@ void novaDrawClipspaceTris(const void *verts, int vertex_count) {
+     /* Does ANY vertex cross the near plane (z + w < 0)? If not, skip clipping. */
+     int any_near = 0;
+     const NovaClipV *in_v = (const NovaClipV *) verts;
+-    for (int i = 0; i < vertex_count; i++) {
+-        if (in_v[i].z + in_v[i].w < 0.0f) { any_near = 1; break; }
++    if (!g.depth_clamp_enabled) {
++        for (int i = 0; i < vertex_count; i++) {
++            if (in_v[i].z + in_v[i].w < 0.0f) { any_near = 1; break; }
++        }
+     }
+     if (any_near) {
+         int in_tris = vertex_count / 3;
+diff --git a/src/context.h b/src/context.h
+index 42575f4..ac45651 100644
+--- a/src/context.h
++++ b/src/context.h
+@@ -439,6 +439,11 @@ extern struct NovaState {
+     GLuint bound_vao;
+
+     int depth_test_enabled;
++    /* GL_DEPTH_CLAMP is emulated by the vertex shaders. GZDoom toggles it
++     * around skybox rendering: the normal view keeps it enabled, while the
++     * skybox needs real near-plane clipping. Keep the logical GL state so the
++     * CPU clipper only runs for the latter. */
++    int depth_clamp_enabled;
+     GLenum depth_func;
+     GPU_TESTFUNC gpu_depth_func;
+     GPU_EARLYDEPTHFUNC gpu_early_depth_func;
+@@ -698,6 +703,12 @@ void nova_fbo_gc_collect_all(void);
+
+ #ifdef NOVAGL_GZDOOM_COMPAT
+ void nova_gzdoom_set_vertex_color(const GLfloat *value);
++/* GZDoom's GLES shaders use one user clip plane for line portals and
++ * reflective flats. PICA200 has no equivalent programmable clip distance, so
++ * the generic draw path queries this bridge and clips affected triangles on
++ * the CPU before submission. */
++int nova_gzdoom_user_clip_active(void);
++float nova_gzdoom_user_clip_distance(float x, float y, float z);
+ #endif
+
+ /* Animated boot splashscreen (src/splashscreen.c). Runs synchronously at the
+diff --git a/src/draw.c b/src/draw.c
+index b8419fe..e0d70e5 100644
+--- a/src/draw.c
++++ b/src/draw.c
+@@ -62,6 +62,31 @@ static void diag_read_attr_floats(const void *raw_pointer, GLuint vbo_id, GLsize
+     }
+ }
+
++static const uint8_t *diag_resolve_index_source(const GLvoid *indices, size_t bytes,
++                                                int *range_ok) {
++    *range_ok = 1;
++    if (g.bound_element_array_buffer == 0)
++        return (const uint8_t *)indices;
++    if (g.bound_element_array_buffer >= NOVA_MAX_VBOS) {
++        *range_ok = 0;
++        return NULL;
++    }
++    VBOSlot *slot = &g.vbos[g.bound_element_array_buffer];
++    const uintptr_t offset = (uintptr_t)indices;
++    if (!slot->allocated || !slot->data || offset > (uintptr_t)slot->size ||
++        bytes > (size_t)slot->size - (size_t)offset) {
++        *range_ok = 0;
++        return NULL;
++    }
++    return (const uint8_t *)slot->data + offset;
++}
++
++static uint32_t diag_read_index(const uint8_t *src, GLenum type, int element) {
++    if (type == GL_UNSIGNED_INT) return ((const uint32_t *)src)[element];
++    if (type == GL_UNSIGNED_SHORT) return ((const uint16_t *)src)[element];
++    return ((const uint8_t *)src)[element];
++}
++
+ static void diag_log_matrix(const char *tag, const C3D_Mtx *m) {
+     if (!m) return;
+     printf("[NovaDiag]   %s row0=(%.4f %.4f %.4f %.4f)\n", tag, m->r[0].x, m->r[0].y, m->r[0].z, m->r[0].w);
+@@ -70,10 +95,20 @@ static void diag_log_matrix(const char *tag, const C3D_Mtx *m) {
+     printf("[NovaDiag]   %s row3=(%.4f %.4f %.4f %.4f)\n", tag, m->r[3].x, m->r[3].y, m->r[3].z, m->r[3].w);
+ }
+
+-static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei count) {
++static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei count,
++                          int is_elements, GLenum type, const GLvoid *indices) {
+     if (s_diag_draw_count >= NOVA_DIAG_DRAW_LIMIT) return;
+
+     GLuint bound = g.bound_texture[g.active_texture_unit];
++    int index_range_ok = 1;
++    size_t element_size = type == GL_UNSIGNED_INT ? 4u :
++                          type == GL_UNSIGNED_SHORT ? 2u : 1u;
++    const uint8_t *idx_src = is_elements && count > 0
++        ? diag_resolve_index_source(indices, (size_t)count * element_size,
++                                    &index_range_ok)
++        : NULL;
++    uint32_t first_vertex = is_elements && idx_src && count > 0
++        ? diag_read_index(idx_src, type, 0) : (uint32_t)first;
+
+     // Dedup: collapse runs of identical draws (same texture + first uv + first pos)
+     // into a single line so we don't flood the log when Arx draws many overlay layers.
+@@ -82,22 +117,28 @@ static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei cou
+     static GLsizei prev_count = -1;
+     static float   prev_uv0[2] = {0, 0};
+     static float   prev_pos0[4] = {0, 0, 0, 0};
++    static uintptr_t prev_indices = ~(uintptr_t)0;
++    static GLuint  prev_ebo = (GLuint)-1;
++    static int     prev_is_elements = -1;
+     static int     dup_run = 0;
+
+     float uv0[4] = {0}, pos0[4] = {0};
+     if (g.va_texcoord.enabled) {
+         diag_read_attr_floats(g.va_texcoord.pointer, g.va_texcoord.vbo_id,
+                               g.va_texcoord.stride, g.va_texcoord.size,
+-                              g.va_texcoord.type, first, uv0);
++                              g.va_texcoord.type, (int)first_vertex, uv0);
+     }
+     if (g.va_vertex.enabled) {
+         diag_read_attr_floats(g.va_vertex.pointer, g.va_vertex.vbo_id,
+                               g.va_vertex.stride, g.va_vertex.size,
+-                              g.va_vertex.type, first, pos0);
++                              g.va_vertex.type, (int)first_vertex, pos0);
+     }
+     int is_dup = (bound == prev_tex && mode == prev_mode && count == prev_count
++                  && is_elements == prev_is_elements
+                   && uv0[0] == prev_uv0[0] && uv0[1] == prev_uv0[1]
+-                  && pos0[0] == prev_pos0[0] && pos0[1] == prev_pos0[1]);
++                  && pos0[0] == prev_pos0[0] && pos0[1] == prev_pos0[1]
++                  && (!is_elements || ((uintptr_t)indices == prev_indices &&
++                                       g.bound_element_array_buffer == prev_ebo)));
+     if (is_dup) {
+         dup_run++;
+         return; // skip flooding; we'll print a "xN" line when the run ends
+@@ -109,6 +150,9 @@ static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei cou
+     prev_tex = bound; prev_mode = mode; prev_count = count;
+     prev_uv0[0] = uv0[0]; prev_uv0[1] = uv0[1];
+     prev_pos0[0] = pos0[0]; prev_pos0[1] = pos0[1];
++    prev_indices = (uintptr_t)indices;
++    prev_ebo = g.bound_element_array_buffer;
++    prev_is_elements = is_elements;
+
+     int idx = s_diag_draw_count++;
+
+@@ -131,10 +175,50 @@ static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei cou
+            g.va_texcoord.enabled, g.va_texcoord.size, (unsigned)g.va_texcoord.type,
+            (int)g.va_texcoord.stride, g.va_texcoord.pointer, (unsigned)g.va_texcoord.vbo_id);
+
++    if (is_elements) {
++        printf("[NovaDiag]   elements={type=0x%X ebo=%u offset=%p valid=%d}",
++               (unsigned)type, (unsigned)g.bound_element_array_buffer,
++               indices, index_range_ok);
++        if (idx_src && count > 0) {
++            uint32_t min_index = UINT32_MAX, max_index = 0;
++            for (GLsizei i = 0; i < count; ++i) {
++                uint32_t value = diag_read_index(idx_src, type, i);
++                if (value < min_index) min_index = value;
++                if (value > max_index) max_index = value;
++            }
++            printf(" min=%u max=%u first_indices=", (unsigned)min_index,
++                   (unsigned)max_index);
++            int n = count < 8 ? count : 8;
++            for (int i = 0; i < n; ++i)
++                printf("%s%u", i ? "," : "", (unsigned)diag_read_index(idx_src, type, i));
++        }
++        printf("\n");
++    }
++
+     printf("[NovaDiag]   viewport=(%d,%d %dx%d) matrix_mode=0x%X proj_sp=%d mv_sp=%d cur_color=(%.2f,%.2f,%.2f,%.2f)\n",
+            (int)g.vp_x, (int)g.vp_y, (int)g.vp_w, (int)g.vp_h,
+            (unsigned)g.matrix_mode, g.proj_sp, g.mv_sp,
+            g.cur_color[0], g.cur_color[1], g.cur_color[2], g.cur_color[3]);
++    printf("[NovaDiag]   state depth={en=%d clamp=%d func=0x%X write=%d range=%.3f..%.3f early_allowed=%d} "
++           "stencil={en=%d func=0x%X ref=%d read=0x%X write=0x%X op=0x%X/0x%X/0x%X} "
++           "colorMask=%d%d%d%d clip={active=%d firstDist=%.5f}\n",
++           g.depth_test_enabled, g.depth_clamp_enabled,
++           (unsigned)g.depth_func, g.depth_mask,
++           g.depth_near, g.depth_far, g.early_z_allowed,
++           g.stencil_test_enabled, (unsigned)g.stencil_func, g.stencil_ref,
++           (unsigned)g.stencil_mask, (unsigned)g.stencil_write_mask,
++           (unsigned)g.stencil_op_fail, (unsigned)g.stencil_op_zfail,
++           (unsigned)g.stencil_op_zpass,
++           g.color_mask_r, g.color_mask_g, g.color_mask_b, g.color_mask_a,
++#ifdef NOVAGL_GZDOOM_COMPAT
++           nova_gzdoom_user_clip_active(),
++           nova_gzdoom_user_clip_active()
++               ? nova_gzdoom_user_clip_distance(pos0[0], pos0[1], pos0[2])
++               : 1.0f
++#else
++           0, 1.0f
++#endif
++    );
+
+     // Current matrices (top of stack).
+     if (g.proj_sp >= 0 && g.proj_sp < NOVA_MATRIX_STACK) {
+@@ -159,10 +243,13 @@ static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei cou
+         } else {
+             for (int v = 0; v < verts_to_print; v++) {
+                 float uv[4];
++                uint32_t vertex_index = is_elements && idx_src
++                    ? diag_read_index(idx_src, type, v) : (uint32_t)(first + v);
+                 diag_read_attr_floats(g.va_texcoord.pointer, g.va_texcoord.vbo_id,
+                                       g.va_texcoord.stride, g.va_texcoord.size,
+-                                      g.va_texcoord.type, first + v, uv);
+-                printf("[NovaDiag]   vert[%d] uv=(%.6f, %.6f)\n", v, uv[0], uv[1]);
++                                      g.va_texcoord.type, (int)vertex_index, uv);
++                printf("[NovaDiag]   vert[%d src=%u] uv=(%.6f, %.6f)\n",
++                       v, (unsigned)vertex_index, uv[0], uv[1]);
+             }
+         }
+     }
+@@ -175,11 +262,13 @@ static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei cou
+         } else {
+             for (int v = 0; v < verts_to_print; v++) {
+                 float xyz[4];
++                uint32_t vertex_index = is_elements && idx_src
++                    ? diag_read_index(idx_src, type, v) : (uint32_t)(first + v);
+                 diag_read_attr_floats(g.va_vertex.pointer, g.va_vertex.vbo_id,
+                                       g.va_vertex.stride, g.va_vertex.size,
+-                                      g.va_vertex.type, first + v, xyz);
+-                printf("[NovaDiag]   vert[%d] pos=(%.4f, %.4f, %.4f, %.4f)\n",
+-                       v, xyz[0], xyz[1], xyz[2], xyz[3]);
++                                      g.va_vertex.type, (int)vertex_index, xyz);
++                printf("[NovaDiag]   vert[%d src=%u] pos=(%.4f, %.4f, %.4f, %.4f)\n",
++                       v, (unsigned)vertex_index, xyz[0], xyz[1], xyz[2], xyz[3]);
+             }
+         }
+     }
+@@ -187,18 +276,20 @@ static void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei cou
+ }
+ #else
+ /* Diagnostic logging compiled out — zero overhead on every glDrawArrays. */
+-static inline void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei count) {
++static inline void diag_log_draw(const char *tag, GLenum mode, GLint first, GLsizei count,
++                                 int is_elements, GLenum type, const GLvoid *indices) {
+     (void)tag; (void)mode; (void)first; (void)count;
++    (void)is_elements; (void)type; (void)indices;
+ }
+ #endif
+
+ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+-    diag_log_draw("DrawArrays", mode, first, count);
++    diag_log_draw("DrawArrays", mode, first, count, 0, 0, NULL);
+     nova_draw_internal(mode, first, count, 0, 0, NULL);
+ }
+
+ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices) {
+-    diag_log_draw("DrawElements", mode, 0, count);
++    diag_log_draw("DrawElements", mode, 0, count, 1, type, indices);
+     nova_draw_internal(mode, 0, count, 1, type, indices);
+ }
+
+diff --git a/src/raster.c b/src/raster.c
+index 77807a8..0d0aad5 100644
+--- a/src/raster.c
++++ b/src/raster.c
+@@ -406,6 +406,7 @@ void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
+     g.stencil_op_fail  = fail;
+     g.stencil_op_zfail = zfail;
+     g.stencil_op_zpass = zpass;
++    g.state_dirty_bits |= NOVA_DIRTY_EARLY_DEPTH;
+
+     g.gpu_stencil_op_fail = stencil_op_to_gpu(fail);
+     g.gpu_stencil_op_zfail = stencil_op_to_gpu(zfail);
+@@ -495,7 +496,10 @@ enum {
+     GZD_U_FOG_COLOR,
+     GZD_U_LIGHT_ATTR,
+     GZD_U_ALPHA_THRESHOLD,
+-    GZD_U_ADD_COLOR
++    GZD_U_ADD_COLOR,
++    GZD_U_CLIP_LINE,
++    GZD_U_CLIP_HEIGHT,
++    GZD_U_CLIP_HEIGHT_DIRECTION
+ };
+
+ static GLfloat gzd_view[16] = {
+@@ -509,6 +513,36 @@ static GLfloat gzd_model[16] = {
+ static GLfloat gzd_vertex_color[4] = { 1, 1, 1, 1 };
+ static GLfloat gzd_object_color[4] = { 1, 1, 1, 1 };
+ static GLfloat gzd_add_color[4] = { 0, 0, 0, 0 };
++/* Same disabled sentinel used by GZDoom's HWViewpointUniforms. */
++static GLfloat gzd_clip_line[4] = { -10000000.0f, 0, 0, 0 };
++static GLfloat gzd_clip_height = 0.0f;
++static GLfloat gzd_clip_height_direction = 0.0f;
++
++int nova_gzdoom_user_clip_active(void)
++{
++    return gzd_clip_height_direction != 0.0f ||
++           gzd_clip_line[0] > -1000000.0f;
++}
++
++float nova_gzdoom_user_clip_distance(float x, float y, float z)
++{
++    /* GZDoom evaluates the plane in world space, after ModelMatrix. Matrices
++     * are column-major here, matching the GLSL bridge and gzd_apply_modelview. */
++    const float wx = gzd_model[0] * x + gzd_model[4] * y +
++                     gzd_model[8] * z + gzd_model[12];
++    const float wy = gzd_model[1] * x + gzd_model[5] * y +
++                     gzd_model[9] * z + gzd_model[13];
++    const float wz = gzd_model[2] * x + gzd_model[6] * y +
++                     gzd_model[10] * z + gzd_model[14];
++    if (gzd_clip_height_direction != 0.0f)
++        return (wy - gzd_clip_height) * gzd_clip_height_direction;
++    if (gzd_clip_line[0] > -1000000.0f) {
++        return -((wz - gzd_clip_line[1]) * gzd_clip_line[2] +
++                 (gzd_clip_line[0] - wx) * gzd_clip_line[3]) +
++               1.0f / 32768.0f;
++    }
++    return 1.0f;
++}
+
+ static void gzd_apply_color(void)
+ {
+@@ -574,6 +608,9 @@ GLint glGetUniformLocation(GLuint program, const char *name) {
+     if (!strcmp(name, "uLightAttr")) return GZD_U_LIGHT_ATTR;
+     if (!strcmp(name, "uAlphaThreshold")) return GZD_U_ALPHA_THRESHOLD;
+     if (!strcmp(name, "uAddColor")) return GZD_U_ADD_COLOR;
++    if (!strcmp(name, "uClipLine")) return GZD_U_CLIP_LINE;
++    if (!strcmp(name, "uClipHeight")) return GZD_U_CLIP_HEIGHT;
++    if (!strcmp(name, "uClipHeightDirection")) return GZD_U_CLIP_HEIGHT_DIRECTION;
+ #endif
+     (void) name;
+     return -1;
+@@ -594,6 +631,14 @@ void glUniform1i(GLint location, GLint v0) {
+
+ void glUniform1f(GLint location, GLfloat v0) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
++    if (location == GZD_U_CLIP_HEIGHT) {
++        gzd_clip_height = v0;
++        return;
++    }
++    if (location == GZD_U_CLIP_HEIGHT_DIRECTION) {
++        gzd_clip_height_direction = v0;
++        return;
++    }
+     if (location == GZD_U_ALPHA_THRESHOLD) {
+         if (v0 >= 0.0f) {
+             glAlphaFunc(GL_GREATER, v0);
+@@ -687,6 +732,9 @@ void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
+                  * Multiplying by uLightAttr.a again double-darkens sectors.
+                  * Distance fog and dynamic lights remain explicit fallbacks. */
+                 return;
++            case GZD_U_CLIP_LINE:
++                memcpy(gzd_clip_line, value, sizeof(gzd_clip_line));
++                return;
+             default: break;
+         }
+     }
+diff --git a/src/state.c b/src/state.c
+index cd6f0e9..82d3fbd 100644
+--- a/src/state.c
++++ b/src/state.c
+@@ -199,6 +199,11 @@ void glEnable(GLenum cap) {
+         case GL_DEPTH_TEST:
+             if (!g.depth_test_enabled) { g.depth_test_enabled = 1; g.state_dirty_bits |= (NOVA_DIRTY_DEPTH_TEST | NOVA_DIRTY_EARLY_DEPTH); }
+             break;
++#ifdef NOVAGL_GZDOOM_COMPAT
++        case GL_DEPTH_CLAMP:
++            g.depth_clamp_enabled = 1;
++            break;
++#endif
+         case GL_BLEND:
+             if (!g.blend_enabled) { g.blend_enabled = 1; g.state_dirty_bits |= (NOVA_DIRTY_BLEND_STATE | NOVA_DIRTY_EARLY_DEPTH); }
+             break;
+@@ -224,6 +229,7 @@ void glEnable(GLenum cap) {
+         case GL_STENCIL_TEST:
+             if (g.stencil_test_enabled) break;
+             g.stencil_test_enabled = 1;
++            g.state_dirty_bits |= NOVA_DIRTY_EARLY_DEPTH;
+             /* Re-push stencil state with enabled flag flipped. This is an EAGER
+              * GPU command, so commit any pending clipspace batch first or the
+              * deferred run would draw under the new stencil state. */
+@@ -270,6 +276,11 @@ void glDisable(GLenum cap) {
+         case GL_DEPTH_TEST:
+             if (g.depth_test_enabled) { g.depth_test_enabled = 0; g.state_dirty_bits |= (NOVA_DIRTY_DEPTH_TEST | NOVA_DIRTY_EARLY_DEPTH); }
+             break;
++#ifdef NOVAGL_GZDOOM_COMPAT
++        case GL_DEPTH_CLAMP:
++            g.depth_clamp_enabled = 0;
++            break;
++#endif
+         case GL_BLEND:
+             if (g.blend_enabled) { g.blend_enabled = 0; g.state_dirty_bits |= (NOVA_DIRTY_BLEND_STATE | NOVA_DIRTY_EARLY_DEPTH); }
+             break;
+@@ -295,6 +306,7 @@ void glDisable(GLenum cap) {
+         case GL_STENCIL_TEST:
+             if (!g.stencil_test_enabled) break;
+             g.stencil_test_enabled = 0;
++            g.state_dirty_bits |= NOVA_DIRTY_EARLY_DEPTH;
+             nova_batch_flush();   /* eager C3D_StencilTest — see glEnable note */
+             C3D_StencilTest(0, GPU_ALWAYS, 0, 0xFF, 0xFF);
+             break;
+@@ -328,6 +340,9 @@ void glDisable(GLenum cap) {
+ GLboolean glIsEnabled(GLenum cap) {
+     switch (cap) {
+         case GL_DEPTH_TEST: return g.depth_test_enabled;
++#ifdef NOVAGL_GZDOOM_COMPAT
++        case GL_DEPTH_CLAMP: return g.depth_clamp_enabled ? GL_TRUE : GL_FALSE;
++#endif
+         case GL_BLEND: return g.blend_enabled;
+         case GL_COLOR_LOGIC_OP: return g.color_logic_op_enabled ? GL_TRUE : GL_FALSE;
+         case GL_ALPHA_TEST: return g.alpha_test_enabled;
+diff --git a/src/utils.c b/src/utils.c
+index 2205439..f27264e 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -1363,8 +1363,18 @@ void apply_gpu_state(void) {
+          * with depths the late test then discards. Keep early-Z off there. */
+         int func_ok = (g.depth_func == GL_LESS || g.depth_func == GL_LEQUAL ||
+                        g.depth_func == GL_GREATER || g.depth_func == GL_GEQUAL);
++        /* Portal masks update stencil as a side effect. PICA early rejection
++         * may bypass those updates, leaving the later portal camera pass
++         * effectively unmasked over the main view. Keep Early-Z for ordinary
++         * opaque draws, but force the correct late depth/stencil path while a
++         * non-KEEP stencil operation is active. */
++        int stencil_side_effect = g.stencil_test_enabled &&
++            (g.stencil_op_fail != GL_KEEP ||
++             g.stencil_op_zfail != GL_KEEP ||
++             g.stencil_op_zpass != GL_KEEP);
+         int want_early_z = g.early_z_allowed && g.depth_test_enabled && func_ok &&
+-                           !g.alpha_test_enabled && !g.blend_enabled;
++                           !g.alpha_test_enabled && !g.blend_enabled &&
++                           !stencil_side_effect;
+         C3D_EarlyDepthTest(want_early_z, g.gpu_early_depth_func, 0);
+     }
+ 

@@ -46,12 +46,21 @@
 
 #include "hardware.h"
 #include "gl_sysfb.h"
+#ifndef __3DS__
 #include "gl_system.h"
+#endif
 
+#ifndef __3DS__
 #include "gl_renderer.h"
 #include "gl_framebuffer.h"
+#endif
 #ifdef HAVE_GLES2
 #include "gles_framebuffer.h"
+#endif
+#ifdef __3DS__
+#include <3ds.h>
+#include <NovaGL.h>
+#include "common/platform/3ds/diagnostics_3ds.h"
 #endif
  
 #ifdef HAVE_VULKAN
@@ -131,16 +140,26 @@ namespace Priv
 		SDL_Rect bounds;
 		SDL_GetDisplayBounds(vid_adapter, &bounds);
 
+#ifdef __3DS__
+		win_w = 400;
+		win_h = 240;
+#else
 		if (win_w <= 0 || win_h <= 0)
 		{
 			win_w = bounds.w * 8 / 10;
 			win_h = bounds.h * 8 / 10;
 		}
+#endif
 
 		FString caption;
 		caption.Format(GAMENAME " %s (%s)", GetVersionString(), GetGitTime());
 
-		const uint32_t windowFlags = (win_maximized ? SDL_WINDOW_MAXIMIZED : 0) | SDL_WINDOW_RESIZABLE | extraFlags;
+		const uint32_t windowFlags =
+#ifdef __3DS__
+			extraFlags;
+#else
+			(win_maximized ? SDL_WINDOW_MAXIMIZED : 0) | SDL_WINDOW_RESIZABLE | extraFlags;
+#endif
 		Priv::window = SDL_CreateWindow(caption,
 			(win_x <= 0) ? SDL_WINDOWPOS_CENTERED_DISPLAY(vid_adapter) : win_x,
 			(win_y <= 0) ? SDL_WINDOWPOS_CENTERED_DISPLAY(vid_adapter) : win_y,
@@ -148,10 +167,12 @@ namespace Priv
 
 		if (Priv::window != nullptr)
 		{
+#ifndef __3DS__
 			// Enforce minimum size limit
 			SDL_SetWindowMinimumSize(Priv::window, VID_MIN_WIDTH, VID_MIN_HEIGHT);
 			// Tell SDL to start sending text input on Wayland.
 			if (strncasecmp(SDL_GetCurrentVideoDriver(), "wayland", 7) == 0) SDL_StartTextInput();
+#endif
 		}
 	}
 
@@ -404,7 +425,11 @@ SDLVideo::SDLVideo ()
 	}
 
 #ifdef HAVE_SOFTPOLY
+#ifdef __3DS__
+	Priv::softpolyEnabled = false;
+#else
 	Priv::softpolyEnabled = vid_preferbackend == 2;
+#endif
 #endif
 #ifdef HAVE_VULKAN
 	Priv::vulkanEnabled = vid_preferbackend == 1;
@@ -473,12 +498,16 @@ DFrameBuffer *SDLVideo::CreateFrameBuffer ()
 #endif
 	if (fb == nullptr)
 	{
+#ifdef __3DS__
+		fb = new OpenGLESRenderer::OpenGLFrameBuffer(0, vid_fullscreen);
+#else
 #ifdef HAVE_GLES2
 		if( (Args->CheckParm ("-gles2_renderer")) || (vid_preferbackend == 3) )
 			fb = new OpenGLESRenderer::OpenGLFrameBuffer(0, vid_fullscreen);
 		else
 #endif
 			fb = new OpenGLRenderer::OpenGLFrameBuffer(0, vid_fullscreen);
+#endif
 	}
 
 	return fb;
@@ -602,6 +631,37 @@ void SystemBaseFrameBuffer::SetWindowSize(int w, int h)
 SystemGLFrameBuffer::SystemGLFrameBuffer(void *hMonitor, bool fullscreen)
 : SystemBaseFrameBuffer(hMonitor, fullscreen)
 {
+#ifdef __3DS__
+	GLContext = nullptr;
+	I_3DSStartupLog("sdl-window-enter");
+	Priv::CreateWindow(0);
+	if (Priv::window == nullptr)
+	{
+		I_FatalError("Could not create Nintendo 3DS video window:\n%s\n", SDL_GetError());
+	}
+	I_3DSStartupLog("sdl-window-ready");
+
+	const u32 linearBefore = linearSpaceFree();
+	const u32 vramBefore = vramSpaceFree();
+	I_3DSStartupLog("novagl-enter");
+	// Leave a completed progress screen scanned out until NovaGL presents the
+	// first real frame. Unlike tearing gfx down and starting it again, this
+	// avoids returning to a black LCD during the final renderer setup.
+	I_3DSLoadingScreenFinish();
+	// Keep Citro3D synchronized at every frame boundary. Counting submitted
+	// frames is not a GPU completion fence: on real hardware an async queue can
+	// still be consuming slot N when the CPU wraps around and reuses it. That
+	// produced a PICA hang (audio kept playing, while video, input and HOME/ APT
+	// stopped). Single buffering makes C3D_FrameBegin use SYNCDRAW and gives all
+	// NovaGL rings and deferred frees an actual completion boundary.
+	novaSetFrameBuffers(1);
+	nova_init_ex(NOVA_CMD_BUF_SIZE, 2 * 1024 * 1024, 512 * 1024, 512 * 1024);
+	novaSetSwapInterval(1);
+	I_3DSStartupLog("novagl-ready");
+	Printf("[NovaGL] init synchronized cmd=3M vertex=2M index=512K staging=512K; linear %u -> %u, VRAM %u -> %u bytes\n",
+		(unsigned)linearBefore, (unsigned)linearSpaceFree(),
+		(unsigned)vramBefore, (unsigned)vramSpaceFree());
+#else
 	// NOTE: Core profiles were added with GL 3.2, so there's no sense trying
 	// to set core 3.1 or 3.0. We could try a forward-compatible context
 	// instead, but that would be too restrictive (w.r.t. shaders).
@@ -656,16 +716,21 @@ SystemGLFrameBuffer::SystemGLFrameBuffer(void *hMonitor, bool fullscreen)
 	{
 		I_FatalError("Could not create OpenGL window:\n%s\n",SDL_GetError());
 	}
+#endif
 }
 
 SystemGLFrameBuffer::~SystemGLFrameBuffer ()
 {
 	if (Priv::window)
 	{
+#ifdef __3DS__
+		nova_fini();
+#else
 		if (GLContext)
 		{
 			SDL_GL_DeleteContext(GLContext);
 		}
+#endif
 
 		Priv::DestroyWindow();
 	}
@@ -673,21 +738,31 @@ SystemGLFrameBuffer::~SystemGLFrameBuffer ()
 
 int SystemGLFrameBuffer::GetClientWidth()
 {
+#ifdef __3DS__
+	return 400;
+#else
 	int width = 0;
 	SDL_GL_GetDrawableSize(Priv::window, &width, nullptr);
 	return width;
+#endif
 }
 
 int SystemGLFrameBuffer::GetClientHeight()
 {
+#ifdef __3DS__
+	return 240;
+#else
 	int height = 0;
 	SDL_GL_GetDrawableSize(Priv::window, nullptr, &height);
 	return height;
+#endif
 }
 
 void SystemGLFrameBuffer::SetVSync( bool vsync )
 {
-#if defined (__APPLE__)
+#if defined (__3DS__)
+	novaSetSwapInterval(vsync ? 1 : 0);
+#elif defined (__APPLE__)
 	const GLint value = vsync ? 1 : 0;
 	CGLSetParameter( CGLGetCurrentContext(), kCGLCPSwapInterval, &value );
 #else
@@ -705,7 +780,11 @@ void SystemGLFrameBuffer::SetVSync( bool vsync )
 
 void SystemGLFrameBuffer::SwapBuffers()
 {
+#ifdef __3DS__
+	novaSwapBuffers();
+#else
 	SDL_GL_SwapWindow(Priv::window);
+#endif
 }
 
 
@@ -768,4 +847,3 @@ void I_SetWindowTitle(const char* caption)
 		SDL_SetWindowTitle(Priv::window, default_caption);
 	}
 }
-

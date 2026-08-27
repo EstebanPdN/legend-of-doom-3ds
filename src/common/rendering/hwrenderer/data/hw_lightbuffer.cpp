@@ -36,7 +36,14 @@ static const int ELEMENT_SIZE = (4*sizeof(float));
 FLightBuffer::FLightBuffer(int pipelineNbr):
 	mPipelineNbr(pipelineNbr)
 {
+#ifdef __3DS__
+	// NovaGL's fixed-function bridge does not upload GZDoom's shader light
+	// vectors. Keep a valid minimal buffer instead of reserving 5.12 MiB of
+	// normal heap that can never be consumed on Old or New 3DS.
+	int maxNumberOfLights = 1;
+#else
 	int maxNumberOfLights = 80000;
+#endif
 	
 	mBufferSize = maxNumberOfLights * ELEMENTS_PER_LIGHT;
 	mByteSize = mBufferSize * ELEMENT_SIZE;
@@ -87,6 +94,10 @@ void FLightBuffer::Clear()
 
 int FLightBuffer::UploadLights(FDynLightData &data)
 {
+#ifdef __3DS__
+	(void)data;
+	return -1;
+#else
 	// All meaasurements here are in vec4's.
 	int size0 = data.arrays[0].Size()/4;
 	int size1 = data.arrays[1].Size()/4;
@@ -133,6 +144,7 @@ int FLightBuffer::UploadLights(FDynLightData &data)
 	{
 		return -1;	// Buffer is full. Since it is being used live at the point of the upload we cannot do much here but to abort.
 	}
+#endif
 }
 
 int FLightBuffer::GetBinding(unsigned int index, size_t* pOffset, size_t* pSize)
@@ -144,6 +156,5 @@ int FLightBuffer::GetBinding(unsigned int index, size_t* pOffset, size_t* pSize)
 	*pSize = mBlockSize * ELEMENT_SIZE;
 	return (index - offset);
 }
-
 
 

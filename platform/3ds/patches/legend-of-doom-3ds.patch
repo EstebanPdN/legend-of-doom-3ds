@@ -1,0 +1,159 @@
+diff --git a/actors/weapons/Boomerang.zs b/actors/weapons/Boomerang.zs
+index 39eba6e..6816cd3 100644
+--- a/actors/weapons/Boomerang.zs
++++ b/actors/weapons/Boomerang.zs
+@@ -67,8 +67,7 @@ class BoomerangBlue : Boomerang
+                 // Boomerang projectiles are spawned by ZeldaWeapon if
+                 // the Boomerang item is in the player's inventory.
+                 if (invoker.spawned) return;
+-                int alflags = invoker.bOffhandWeapon ? ALF_ISOFFHAND : 0;
+-                invoker.spawned = SpawnPlayerMissile("BoomerangProjBlue", aimflags: alflags);
++                invoker.spawned = SpawnPlayerMissile("BoomerangProjBlue");
+             }
+             Goto ReadyNoShow;
+         Select:
+diff --git a/actors/weapons/Bow.zs b/actors/weapons/Bow.zs
+index e28575f..dfe5b53 100644
+--- a/actors/weapons/Bow.zs
++++ b/actors/weapons/Bow.zs
+@@ -10,7 +10,6 @@ class Bow : Weapon
+         Inventory.PickUpMessage "You got a bow!";
+         +WEAPON.NOALERT
+         +WEAPON.NOAUTOSWITCHTO
+-        +WEAPON.TWOHANDED
+     }
+
+     States
+diff --git a/actors/weapons/Candle.zs b/actors/weapons/Candle.zs
+index 9cbcac6..98c1aa2 100644
+--- a/actors/weapons/Candle.zs
++++ b/actors/weapons/Candle.zs
+@@ -9,7 +9,6 @@ class CandleRed : ZeldaWeapon
+         DamageType "Fire";
+ 		Inventory.Pickupmessage "You got the red candle!";
+         +WEAPON.NO_AUTO_SWITCH
+-        +WEAPON.TWOHANDED
+     }
+
+     States
+diff --git a/actors/weapons/Meat.zs b/actors/weapons/Meat.zs
+index d3be909..bba32d4 100644
+--- a/actors/weapons/Meat.zs
++++ b/actors/weapons/Meat.zs
+@@ -9,7 +9,6 @@ class ZeldaMeat : ZeldaWeapon
+         Weapon.SlotNumber 9;
+         Inventory.MaxAmount 1;
+         Inventory.PickupMessage "You picked up meat!";
+-        +WEAPON.TWOHANDED
+     }
+
+     States
+diff --git a/actors/weapons/Potions.zs b/actors/weapons/Potions.zs
+index 51f9ae0..fd31a6e 100644
+--- a/actors/weapons/Potions.zs
++++ b/actors/weapons/Potions.zs
+@@ -8,7 +8,6 @@ class ZeldaPotion : Weapon
+ 		Weapon.AmmoType "PotAmmo";
+         Weapon.SlotNumber 8;
+ 		Inventory.Pickupmessage "Picked up a potion!";
+-        +WEAPON.TWOHANDED
+ 	}
+
+     States
+diff --git a/actors/weapons/Swords.zs b/actors/weapons/Swords.zs
+index eb58538..1ef9a84 100644
+--- a/actors/weapons/Swords.zs
++++ b/actors/weapons/Swords.zs
+@@ -15,7 +15,6 @@ class ZeldaSwordWood : ZeldaSword
+ 		Inventory.PickupMessage "You got the wooden sword!";
+         ZeldaSword.SwordProjectile "ZeldaSwordMissleWood";
+ 		Tag "$TAG_WOODSWORD";
+-		+WEAPON.TWOHANDED
+ 	}
+
+ 	States
+@@ -234,8 +233,6 @@ class ZeldaSword : ZeldaWeapon abstract
+ 	{
+         if (player == null) return;
+
+-		int alflags = invoker.bOffhandWeapon ? ALF_ISOFFHAND : 0;
+-
+ 		A_WeaponOffset(offsetX, offsetY);
+
+ 		if (invoker.SpawnedSword || player.Health < player.mo.GetMaxHealth())
+@@ -244,7 +241,7 @@ class ZeldaSword : ZeldaWeapon abstract
+ 		}
+ 		else
+ 		{
+-			invoker.SpawnedSword = SpawnPlayerMissile (missleClass, aimflags: alflags);
++			invoker.SpawnedSword = SpawnPlayerMissile (missleClass);
+ 		}
+ 	}
+ }
+diff --git a/actors/weapons/Wand.zs b/actors/weapons/Wand.zs
+index 887e5b8..6d29b1f 100644
+--- a/actors/weapons/Wand.zs
++++ b/actors/weapons/Wand.zs
+@@ -15,7 +15,6 @@ class FireCrystal : ZeldaWeapon
+         Weapon.YAdjust 0;
+         Inventory.PickupMessage "You got the wand!";
+         -BLOODSPLATTER
+-        +WEAPON.TWOHANDED
+     }
+
+   States
+diff --git a/actors/weapons/Whistle.zs b/actors/weapons/Whistle.zs
+index 7a9f250..aeddbd1 100644
+--- a/actors/weapons/Whistle.zs
++++ b/actors/weapons/Whistle.zs
+@@ -8,7 +8,6 @@ class ZeldaWhistle : ZeldaWeapon
+         Weapon.SlotNumber 7;
+ 		Weapon.AmmoUse 0;
+         Scale 0.5;
+-        +WEAPON.TWOHANDED
+     }
+
+     States
+diff --git a/actors/weapons/ZeldaWeapon.zs b/actors/weapons/ZeldaWeapon.zs
+index 029f40d..fbd3247 100644
+--- a/actors/weapons/ZeldaWeapon.zs
++++ b/actors/weapons/ZeldaWeapon.zs
+@@ -35,15 +35,13 @@ class ZeldaWeapon : Weapon abstract
+
+                 if (!player) return;
+
+-                int alflags = invoker.bOffhandWeapon ? ALF_ISOFFHAND : 0;
+-
+                 if (player.CountInv("BoomerangBlue") >= 1)
+                 {
+-                    invoker.spawned = SpawnPlayerMissile("BoomerangProjBlue", aimflags: alflags);
++                    invoker.spawned = SpawnPlayerMissile("BoomerangProjBlue");
+                 }
+                 else if (player.CountInv("Boomerang") >= 1)
+                 {
+-                    invoker.spawned = SpawnPlayerMissile("BoomerangProj", aimflags: alflags);
++                    invoker.spawned = SpawnPlayerMissile("BoomerangProj");
+                 }
+             }
+             Goto Ready;
+@@ -60,16 +58,13 @@ class ZeldaWeapon : Weapon abstract
+         A_SpawnItemEx("SHEELD", 30, 0, 15, flags: SXF_SETTARGET);
+
+         // Draw shield overlay when weapon is not firing.
+-        if (player == null)
+-        {
+-            return;
+-        }
++        let player = players[consoleplayer].mo;
++        if (!player) return;
+
+-        let wep = invoker == player.OffhandWeapon ? player.OffhandWeapon : player.ReadyWeapon;
++        let wep = players[consoleplayer].ReadyWeapon;
+         if (!wep) return;
+-        let psplayer = wep.bOffhandWeapon ? PSP_OFFHANDWEAPON : PSP_WEAPON;
+
+-        let psp = players[consoleplayer].GetPSprite(psplayer);
++        let psp = players[consoleplayer].GetPSprite(PSP_WEAPON);
+
+         let isReady =
+             players[consoleplayer].AttackDown == false ||

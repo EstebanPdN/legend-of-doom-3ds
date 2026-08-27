@@ -208,11 +208,20 @@ inline int BigLong (int x)
 
 #endif // __BIG_ENDIAN__
 
+// newlib uses long for int32_t/uint32_t on Nintendo 3DS. The conversion is
+// lossless there, so retain the strongly typed overloads needed by the engine.
+#ifdef __3DS__
+inline unsigned long BigLong(unsigned long value) { return (unsigned long)BigLong((unsigned int)value); }
+inline long BigLong(long value) { return (long)BigLong((int)value); }
+inline unsigned long LittleLong(unsigned long value) { return value; }
+inline long LittleLong(long value) { return value; }
+#else
 // These may be destructive so they should create errors
 unsigned long BigLong(unsigned long) = delete;
 long BigLong(long) = delete;
 unsigned long LittleLong(unsigned long) = delete;
 long LittleLong(long) = delete;
+#endif
 
 
 // Data accessors, since some data is highly likely to be unaligned.

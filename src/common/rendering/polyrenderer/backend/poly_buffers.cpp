@@ -26,6 +26,14 @@
 #include "poly_thread.h"
 #include "engineerrors.h"
 
+namespace
+{
+size_t BufferWordCount(size_t byteCount)
+{
+	return byteCount / sizeof(uint32_t) + (byteCount % sizeof(uint32_t) != 0);
+}
+}
+
 PolyBuffer *PolyBuffer::First = nullptr;
 
 PolyBuffer::PolyBuffer()
@@ -58,7 +66,11 @@ void PolyBuffer::Reset()
 
 void PolyBuffer::SetData(size_t size, const void *data, bool staticdata)
 {
-	mData.resize(size);
+	// IBuffer sizes are expressed in bytes, while the backing vector stores
+	// 32-bit words. Treating the byte count as an element count quadruples
+	// every SoftPoly buffer (and makes its large vertex buffer impossible on
+	// memory-constrained targets).
+	mData.resize(BufferWordCount(size));
 	map = mData.data();
 	if (data)
 		memcpy(map, data, size);
@@ -72,7 +84,7 @@ void PolyBuffer::SetSubData(size_t offset, size_t size, const void *data)
 
 void PolyBuffer::Resize(size_t newsize)
 {
-	mData.resize(newsize);
+	mData.resize(BufferWordCount(newsize));
 	buffersize = newsize;
 	map = mData.data();
 }
@@ -87,7 +99,7 @@ void PolyBuffer::Unmap()
 
 void *PolyBuffer::Lock(unsigned int size)
 {
-	if (mData.size() < (size_t)size)
+	if (buffersize < (size_t)size)
 		Resize(size);
 	return map;
 }

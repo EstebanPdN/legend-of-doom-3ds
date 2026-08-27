@@ -1,0 +1,107 @@
+name: Build Nintendo 3DS packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 3DSX, CIA, and SD package
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      # devkitARM image published 2026-06-10; pin the OCI index so the
+      # compiler and packaged 3DS tools do not change between builds.
+      image: devkitpro/devkitarm@sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Install host build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates cmake curl git make pkg-config unzip zip \
+            libsdl2-dev
+
+      - name: Verify clean source and patch stacks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain --untracked-files=all)"
+          git -C "$GITHUB_WORKSPACE" diff --check
+          ./platform/3ds/test-patches.sh
+
+      - name: Build release packages
+        run: ./platform/3ds/build.sh
+
+      - name: Read build metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="build-3ds/dist/BUILD-MANIFEST.txt"
+          test -f "$MANIFEST"
+          ARTIFACT_STEM="$(sed -n 's/^artifact_stem=//p' "$MANIFEST")"
+          test -n "$ARTIFACT_STEM"
+          test "$(grep -c '^artifact_stem=' "$MANIFEST")" -eq 1
+          echo "artifact_stem=$ARTIFACT_STEM" >> "$GITHUB_OUTPUT"
+
+      - name: Verify outputs and public boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="build-3ds/dist/BUILD-MANIFEST.txt"
+          ARTIFACT_STEM="$(sed -n 's/^artifact_stem=//p' "$MANIFEST")"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" diff --check
+          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain --untracked-files=all)"
+          ! git -C "$GITHUB_WORKSPACE" ls-files | \
+            grep -Ei '(^|/)[^/]*\.(nes|rom|wad|pk3|dmp|dump|sav|cia|3dsx|elf|3ds|cci|cxi|gb|gbc|gba|z64|n64|v64|7z|rar)$'
+          ! git -C "$GITHUB_WORKSPACE" ls-files | \
+            grep -E '(^|/)(AGENTS\.md|PROTOCOL\.md|WORKFLOW\.md|GITHUB_RELEASE_WORKFLOW\.md)$'
+          grep -qx 'profile=release' "$MANIFEST"
+          grep -qx 'git_status=clean' "$MANIFEST"
+          test -f "build-3ds/dist/${ARTIFACT_STEM}.3dsx"
+          test -f "build-3ds/dist/${ARTIFACT_STEM}.cia"
+          test -f "build-3ds/dist/${ARTIFACT_STEM}-sd.zip"
+          test -f "build-3ds/dist/${ARTIFACT_STEM}-debug-symbols.zip"
+          test -f "$MANIFEST"
+          test -f "build-3ds/dist/SHA256SUMS.txt"
+          (cd build-3ds/dist && sha256sum -c SHA256SUMS.txt)
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-sd.zip" | \
+            grep -F '3ds/legend-of-doom/data/freedoom2.wad'
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-sd.zip" | \
+            grep -F '3ds/legend-of-doom/data/LegendOfDoom.pk3'
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-sd.zip" | \
+            grep -F '3ds/legend-of-doom/THIRD-PARTY-LICENSES.md'
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-sd.zip" | \
+            grep -F '3ds/legend-of-doom/licenses/OpenAL-Soft-COPYING.txt'
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-sd.zip" | \
+            grep -F '3ds/legend-of-doom/licenses/minimp3-LICENSE.txt'
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-sd.zip" | \
+            grep -F '3ds/legend-of-doom/licenses/ZMusic/'
+          unzip -l "build-3ds/dist/${ARTIFACT_STEM}-debug-symbols.zip" | \
+            grep -F 'BUILD-MANIFEST.txt'
+
+      - name: Upload packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.metadata.outputs.artifact_stem }}
+          if-no-files-found: error
+          path: |
+            build-3ds/dist/${{ steps.metadata.outputs.artifact_stem }}.3dsx
+            build-3ds/dist/${{ steps.metadata.outputs.artifact_stem }}.cia
+            build-3ds/dist/${{ steps.metadata.outputs.artifact_stem }}-sd.zip
+            build-3ds/dist/${{ steps.metadata.outputs.artifact_stem }}-debug-symbols.zip
+            build-3ds/dist/BUILD-MANIFEST.txt
+            build-3ds/dist/SHA256SUMS.txt

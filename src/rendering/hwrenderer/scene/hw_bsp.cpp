@@ -47,7 +47,15 @@
 #include <immintrin.h>
 #endif // ARCH_IA32
 
+#ifdef __3DS__
+// libstdc++ workers are scheduled on the same application core on 3DS. The
+// desktop producer/consumer path therefore adds atomics, queue traffic and a
+// future wait without running BSP work in parallel. Keep it available on
+// desktop, but make the handheld path explicitly single-threaded.
+CVAR(Bool, gl_multithread, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#else
 CVAR(Bool, gl_multithread, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#endif
 
 EXTERN_CVAR(Float, r_actorspriteshadowdist)
 
@@ -75,7 +83,14 @@ struct RenderJob
 
 class RenderJobQueue
 {
+#ifdef __3DS__
+	// The desktop-sized queue costs 3.6 MiB on a 32-bit target. The largest
+	// scene observed upstream needs about 40000 entries, so retain headroom
+	// while recovering 3 MiB of the Old 3DS memory budget.
+	RenderJob pool[50000];
+#else
 	RenderJob pool[300000];	// Way more than ever needed. The largest ever seen on a single viewpoint is around 40000.
+#endif
 	std::atomic<int> readindex{};
 	std::atomic<int> writeindex{};
 public:
@@ -846,7 +861,13 @@ void HWDrawInfo::RenderBSP(void *node, bool drawpsprites)
 
 	validcount++;	// used for processing sidedefs only once by the renderer.
 
+#ifdef __3DS__
+	// Old configs may still contain gl_multithread=true. Do not let that restore
+	// the same-core worker and its per-view queue/future overhead.
+	multithread = false;
+#else
 	multithread = gl_multithread;
+#endif
 	if (multithread)
 	{
 		jobQueue.ReleaseAll();

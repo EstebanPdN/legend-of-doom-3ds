@@ -46,6 +46,11 @@
 #include "engineerrors.h"
 #include "i_interface.h"
 
+#ifdef __3DS__
+#include "../../3ds/diagnostics_3ds.h"
+#include "../../3ds/i_input_3ds.h"
+#endif
+
 
 static void I_CheckGUICapture ();
 static void I_CheckNativeMouse ();
@@ -464,10 +469,39 @@ void MessagePump (const SDL_Event &sev)
 	case SDL_JOYBUTTONDOWN:
 	case SDL_JOYBUTTONUP:
 		event.type = sev.type == SDL_JOYBUTTONDOWN ? EV_KeyDown : EV_KeyUp;
+	#ifdef __3DS__
+	{
+		const F3DSDiagnosticButtonResult diagnostic = I_3DSDiagnosticButtonEvent(
+			sev.jbutton.button, sev.type == SDL_JOYBUTTONDOWN);
+		if (diagnostic.ReleaseComboKeys)
+		{
+			// L or R may already have reached gameplay before A completed the
+			// chord. Explicit releases prevent a stuck action/weapon command.
+			static const int ComboKeys[] = { KEY_PAD_A, KEY_PAD_LSHOULDER, KEY_PAD_RSHOULDER };
+			event.type = EV_KeyUp;
+			for (int key : ComboKeys)
+			{
+				event.data1 = key;
+				D_PostEvent(&event);
+			}
+		}
+		if (diagnostic.SuppressEvent) break;
+		event.data1 = I_3DSMapJoystickButton(sev.jbutton.button);
+	}
+	#else
 		event.data1 = KEY_FIRSTJOYBUTTON + sev.jbutton.button;
+	#endif
 		if(event.data1 != 0)
 			D_PostEvent(&event);
 		break;
+
+	#ifdef __3DS__
+	case SDL_FINGERDOWN:
+	case SDL_FINGERMOTION:
+	case SDL_FINGERUP:
+		I_3DSHandleTouchEvent(sev, GUICapture);
+		break;
+	#endif
 	}
 }
 
@@ -490,6 +524,9 @@ void I_StartTic ()
 	I_CheckGUICapture ();
 	I_CheckNativeMouse ();
 	I_GetEvent ();
+	#ifdef __3DS__
+	I_3DSServiceDiagnosticDump();
+	#endif
 }
 
 void I_ProcessJoysticks ();

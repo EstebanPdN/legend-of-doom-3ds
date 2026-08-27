@@ -56,7 +56,7 @@ enum
 
 struct InitIntToZero
 {
-	void Init(int &v)
+	void Init(int32_t &v)
 	{
 		v = 0;
 	}
@@ -107,8 +107,8 @@ public:
 	void LockString(int levelnum, int strnum);
 	void UnlockAll();
 	void MarkString(int strnum);
-	void LockStringArray(int levelnum, const int *strnum, unsigned int count);
-	void MarkStringArray(const int *strnum, unsigned int count);
+	void LockStringArray(int levelnum, const int32_t *strnum, unsigned int count);
+	void MarkStringArray(const int32_t *strnum, unsigned int count);
 	void MarkStringMap(const FWorldGlobalArray &array);
 	void PurgeStrings();
 	void Clear();

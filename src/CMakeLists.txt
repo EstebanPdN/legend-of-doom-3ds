@@ -402,6 +402,12 @@ add_custom_target( revision_check ALL
 
 # Libraries ZDoom needs
 
+if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+	set( CMAKE_DL_LIBS "" )
+	link_directories( "$ENV{DEVKITPRO}/libctru/lib" )
+	set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L$ENV{DEVKITPRO}/libctru/lib" )
+endif()
+
 set( ZDOOM_LIBS ${ZDOOM_LIBS} "${ZLIB_LIBRARIES}" "${JPEG_LIBRARIES}" "${BZIP2_LIBRARIES}" "${CMAKE_DL_LIBS}" )
 if (HAVE_VULKAN)
 	set( ZDOOM_LIBS ${ZDOOM_LIBS} "glslang" "SPIRV" "OGLCompiler")
@@ -462,9 +468,23 @@ set( PLAT_SDL_SOURCES
 	common/platform/posix/sdl/i_system.cpp
 	common/platform/posix/sdl/sdlglvideo.cpp
 	common/platform/posix/sdl/st_start.cpp )
+
+if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+	add_definitions( -DNINTENDO_3DS=1 -DNO_GTK=1 )
+	list( REMOVE_ITEM PLAT_SDL_SOURCES common/platform/posix/sdl/crashcatcher.c )
+	list( REMOVE_ITEM PLAT_SDL_SOURCES common/platform/posix/sdl/st_start.cpp )
+	list( APPEND PLAT_SDL_SOURCES
+		common/platform/3ds/diagnostics_3ds.cpp
+		common/platform/3ds/i_input_3ds.cpp
+		common/platform/3ds/memory.cpp
+		common/platform/3ds/st_start.cpp )
+endif()
 set( PLAT_UNIX_SOURCES
 	common/platform/posix/unix/i_specialpaths.cpp
 	common/platform/posix/unix/gtk_dialogs.cpp )
+if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+	set( PLAT_UNIX_SOURCES common/platform/3ds/i_specialpaths.cpp )
+endif()
 set( PLAT_OSX_SOURCES
 	common/platform/posix/osx/iwadpicker_cocoa.mm
 	common/platform/posix/osx/i_specialpaths.mm
@@ -800,8 +820,10 @@ if (HAVE_GLES2)
 		common/rendering/gles/gles_shader.cpp
 		common/rendering/gles/gles_shaderprogram.cpp
 		common/rendering/gles/gles_samplers.cpp
-		common/rendering/gles/glad/src/glad.c
 	)
+	if( NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+		list( APPEND GLES_SOURCES common/rendering/gles/glad/src/glad.c )
+	endif()
 
 	set (FASTMATH_SOURCES ${FASTMATH_SOURCES} ${GLES_SOURCES})
 endif()
@@ -1206,6 +1228,14 @@ else()
 	set_source_files_properties( ${PCH_SOURCES} PROPERTIES COMPILE_FLAGS "-include g_pch.h" )
 endif()
 
+if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+	# Omit desktop OpenGL and its loader, while retaining common/rendering/gles.
+	# The former expression also matched the "gles" prefix and silently removed
+	# the Citro3D renderer from Nintendo 3DS builds.
+	list( FILTER FASTMATH_SOURCES EXCLUDE REGEX "^common/rendering/gl(/|_)" )
+	list( FILTER PCH_SOURCES EXCLUDE REGEX "^common/rendering/gl(/|_)" )
+endif()
+
 add_executable( zdoom WIN32 MACOSX_BUNDLE
 	${HEADER_FILES}
 	${NOT_COMPILED_SOURCE_FILES}
@@ -1255,6 +1285,40 @@ if( UNIX )
 endif()
 
 target_link_libraries( zdoom ${ZDOOM_LIBS} gdtoa lzma ${ZMUSIC_LIBRARIES} )
+
+if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+	if( NOT NOVAGL_INCLUDE_DIR OR NOT EXISTS "${NOVAGL_INCLUDE_DIR}/NovaGL.h" )
+		message( FATAL_ERROR "NOVAGL_INCLUDE_DIR must point to the patched NovaGL include directory" )
+	endif()
+	if( NOT NOVAGL_LIBRARY OR NOT EXISTS "${NOVAGL_LIBRARY}" )
+		message( FATAL_ERROR "NOVAGL_LIBRARY must point to the patched libNovaGL.a" )
+	endif()
+	target_include_directories( zdoom PRIVATE "${NOVAGL_INCLUDE_DIR}" )
+	target_compile_definitions( zdoom PRIVATE
+		NOVAGL_GZDOOM_COMPAT=1
+		NO_RENDER_BUFFER=1
+		LOD3DS_BUILD_ID="${LOD3DS_BUILD_ID}" )
+	if( LOD3DS_HARDWARE_DIAGNOSTIC )
+		target_compile_definitions( zdoom PRIVATE LOD3DS_HARDWARE_DIAGNOSTIC=1 )
+	endif()
+	target_link_libraries( zdoom "${NOVAGL_LIBRARY}" citro3d )
+	target_link_directories( zdoom PRIVATE "$ENV{DEVKITPRO}/libctru/lib" )
+	target_link_options( zdoom PRIVATE "-Wl,-Map,${CMAKE_BINARY_DIR}/gzdoom.map" )
+	set( N3DS_CRT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/legend-3ds-crt" )
+	# GCC resolves start files inside the active armv6k/fpu multilib folder.
+	set( N3DS_CRT_OBJECT "${N3DS_CRT_DIRECTORY}/armv6k/fpu/3dsx_crt0.o" )
+	add_custom_command(
+		OUTPUT "${N3DS_CRT_OBJECT}"
+		COMMAND "${CMAKE_COMMAND}" -E make_directory "${N3DS_CRT_DIRECTORY}/armv6k/fpu"
+		COMMAND "${CMAKE_C_COMPILER}" -march=armv6k -mfloat-abi=hard -c
+			"${CMAKE_CURRENT_SOURCE_DIR}/common/platform/3ds/3dsx_crt0.s"
+			-o "${N3DS_CRT_OBJECT}"
+		DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/common/platform/3ds/3dsx_crt0.s"
+		VERBATIM )
+	add_custom_target( legend_3ds_crt DEPENDS "${N3DS_CRT_OBJECT}" )
+	add_dependencies( zdoom legend_3ds_crt )
+	target_link_options( zdoom PRIVATE "-B${N3DS_CRT_DIRECTORY}/" )
+endif()
 
 include_directories( .
 	common/audio/sound
@@ -1355,21 +1419,23 @@ if( MSVC )
 
 endif()
 
-if( NOT WIN32 AND NOT APPLE )
+if( NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
 	FILE( WRITE ${CMAKE_CURRENT_BINARY_DIR}/link-make "if [ ! -e ${ZDOOM_OUTPUT_DIR}/${ZDOOM_EXE_NAME} ]; then ln -sf ${CMAKE_CURRENT_BINARY_DIR}/${ZDOOM_EXE_NAME} ${ZDOOM_OUTPUT_DIR}/${ZDOOM_EXE_NAME}; fi" )
 	add_custom_command( TARGET zdoom POST_BUILD
 		COMMAND chmod +x ${CMAKE_CURRENT_BINARY_DIR}/link-make
 		COMMAND /bin/sh -c ${CMAKE_CURRENT_BINARY_DIR}/link-make )
 endif()
 
-add_custom_command(TARGET zdoom POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	${CMAKE_SOURCE_DIR}/soundfont/gzdoom.sf2 $<TARGET_FILE_DIR:zdoom>/soundfonts/gzdoom.sf2
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	${CMAKE_SOURCE_DIR}/fm_banks/GENMIDI.GS.wopl $<TARGET_FILE_DIR:zdoom>/fm_banks/GENMIDI.GS.wopl
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	${CMAKE_SOURCE_DIR}/fm_banks/gs-by-papiezak-and-sneakernets.wopn $<TARGET_FILE_DIR:zdoom>/fm_banks/gs-by-papiezak-and-sneakernets.wopn
-)
+if( NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
+	add_custom_command(TARGET zdoom POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/soundfont/gzdoom.sf2 $<TARGET_FILE_DIR:zdoom>/soundfonts/gzdoom.sf2
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/fm_banks/GENMIDI.GS.wopl $<TARGET_FILE_DIR:zdoom>/fm_banks/GENMIDI.GS.wopl
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/fm_banks/gs-by-papiezak-and-sneakernets.wopn $<TARGET_FILE_DIR:zdoom>/fm_banks/gs-by-papiezak-and-sneakernets.wopn
+	)
+endif()
 
 if( WIN32 )
 	set( INSTALL_SOUNDFONT_PATH . CACHE STRING "Directory where soundfonts and WOPL/WOPN banks will be placed during install." )

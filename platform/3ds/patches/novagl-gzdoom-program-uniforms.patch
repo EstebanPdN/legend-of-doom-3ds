@@ -1,0 +1,176 @@
+diff --git a/src/raster.c b/src/raster.c
+index 53e2ab6..508f1dc 100644
+--- a/src/raster.c
++++ b/src/raster.c
+@@ -457,8 +457,6 @@ void glGetShaderInfoLog(GLuint shader, GLsizei maxLength, GLsizei *length, char
+     if (infoLog && maxLength > 0) infoLog[0] = '\0';
+ }
+
+-GLuint glCreateProgram(void) { return NOVAGL_GL2_RETURN_DUMMY; }
+-
+ void glAttachShader(GLuint program, GLuint shader) {
+     (void) program;
+     (void) shader;
+@@ -482,7 +480,6 @@ void glGetProgramInfoLog(GLuint program, GLsizei maxLength, GLsizei *length, cha
+ }
+
+ void glDeleteShader(GLuint shader) { (void) shader; }
+-void glDeleteProgram(GLuint program) { (void) program; }
+
+ #ifdef NOVAGL_GZDOOM_COMPAT
+ enum {
+@@ -518,6 +515,62 @@ static GLfloat gzd_clip_line[4] = { -10000000.0f, 0, 0, 0 };
+ static GLfloat gzd_clip_height = 0.0f;
+ static GLfloat gzd_clip_height_direction = 0.0f;
+
++/* GLSL uniforms belong to a program.  GZDoom relies on that rule and keeps a
++ * separate CPU-side uniform cache for every shader variant.  The original
++ * compatibility bridge returned program id 1 for every glCreateProgram and
++ * ignored glUseProgram, which collapsed all of those caches into one global
++ * state.  A sky shader could therefore leave its blue uObjectColor active;
++ * the world shader quite correctly skipped re-uploading its already-cached
++ * white value, and the entire floor inherited the sky tint.
++ *
++ * Only uniforms mapped to NovaGL global/fixed-function state need snapshots.
++ * Matrices and uClipLine are unbuffered by GZDoom and are uploaded on every
++ * Apply, so they do not need to be duplicated here. */
++#define GZD_MAX_PROGRAMS 1024
++typedef struct {
++    int in_use;
++    GLfloat object_color[4];
++    GLfloat add_color[4];
++    GLfloat fog_color[4];
++    GLfloat alpha_threshold;
++    GLfloat clip_height;
++    GLfloat clip_height_direction;
++} GzdProgramState;
++
++static GzdProgramState gzd_programs[GZD_MAX_PROGRAMS];
++static GLuint gzd_next_program = 1;
++static GLuint gzd_active_program = 0;
++
++static GzdProgramState *gzd_current_program_state(void)
++{
++    if (gzd_active_program == 0 || gzd_active_program >= GZD_MAX_PROGRAMS ||
++        !gzd_programs[gzd_active_program].in_use)
++        return NULL;
++    return &gzd_programs[gzd_active_program];
++}
++
++GLuint glCreateProgram(void)
++{
++    if (gzd_next_program >= GZD_MAX_PROGRAMS) {
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return 0;
++    }
++    GLuint program = gzd_next_program++;
++    memset(&gzd_programs[program], 0, sizeof(gzd_programs[program]));
++    gzd_programs[program].in_use = 1;
++    return program;
++}
++
++void glDeleteProgram(GLuint program)
++{
++    if (program == 0 || program >= GZD_MAX_PROGRAMS) return;
++    /* GZDoom does not draw a program after deleting it.  Keep an active
++     * program alive until another one is bound, matching GL's deferred delete
++     * behaviour closely enough for this fixed-function bridge. */
++    if (program != gzd_active_program)
++        memset(&gzd_programs[program], 0, sizeof(gzd_programs[program]));
++}
++
+ int nova_gzdoom_user_clip_active(void)
+ {
+     return gzd_clip_height_direction != 0.0f ||
+@@ -591,6 +644,9 @@ static void gzd_load_matrix(GLenum mode, const GLfloat *value)
+     glLoadMatrixf(value);
+     glMatrixMode(oldmode);
+ }
++#else
++GLuint glCreateProgram(void) { return NOVAGL_GL2_RETURN_DUMMY; }
++void glDeleteProgram(GLuint program) { (void) program; }
+ #endif
+
+ GLint glGetUniformLocation(GLuint program, const char *name) {
+@@ -622,7 +678,36 @@ GLint glGetAttribLocation(GLuint program, const char *name) {
+     return -1;
+ }
+
+-void glUseProgram(GLuint program) { (void) program; }
++void glUseProgram(GLuint program) {
++#ifdef NOVAGL_GZDOOM_COMPAT
++    if (program == 0) {
++        gzd_active_program = 0;
++        return;
++    }
++    if (program >= GZD_MAX_PROGRAMS || !gzd_programs[program].in_use) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
++    if (program == gzd_active_program) return;
++
++    gzd_active_program = program;
++    GzdProgramState *state = &gzd_programs[program];
++    memcpy(gzd_object_color, state->object_color, sizeof(gzd_object_color));
++    memcpy(gzd_add_color, state->add_color, sizeof(gzd_add_color));
++    gzd_apply_color();
++    glFogfv(GL_FOG_COLOR, state->fog_color);
++    gzd_clip_height = state->clip_height;
++    gzd_clip_height_direction = state->clip_height_direction;
++    if (state->alpha_threshold >= 0.0f) {
++        glAlphaFunc(GL_GREATER, state->alpha_threshold);
++        glEnable(GL_ALPHA_TEST);
++    } else {
++        glDisable(GL_ALPHA_TEST);
++    }
++#else
++    (void) program;
++#endif
++}
+
+ void glUniform1i(GLint location, GLint v0) {
+     (void) location;
+@@ -631,15 +716,19 @@ void glUniform1i(GLint location, GLint v0) {
+
+ void glUniform1f(GLint location, GLfloat v0) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
++    GzdProgramState *state = gzd_current_program_state();
+     if (location == GZD_U_CLIP_HEIGHT) {
+         gzd_clip_height = v0;
++        if (state) state->clip_height = v0;
+         return;
+     }
+     if (location == GZD_U_CLIP_HEIGHT_DIRECTION) {
+         gzd_clip_height_direction = v0;
++        if (state) state->clip_height_direction = v0;
+         return;
+     }
+     if (location == GZD_U_ALPHA_THRESHOLD) {
++        if (state) state->alpha_threshold = v0;
+         if (v0 >= 0.0f) {
+             glAlphaFunc(GL_GREATER, v0);
+             glEnable(GL_ALPHA_TEST);
+@@ -716,16 +805,23 @@ void glUniform3fv(GLint location, GLsizei count, const GLfloat *value) {
+ void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
+     if (count > 0 && value) {
++        GzdProgramState *state = gzd_current_program_state();
+         switch (location) {
+             case GZD_U_OBJECT_COLOR:
+                 memcpy(gzd_object_color, value, sizeof(gzd_object_color));
++                if (state)
++                    memcpy(state->object_color, value, sizeof(state->object_color));
+                 gzd_apply_color();
+                 return;
+             case GZD_U_ADD_COLOR:
+                 memcpy(gzd_add_color, value, sizeof(gzd_add_color));
++                if (state)
++                    memcpy(state->add_color, value, sizeof(state->add_color));
+                 gzd_apply_color();
+                 return;
+             case GZD_U_FOG_COLOR:
++                if (state)
++                    memcpy(state->fog_color, value, sizeof(state->fog_color));
+                 glFogfv(GL_FOG_COLOR, value);
+                 return;
+             case GZD_U_LIGHT_ATTR:

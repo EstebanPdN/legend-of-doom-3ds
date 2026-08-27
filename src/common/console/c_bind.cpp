@@ -723,6 +723,10 @@ void C_SetDefaultKeys(const char* baseconfig)
 {
 	auto lump = fileSystem.CheckNumForFullName("engine/commonbinds.txt");
 	if (lump >= 0) ReadBindings(lump, true);
+	#ifdef __3DS__
+	lump = fileSystem.CheckNumForFullName("engine/3dsbinds.txt");
+	if (lump >= 0) ReadBindings(lump, true);
+	#endif
 	int lastlump = 0;
 
 	while ((lump = fileSystem.FindLumpFullName(baseconfig, &lastlump)) != -1)
@@ -857,4 +861,3 @@ bool C_DoKey (event_t *ev, FKeyBindings *binds, FKeyBindings *doublebinds)
 	}
 	return false;
 }
-

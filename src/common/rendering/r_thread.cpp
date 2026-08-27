@@ -36,7 +36,14 @@
 void PeekThreadedErrorPane();
 #endif
 
+#ifdef __3DS__
+// libstdc++ workers created by std::thread stay on the application core on
+// 3DS. A single worker therefore adds queue/mutex hand-offs without adding
+// CPU throughput. New 3DS core 2 needs an explicit libctru thread instead.
+CVAR(Int, r_multithreaded, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+#else
 CVAR(Int, r_multithreaded, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+#endif
 CVAR(Int, r_debug_draw, 0, 0);
 
 /////////////////////////////////////////////////////////////////////////////

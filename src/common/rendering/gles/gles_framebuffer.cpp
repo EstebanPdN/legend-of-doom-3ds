@@ -59,6 +59,10 @@
 #include "flatvertices.h"
 #include "hw_cvars.h"
 
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
+
 EXTERN_CVAR (Bool, vid_vsync)
 EXTERN_CVAR(Bool, r_drawvoxels)
 EXTERN_CVAR(Int, gl_tonemap)
@@ -122,7 +126,14 @@ void OpenGLFrameBuffer::InitializeState()
 {
 	static bool first=true;
 
+#ifdef __3DS__
+	// Match NovaGL's synchronized single-frame pipeline. C3D_FRAME_SYNCDRAW is
+	// the completion fence that makes reuse of the world/view/light buffers safe
+	// on real hardware; a submitted-frame count alone is not a fence.
+	mPipelineNbr = 1;
+#else
 	mPipelineNbr = gl_pipeline_depth == 0? std::min(4, HW_MAX_PIPELINE_BUFFERS) : clamp(*gl_pipeline_depth, 1, HW_MAX_PIPELINE_BUFFERS);
+#endif
 	mPipelineType = 1;
 
 	InitGLES();
@@ -158,6 +169,9 @@ void OpenGLFrameBuffer::InitializeState()
 	GLRenderer = new FGLRenderer(this);
 	GLRenderer->Initialize(GetWidth(), GetHeight());
 	static_cast<GLDataBuffer*>(mLights->GetBuffer())->BindBase();
+#ifdef __3DS__
+	I_3DSStartupLog("gles-state-ready");
+#endif
 }
 
 //==========================================================================
@@ -168,15 +182,43 @@ void OpenGLFrameBuffer::InitializeState()
 
 void OpenGLFrameBuffer::Update()
 {
+#ifdef __3DS__
+	static unsigned startupFrame = 0;
+	static const char *const enterStages[] = {
+		"frame-1-enter", "frame-2-enter", "frame-3-enter"
+	};
+	static const char *const flushStages[] = {
+		"frame-1-flush-ready", "frame-2-flush-ready", "frame-3-flush-ready"
+	};
+	static const char *const swapStages[] = {
+		"frame-1-swap-ready", "frame-2-swap-ready", "frame-3-swap-ready"
+	};
+	if (startupFrame < 3) I_3DSStartupLog(enterStages[startupFrame]);
+#if defined(LOD3DS_HARDWARE_DIAGNOSTIC) && LOD3DS_HARDWARE_DIAGNOSTIC
+	I_3DSFrameTelemetryBegin();
+#endif
+#endif
 	twoD.Reset();
 	Flush3D.Reset();
 
 	Flush3D.Clock();
 	GLRenderer->Flush();
 	Flush3D.Unclock();
+#ifdef __3DS__
+	if (startupFrame < 3) I_3DSStartupLog(flushStages[startupFrame]);
+#endif
 
 	Swap();
+#ifdef __3DS__
+	if (startupFrame < 3) I_3DSStartupLog(swapStages[startupFrame]);
+#endif
+#if defined(__3DS__) && defined(LOD3DS_HARDWARE_DIAGNOSTIC) && LOD3DS_HARDWARE_DIAGNOSTIC
+	I_3DSFrameTelemetryEnd();
+#endif
 	Super::Update();
+#ifdef __3DS__
+	if (startupFrame < 3) ++startupFrame;
+#endif
 }
 
 void OpenGLFrameBuffer::CopyScreenToBuffer(int width, int height, uint8_t* scr)

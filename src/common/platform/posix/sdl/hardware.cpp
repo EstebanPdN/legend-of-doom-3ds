@@ -42,6 +42,9 @@
 #include "m_argv.h"
 #include "c_console.h"
 #include "printf.h"
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 IVideo *Video;
 
@@ -68,17 +71,29 @@ void I_InitGraphics ()
 	SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
 #endif // __APPLE__
 
+	#ifdef __3DS__
+	I_3DSStartupLog("sdl-video-enter");
+	#endif
 	if (SDL_InitSubSystem (SDL_INIT_VIDEO) < 0)
 	{
 		I_FatalError ("Could not initialize SDL video:\n%s\n", SDL_GetError());
 		return;
 	}
+	#ifdef __3DS__
+	I_3DSStartupLog("sdl-video-ready");
+	#endif
 
 	Printf("Using video driver %s\n", SDL_GetCurrentVideoDriver());
 
 	extern IVideo *gl_CreateVideo();
+	#ifdef __3DS__
+	I_3DSStartupLog("video-object-enter");
+	#endif
 	Video = gl_CreateVideo();
 	
 	if (Video == NULL)
 		I_FatalError ("Failed to initialize display");
+	#ifdef __3DS__
+	I_3DSStartupLog("video-object-ready");
+	#endif
 }

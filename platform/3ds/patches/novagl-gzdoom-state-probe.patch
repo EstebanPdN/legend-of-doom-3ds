@@ -1,0 +1,60 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -1585,5 +1585,8 @@ typedef struct {
+     int frame, active, draws, vertices, oob_vertices;
+     int eye_crossing_draws, nonpositive_w, side_outside, z_outside, nonfinite;
++    int triangles, strips, fans;
++    int alpha_on, alpha_off, rgba_alpha_on, rgba_alpha_off;
++    int depth_on, depth_off, depth_clamp_on, depth_clamp_off;
+     unsigned cmd_max_words, cmd_last_words, cmd_splits;
+     int first_bad_valid, first_bad_count, first_bad_indexed;
+     unsigned first_bad_min_index, first_bad_max_index;
+@@ -1606,5 +1609,12 @@ static int nova_geom_probe_begin(void) {
+                    s_geom_probe.z_outside, s_geom_probe.nonfinite,
+                    s_geom_probe.cmd_max_words, s_geom_probe.cmd_splits);
++            printf("[NovaState] prim tri=%d strip=%d fan=%d alpha on=%d off=%d "
++                   "rgbaOn=%d rgbaOff=%d depth on=%d off=%d clamp on=%d off=%d\n",
++                   s_geom_probe.triangles, s_geom_probe.strips, s_geom_probe.fans,
++                   s_geom_probe.alpha_on, s_geom_probe.alpha_off,
++                   s_geom_probe.rgba_alpha_on, s_geom_probe.rgba_alpha_off,
++                   s_geom_probe.depth_on, s_geom_probe.depth_off,
++                   s_geom_probe.depth_clamp_on, s_geom_probe.depth_clamp_off);
+             if (s_geom_probe.first_bad_valid) {
+                 printf("[NovaGeom] firstBad count=%d indexed=%d index=%u..%u w=%.6g..%.6g\n",
+                        s_geom_probe.first_bad_count, s_geom_probe.first_bad_indexed,
+@@ -1640,3 +1651,3 @@ static int nova_geom_probe_begin(void) {
+  * remain zero-copy; only crossing batches fall through to CPU clipping. */
+-static int gzdoom_draw_needs_near_clip(GLint first, GLsizei count, int is_elements,
++static int gzdoom_draw_needs_near_clip(GLenum mode, GLint first, GLsizei count, int is_elements,
+                                        GLenum type, const uint8_t *idx_src) {
+@@ -1691,5 +1702,22 @@ static int gzdoom_draw_needs_near_clip(GLenum mode, GLint first, GLsizei count,
+     float draw_min_w = 3.402823466e+38F, draw_max_w = -3.402823466e+38F;
+     uint32_t draw_min_index = UINT32_MAX, draw_max_index = 0;
+     int draw_bad = 0;
+-    if (geom_probe) s_geom_probe.draws++;
++    if (geom_probe) {
++        s_geom_probe.draws++;
++        if (mode == GL_TRIANGLES) s_geom_probe.triangles++;
++        else if (mode == GL_TRIANGLE_STRIP) s_geom_probe.strips++;
++        else if (mode == GL_TRIANGLE_FAN) s_geom_probe.fans++;
++        if (g.alpha_test_enabled) s_geom_probe.alpha_on++;
++        else s_geom_probe.alpha_off++;
++        GLuint tex_id = g.bound_texture[0];
++        if (g.texture_2d_enabled_unit[0] && tex_id > 0 && tex_id < NOVA_MAX_TEXTURES &&
++            g.textures[tex_id].allocated && g.textures[tex_id].fmt == GPU_RGBA8) {
++            if (g.alpha_test_enabled) s_geom_probe.rgba_alpha_on++;
++            else s_geom_probe.rgba_alpha_off++;
++        }
++        if (g.depth_test_enabled) s_geom_probe.depth_on++;
++        else s_geom_probe.depth_off++;
++        if (g.depth_clamp_enabled) s_geom_probe.depth_clamp_on++;
++        else s_geom_probe.depth_clamp_off++;
++    }
+ #endif
+@@ -1830,4 +1859,4 @@ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements
+ #if defined(NOVAGL_GZDOOM_COMPAT) && !defined(NOVAGL_NO_NEAR_CLIP)
+     force_staged_near_clip = gzdoom_draw_needs_near_clip(
+-        first, count, is_elements, type, idx_src);
++        mode, first, count, is_elements, type, idx_src);
+ #endif

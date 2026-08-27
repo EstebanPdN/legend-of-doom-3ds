@@ -46,6 +46,30 @@
 
 #include "engineerrors.h"
 #include "dobject.h"
+#ifdef __3DS__
+#include <3ds.h>
+#include "printf.h"
+#include "common/platform/3ds/diagnostics_3ds.h"
+
+void M_3DSLogHeap(const char *stage)
+{
+	const struct mallinfo heap = mallinfo();
+	Printf("[3DS memory] %s: used=%d arena=%d free=%d engine=%zu linear=%lu\n",
+		stage, heap.uordblks, heap.arena, heap.fordblks, GC::AllocBytes,
+		(unsigned long)linearSpaceFree());
+	I_3DSStartupLog(stage);
+}
+
+static void M_FatalOutOfMemory(const char *operation, size_t size)
+{
+	const struct mallinfo heap = mallinfo();
+	I_FatalError("Could not %s %zu bytes (heap %d/%d free %d, app %lu/%lu, linear %lu)",
+		operation, size, heap.uordblks, heap.arena, heap.fordblks,
+		(unsigned long)osGetMemRegionFree(MEMREGION_APPLICATION),
+		(unsigned long)osGetMemRegionSize(MEMREGION_APPLICATION),
+		(unsigned long)linearSpaceFree());
+}
+#endif
 
 #ifndef _MSC_VER
 #define _NORMAL_BLOCK			0
@@ -60,7 +84,11 @@ void *M_Malloc(size_t size)
 	void *block = malloc(size);
 
 	if (block == NULL)
+#ifdef __3DS__
+		M_FatalOutOfMemory("malloc", size);
+#else
 		I_FatalError("Could not malloc %zu bytes", size);
+#endif
 
 	GC::AllocBytes += _msize(block);
 	return block;
@@ -75,7 +103,11 @@ void *M_Realloc(void *memblock, size_t size)
 	void *block = realloc(memblock, size);
 	if (block == NULL)
 	{
+#ifdef __3DS__
+		M_FatalOutOfMemory("realloc", size);
+#else
 		I_FatalError("Could not realloc %zu bytes", size);
+#endif
 	}
 	GC::AllocBytes += _msize(block);
 	return block;
@@ -211,4 +243,3 @@ void M_Free (void *block)
 	}
 }
 #endif
-

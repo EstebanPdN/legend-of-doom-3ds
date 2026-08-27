@@ -1,0 +1,48 @@
+diff --git a/src/main/n3ds/SDL_n3ds_main.c b/src/main/n3ds/SDL_n3ds_main.c
+index 82f7754..be785fd 100644
+--- a/src/main/n3ds/SDL_n3ds_main.c
++++ b/src/main/n3ds/SDL_n3ds_main.c
+@@ -53,7 +53,11 @@ N3DS_Init(void)
+ SDL_FORCE_INLINE void
+ N3DS_Quit(void)
+ {
+-    romfsExit();
++    /*
++     * Do not tear down the devoptab here. C and C++ stream destructors run
++     * after SDL_main returns and may still close files opened through it.
++     * Horizon releases the RomFS service together with the process.
++     */
+ }
+
+ #endif /* __3DS__ */
+
+diff --git a/src/video/n3ds/SDL_n3dsvideo.c b/src/video/n3ds/SDL_n3dsvideo.c
+index bb80f9c18..d7c57bac2 100644
+--- a/src/video/n3ds/SDL_n3dsvideo.c
++++ b/src/video/n3ds/SDL_n3dsvideo.c
+@@ -127,7 +127,12 @@ static int N3DS_VideoInit(_THIS)
+ {
+     SDL_VideoData *driverdata = (SDL_VideoData *)_this->driverdata;
+
+-    gfxInit(GSP_RGBA8_OES, GSP_RGBA8_OES, false);
++    /* Citro3D's display transfer writes BGR8. Allocating RGBA8 here and only
++     * switching the format later leaves the original, larger physical
++     * buffers allocated and makes the LCD use the wrong stride meanwhile.
++     * Keep physical LCD buffers in VRAM so the 4 MiB linear arena remains
++     * available for PICA-readable world VBOs on Old 3DS. */
++    gfxInit(GSP_BGR8_OES, GSP_BGR8_OES, true);
+     hidInit();
+
+     driverdata->top_display = AddN3DSDisplay(GFX_TOP);
+@@ -163,9 +166,9 @@ AddN3DSDisplay(gfxScreen_t screen)
+     mode.w = (screen == GFX_TOP) ? GSP_SCREEN_HEIGHT_TOP : GSP_SCREEN_HEIGHT_BOTTOM;
+     mode.h = GSP_SCREEN_WIDTH;
+     mode.refresh_rate = 60;
+-    mode.format = SDL_PIXELFORMAT_RGBA8888;
++    mode.format = SDL_PIXELFORMAT_BGR24;
+     mode.driverdata = modedata;
+-    modedata->fmt = GSP_RGBA8_OES;
++    modedata->fmt = GSP_BGR8_OES;
+
+     display.name = (screen == GFX_TOP) ? "N3DS top screen" : "N3DS bottom screen";
+     display.desktop_mode = mode;

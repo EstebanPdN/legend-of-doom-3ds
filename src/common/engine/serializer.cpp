@@ -427,7 +427,7 @@ FSerializer &FSerializer::ScriptNum(const char *key, int &num)
 //
 //==========================================================================
 
-FSerializer &FSerializer::Sprite(const char *key, int32_t &spritenum, int32_t *def)
+FSerializer &FSerializer::Sprite(const char *key, int &spritenum, int *def)
 {
 	if (isWriting())
 	{
@@ -978,6 +978,26 @@ FSerializer &Serialize(FSerializer &arc, const char *key, uint32_t &value, uint3
 	}
 	return arc;
 }
+
+#ifdef __3DS__
+FSerializer &Serialize(FSerializer &arc, const char *key, int &value, int *defval)
+{
+	int32_t converted = value;
+	int32_t convertedDefault = defval ? *defval : 0;
+	Serialize(arc, key, converted, defval ? &convertedDefault : nullptr);
+	value = (int)converted;
+	return arc;
+}
+
+FSerializer &Serialize(FSerializer &arc, const char *key, unsigned int &value, unsigned int *defval)
+{
+	uint32_t converted = value;
+	uint32_t convertedDefault = defval ? *defval : 0;
+	Serialize(arc, key, converted, defval ? &convertedDefault : nullptr);
+	value = (unsigned int)converted;
+	return arc;
+}
+#endif
 
 //==========================================================================
 //
