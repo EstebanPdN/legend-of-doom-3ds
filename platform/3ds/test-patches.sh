@@ -64,7 +64,8 @@ verify_patch_stack novagl "${LOD3DS_NOVAGL_URL}" "${LOD3DS_NOVAGL_REV}" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-safe-earlyz.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-conservative-submit.patch"
 verify_patch_stack openal-soft-3ds "${LOD3DS_OPENAL_URL}" "${LOD3DS_OPENAL_REV}" \
-  "${ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch"
+  "${ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch" \
+  "${ROOT}/platform/3ds/patches/openal-soft-cmake-empty-deps.patch"
 verify_patch_stack legend-of-doom "${LOD3DS_MOD_URL}" "${LOD3DS_MOD_REV}" \
   "${ROOT}/platform/3ds/patches/legend-of-doom-3ds.patch"
 

@@ -12,7 +12,8 @@ LOD3DS_OPENAL_CHECKOUT="${LOD3DS_OPENAL_SOURCE_DIR:-${LOD3DS_BUILD_ROOT}/_deps/o
 LOD3DS_OPENAL_BUILD_DIR="${LOD3DS_OPENAL_BUILD_DIR:-${LOD3DS_BUILD_ROOT}/openal-soft-3ds}"
 LOD3DS_OPENAL_PREFIX="${LOD3DS_OPENAL_PREFIX:-${LOD3DS_BUILD_ROOT}/openal-soft-3ds-prefix}"
 LOD3DS_OPENAL_JOBS="${LOD3DS_JOBS:-4}"
-readonly LOD3DS_OPENAL_PATCH="${LOD3DS_SOURCE_ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch"
+readonly LOD3DS_OPENAL_CORE_PATCH="${LOD3DS_SOURCE_ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch"
+readonly LOD3DS_OPENAL_CMAKE_PATCH="${LOD3DS_SOURCE_ROOT}/platform/3ds/patches/openal-soft-cmake-empty-deps.patch"
 
 export DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
 export DEVKITARM="${DEVKITARM:-${DEVKITPRO}/devkitARM}"
@@ -22,6 +23,38 @@ lod3ds_require_program() {
     printf 'Required program not found: %s\n' "$1" >&2
     exit 1
   fi
+}
+
+lod3ds_apply_checked_patch() {
+  local patch_file="$1"
+  local target_file="$2"
+  local label="$3"
+
+  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
+      "${patch_file}" >/dev/null 2>&1; then
+    if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" diff --quiet -- "${target_file}"; then
+      printf 'OpenAL Soft checkout has unexpected changes in %s.\n' \
+        "${target_file}" >&2
+      exit 1
+    fi
+    git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${patch_file}"
+    git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${patch_file}"
+  fi
+
+  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
+      "${patch_file}" >/dev/null 2>&1; then
+    printf 'OpenAL Soft checkout does not match the pinned %s patch.\n' \
+      "${label}" >&2
+    exit 1
+  fi
+  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse "${patch_file}"
+  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" diff --quiet -- "${target_file}"; then
+    printf 'Reversing the OpenAL Soft %s patch did not restore %s.\n' \
+      "${label}" "${target_file}" >&2
+    exit 1
+  fi
+  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${patch_file}"
+  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${patch_file}"
 }
 
 lod3ds_checkout_openal() {
@@ -59,30 +92,10 @@ lod3ds_checkout_openal() {
     exit 1
   fi
 
-  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
-      "${LOD3DS_OPENAL_PATCH}" >/dev/null 2>&1; then
-    if [[ -n "$(git -C "${LOD3DS_OPENAL_CHECKOUT}" status --porcelain 2>/dev/null || true)" ]]; then
-      printf 'OpenAL Soft checkout has unexpected local changes: %s\n' \
-        "${LOD3DS_OPENAL_CHECKOUT}" >&2
-      printf 'Use a clean generated checkout or set LOD3DS_OPENAL_SOURCE_DIR.\n' >&2
-      exit 1
-    fi
-    git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${LOD3DS_OPENAL_PATCH}"
-    git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${LOD3DS_OPENAL_PATCH}"
-  fi
-
-  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
-      "${LOD3DS_OPENAL_PATCH}" >/dev/null 2>&1; then
-    printf 'OpenAL Soft checkout does not match the pinned Nintendo 3DS audio patch.\n' >&2
-    exit 1
-  fi
-  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse "${LOD3DS_OPENAL_PATCH}"
-  if [[ -n "$(git -C "${LOD3DS_OPENAL_CHECKOUT}" status --porcelain)" ]]; then
-    printf 'Reversing the OpenAL Soft patch did not restore a clean checkout.\n' >&2
-    exit 1
-  fi
-  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${LOD3DS_OPENAL_PATCH}"
-  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${LOD3DS_OPENAL_PATCH}"
+  lod3ds_apply_checked_patch "${LOD3DS_OPENAL_CORE_PATCH}" \
+    alc/backends/ndsp_driver.cpp 'Nintendo 3DS audio'
+  lod3ds_apply_checked_patch "${LOD3DS_OPENAL_CMAKE_PATCH}" \
+    CMakeLists.txt 'CMake compatibility'
 }
 
 for lod3ds_program in cmake git; do
