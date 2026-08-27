@@ -248,6 +248,7 @@ cmake -S "${ZMUSIC_SOURCE}" -B "${ZMUSIC_BUILD}" \
   -DBUILD_SHARED_LIBS=OFF \
   -DDYN_FLUIDSYNTH=OFF \
   -DDYN_MPG123=OFF \
+  -DUSE_MPG123=OFF \
   -DDYN_SNDFILE=OFF \
   -DMINIMP3_INCLUDE_DIR="${DEPS_ROOT}/minimp3"
 cmake --build "${ZMUSIC_BUILD}" --target zmusiclite --parallel "${JOBS}"

@@ -73,6 +73,16 @@ class HardwareStartupContractTests(unittest.TestCase):
         self.assertIn("C3D_RenderTargetCreateFromTex explicitly rejects", patch)
         self.assertIn("cmd_capture[512]", patch)
 
+    def test_3ds_music_uses_only_the_pinned_mp3_decoder(self):
+        build = (ROOT / "platform/3ds/build.sh").read_text(encoding="utf-8")
+        patch = (
+            ROOT / "platform/3ds/patches/zmusic-optional-mpg123.patch"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("-DUSE_MPG123=OFF", build)
+        self.assertIn('option(USE_MPG123 "Enable the libmpg123 decoder" ON)', patch)
+        self.assertIn("if(USE_MPG123)", patch)
+
 
 if __name__ == "__main__":
     unittest.main()

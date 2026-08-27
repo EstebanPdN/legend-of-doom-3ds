@@ -1,0 +1,34 @@
+diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt
+--- a/source/CMakeLists.txt
++++ b/source/CMakeLists.txt
+@@ -79,17 +79,20 @@ else()
+ 	endif()
+ endif()
+ 
+-option(DYN_MPG123 "Dynamically load libmpg123" ON)
+-if(DYN_MPG123)
+-	target_compile_definitions(zmusic-obj INTERFACE HAVE_MPG123 DYN_MPG123)
+-else()
+-	find_package(MPG123)
+-
+-	if(MPG123_FOUND)
+-		target_compile_definitions(zmusic-obj INTERFACE HAVE_MPG123)
+-		target_link_libraries(zmusic-obj INTERFACE mpg123)
+-		determine_package_config_dependency(ZMUSIC_PACKAGE_DEPENDENCIES TARGET mpg123 MODULE MPG123)
++option(USE_MPG123 "Enable the libmpg123 decoder" ON)
++if(USE_MPG123)
++	option(DYN_MPG123 "Dynamically load libmpg123" ON)
++	if(DYN_MPG123)
++		target_compile_definitions(zmusic-obj INTERFACE HAVE_MPG123 DYN_MPG123)
++	else()
++		find_package(MPG123)
++
++		if(MPG123_FOUND)
++			target_compile_definitions(zmusic-obj INTERFACE HAVE_MPG123)
++			target_link_libraries(zmusic-obj INTERFACE mpg123)
++			determine_package_config_dependency(ZMUSIC_PACKAGE_DEPENDENCIES TARGET mpg123 MODULE MPG123)
++		endif()
+ 	endif()
+ endif()
+ 
+ # minimp3 is header-only, so it adds MP3 decoding without a runtime library.
