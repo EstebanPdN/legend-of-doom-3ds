@@ -71,14 +71,15 @@ lod3ds_checkout_openal() {
     git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${LOD3DS_OPENAL_PATCH}"
   fi
 
-  if ! cmp -s "${LOD3DS_OPENAL_PATCH}" \
+  if ! git diff --no-index --quiet --ignore-space-at-eol -- \
+      "${LOD3DS_OPENAL_PATCH}" \
       <(git -C "${LOD3DS_OPENAL_CHECKOUT}" diff -- alc/backends/ndsp_driver.cpp); then
     printf 'OpenAL Soft checkout does not match the pinned Nintendo 3DS audio patch.\n' >&2
     exit 1
   fi
 }
 
-for lod3ds_program in cmake git cmp; do
+for lod3ds_program in cmake git; do
   lod3ds_require_program "${lod3ds_program}"
 done
 
