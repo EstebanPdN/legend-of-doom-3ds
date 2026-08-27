@@ -34,5 +34,8 @@ readonly LOD3DS_FREEDOOM_SHA256="3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e
 # fallback.
 readonly LOD3DS_BANNERTOOL_URL="https://github.com/diasurgical/bannertool/releases/download/1.2.0/bannertool.zip"
 readonly LOD3DS_BANNERTOOL_SHA256="69768596f836acb3e3aeaa66e47c6ba560dde813c6dfcd33c8afc25fe29b7524"
-readonly LOD3DS_MAKEROM_URL="https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip"
-readonly LOD3DS_MAKEROM_SHA256="287b809dec064e0ad597e3d272c49ecb7eed41693d5ee6fef9d8a8aa24c2497e"
+# makerom 0.19.0's published Linux binary requires glibc 2.38, which is newer
+# than the pinned devkitARM build container. 0.18.4 supports the same CIA
+# packaging invocation used here and only requires glibc 2.34.
+readonly LOD3DS_MAKEROM_URL="https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.18.4/makerom-v0.18.4-ubuntu_x86_64.zip"
+readonly LOD3DS_MAKEROM_SHA256="dd596854718c195c6e3229286be485b122921715555af8ae5cf8e9a465d9f970"
