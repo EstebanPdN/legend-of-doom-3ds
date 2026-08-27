@@ -696,6 +696,17 @@ void FGameConfigFile::DoKeySetup(const char *gamename)
 			}
 		}
 	}
+
+#ifdef __3DS__
+	// Early 3DS builds bound START to the raw `pause` command. That bypasses
+	// the menu system and leaves the renderer in the gameplay + pause-sign
+	// path. Migrate only that exact legacy default, preserving any deliberate
+	// custom binding while making START open the normal pause-capable menu.
+	if (Bindings.GetBinding(KEY_PAD_START).CompareNoCase("pause") == 0)
+	{
+		Bindings.SetBind(KEY_PAD_START, "menu_main");
+	}
+#endif
 	OkayToWrite = true;
 }
 

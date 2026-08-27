@@ -3,6 +3,8 @@ project(GZDoom)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) 
 
 
@@ -20,6 +22,8 @@ include( FindPackageHandleStandardArgs )
 
 # Support cross compiling
 option( FORCE_CROSSCOMPILE "Turn on cross compiling." NO )
+option( LOD3DS_HARDWARE_DIAGNOSTIC "Build the conservative New 3DS hardware bring-up profile." OFF )
+set( LOD3DS_BUILD_ID "untracked" CACHE STRING "Stable source-state identifier embedded in 3DS builds." )
 if( FORCE_CROSSCOMPILE )
 	set( CMAKE_CROSSCOMPILING TRUE )
 endif()

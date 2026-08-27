@@ -81,7 +81,12 @@ void FGLRenderer::Flush()
 void FGLRenderer::CopyToBackbuffer(const IntRect *bounds, bool applyGamma)
 {
 #ifdef NO_RENDER_BUFFER
-	mBuffers->BindOutputFB();
+	// The 3DS renders directly into NovaGL's native 400x240 top-screen target.
+	// Flush pending HUD commands, but do not allocate/bind an intermediate FBO
+	// or run the present shader.
+	screen->Draw2D();
+	twod->Clear();
+	return;
 #endif
 	screen->Draw2D();	// draw all pending 2D stuff before copying the buffer
 	twod->Clear();

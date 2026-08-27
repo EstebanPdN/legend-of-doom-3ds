@@ -92,7 +92,7 @@ public:
 	const char *GetOutput(unsigned *len = nullptr);
 	FCompressedBuffer GetCompressedOutput();
 	// The sprite serializer is a special case because it is needed by the VM to handle its 'spriteid' type.
-	virtual FSerializer &Sprite(const char *key, int32_t &spritenum, int32_t *def);
+	virtual FSerializer &Sprite(const char *key, int &spritenum, int *def);
 	// This is only needed by the type system.
 	virtual FSerializer& StatePointer(const char* key, void* ptraddr, bool *res);
 	FSerializer& SerializeMemory(const char* key, void* mem, size_t length);
@@ -221,6 +221,10 @@ FSerializer &Serialize(FSerializer &arc, const char *key, int64_t &value, int64_
 FSerializer &Serialize(FSerializer &arc, const char *key, uint64_t &value, uint64_t *defval);
 FSerializer &Serialize(FSerializer &arc, const char *key, int32_t &value, int32_t *defval);
 FSerializer &Serialize(FSerializer &arc, const char *key, uint32_t &value, uint32_t *defval);
+#ifdef __3DS__
+FSerializer &Serialize(FSerializer &arc, const char *key, int &value, int *defval);
+FSerializer &Serialize(FSerializer &arc, const char *key, unsigned int &value, unsigned int *defval);
+#endif
 FSerializer &Serialize(FSerializer &arc, const char *key, int8_t &value, int8_t *defval);
 FSerializer &Serialize(FSerializer &arc, const char *key, uint8_t &value, uint8_t *defval);
 FSerializer &Serialize(FSerializer &arc, const char *key, int16_t &value, int16_t *defval);

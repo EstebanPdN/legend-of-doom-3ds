@@ -135,4 +135,3 @@ void HWViewpointBuffer::Clear()
 
 	mBuffer = mBufferPipeline[mPipelinePos];
 }
-

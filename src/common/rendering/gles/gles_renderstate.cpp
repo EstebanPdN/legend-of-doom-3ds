@@ -37,6 +37,9 @@
 #include "gles_buffers.h"
 #include "hw_clock.h"
 #include "printf.h"
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 #include "hwrenderer/data/hw_viewpointbuffer.h"
 
@@ -213,6 +216,16 @@ bool FGLRenderState::ApplyShader()
 
 		activeShader->Bind(flavour);
 	}
+
+#ifdef __3DS__
+	// GZDoom normally expresses this through shader variants. NovaGL's bridge
+	// uses the fixed-function TEV, where texturing is explicit per unit.
+	glActiveTexture(GL_TEXTURE0);
+	if (mTextureEnabled)
+		glEnable(GL_TEXTURE_2D);
+	else
+		glDisable(GL_TEXTURE_2D);
+#endif
 
 	
 	if (mHwUniforms)
@@ -448,9 +461,31 @@ void FGLRenderState::ApplyMaterial(FMaterial *mat, int clampmode, int translatio
 	if (tex->isHardwareCanvas()) static_cast<FCanvasTexture*>(tex->GetTexture())->NeedUpdate();
 
 	clampmode = tex->GetClampMode(clampmode);
+
+#if defined(__3DS__) && defined(LOD3DS_RENDER_TRACE) && LOD3DS_RENDER_TRACE
+	// Bounded, metadata-only trace: identifies which logical material produced
+	// each NovaGL texture id without writing the texture pixels to the SD card.
+	static int sMaterialTraceCount = 0;
+	int materialTraceIndex = -1;
+	if (sMaterialTraceCount < 256)
+	{
+		materialTraceIndex = sMaterialTraceCount++;
+		auto source = tex->GetTexture();
+		Printf("[3DS material] #%d name=%s source=%dx%d clamp=%d translation=%d layers=%d\n",
+			materialTraceIndex, tex->GetName().GetChars(),
+			source ? source->GetWidth() : 0, source ? source->GetHeight() : 0,
+			clampmode, translation, mat->NumLayers());
+	}
+#endif
 	
 	// avoid rebinding the same texture multiple times.
-	if (mat == lastMaterial && lastClamp == clampmode && translation == lastTranslation) return;
+	if (mat == lastMaterial && lastClamp == clampmode && translation == lastTranslation)
+	{
+#if defined(__3DS__) && defined(LOD3DS_RENDER_TRACE) && LOD3DS_RENDER_TRACE
+		if (materialTraceIndex >= 0) Printf("[3DS material] #%d cached\n", materialTraceIndex);
+#endif
+		return;
+	}
 	lastMaterial = mat;
 	lastClamp = clampmode;
 	lastTranslation = translation;
@@ -459,10 +494,28 @@ void FGLRenderState::ApplyMaterial(FMaterial *mat, int clampmode, int translatio
 	int maxbound = 0;
 
 	int numLayers = mat->NumLayers();
+#ifdef __3DS__
+	// PICA200 exposes texture units 0..2. Many GZDoom materials report a
+	// fourth auxiliary layer even when it is only the 1x1 neutral fallback.
+	// Attempting GL_TEXTURE3 leaves NovaGL's active unit unchanged (correct GL
+	// error semantics), after which glBindTexture would overwrite unit 0 and
+	// replace the real SKYWW/world base with that 1x1 image.
+	if (numLayers > 3) numLayers = 3;
+#endif
 	MaterialLayerInfo* layer;
 	auto base = static_cast<FHardwareTexture*>(mat->GetLayer(0, translation, &layer));
 
-	if (base->BindOrCreate(tex->GetTexture(), 0, clampmode, translation, layer->scaleFlags))
+	bool baseBound = base->BindOrCreate(tex->GetTexture(), 0, clampmode, translation, layer->scaleFlags);
+#if defined(__3DS__) && defined(LOD3DS_RENDER_TRACE) && LOD3DS_RENDER_TRACE
+	if (materialTraceIndex >= 0)
+	{
+		GLint activeTexture = 0;
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &activeTexture);
+		Printf("[3DS material] #%d bound_ok=%d gl_id=%d\n",
+			materialTraceIndex, baseBound ? 1 : 0, activeTexture);
+	}
+#endif
+	if (baseBound)
 	{
 		if (!(layer->scaleFlags & CTF_Indexed))
 		{
@@ -545,6 +598,9 @@ void FGLRenderState::Draw(int dt, int index, int count, bool apply)
 			Apply();
 		}
 	drawcalls.Clock();
+	#ifdef __3DS__
+	I_3DSFrameTelemetryDraw((unsigned)dt, (unsigned)count, false);
+	#endif
 	glDrawArrays(dt2gl[dt], index, count);
 	drawcalls.Unclock();
 }
@@ -556,6 +612,9 @@ void FGLRenderState::DrawIndexed(int dt, int index, int count, bool apply)
 		Apply();
 	}
 	drawcalls.Clock();
+	#ifdef __3DS__
+	I_3DSFrameTelemetryDraw((unsigned)dt, (unsigned)count, true);
+	#endif
 	glDrawElements(dt2gl[dt], count, GL_UNSIGNED_INT, (void*)(intptr_t)(index * sizeof(uint32_t)));
 	drawcalls.Unclock();
 }
@@ -720,10 +779,15 @@ void FGLRenderState::ClearScreen()
 bool FGLRenderState::SetDepthClamp(bool on)
 {
 	bool res = mLastDepthClamp;
-	/*
+#ifdef __3DS__
+	// NovaGL emulates depth clamp in its draw path. GZDoom assumes this state
+	// starts enabled and disables it only for skybox/portal passes. Leaving the
+	// calls compiled out made NovaGL keep its opposite default, so ordinary
+	// world geometry was CPU-clipped as if it belonged to a portal and could
+	// generate invalid/overgrown submissions on real PICA200 hardware.
 	if (!on) glDisable(GL_DEPTH_CLAMP);
 	else glEnable(GL_DEPTH_CLAMP);
-	*/
+#endif
 	mLastDepthClamp = on;
 	return res;
 }

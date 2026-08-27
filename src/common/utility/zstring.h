@@ -36,6 +36,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#ifndef _WIN32
+#include <strings.h>
+#endif
 #include <stddef.h>
 #include <string>
 #include "tarray.h"
@@ -116,7 +119,7 @@ struct FNullStringData
 	char Nothing[2];
 };
 
-enum ELumpNum
+enum ELumpNum : int
 {
 };
 
@@ -480,4 +483,3 @@ struct StringNoCaseHashTraits
 	// Compares two keys, returning zero if they are the same.
 	int Compare(const FString& left, const FString& right) { return left.CompareNoCase(right); }
 };
-

@@ -4,7 +4,7 @@
 #include "zstring.h"
 
 // Input event types.
-enum EGenericEvent
+enum EGenericEvent : int
 {
 	EV_None,
 	EV_KeyDown,		// data1: scan code, data2: Qwerty ASCII code
@@ -75,4 +75,3 @@ struct FInputEvent
 
 	FInputEvent(const event_t *ev);
 };
-

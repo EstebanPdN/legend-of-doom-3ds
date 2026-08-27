@@ -2051,7 +2051,7 @@ public:
 
 	void ParseVertex(vertex_t *vt, vertexdata_t *vd)
 	{
-		vt->set(0, 0);
+		vt->set(fixed_t(0), fixed_t(0));
 		vd->zCeiling = vd->zFloor = vd->flags = 0;
 
 		sc.MustGetToken('{');

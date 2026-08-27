@@ -167,6 +167,15 @@ bool FPortalSceneState::RenderFirstSkyPortal(int recursion, HWDrawInfo *outer_di
 
 void FPortalSceneState::RenderPortal(HWPortal *p, FRenderState &state, bool usestencil, HWDrawInfo *outer_di)
 {
+	#if defined(__3DS__) && defined(LOD3DS_RENDER_TRACE) && LOD3DS_RENDER_TRACE
+	static unsigned portaltrace = 0;
+	if (portaltrace < 64)
+	{
+		Printf("[3DS portal] #%u depth=%d name=%s lines=%u sky=%d stencil=%d needdepth=%d\n",
+			portaltrace++, renderdepth, p->GetName(), (unsigned)p->lines.Size(),
+			p->IsSky(), usestencil, p->NeedDepthBuffer());
+	}
+	#endif
 	if (gl_portals) outer_di->RenderPortal(p, state, usestencil);
 }
 
@@ -1060,5 +1069,3 @@ void HWEEHorizonPortal::DrawContents(HWDrawInfo *di, FRenderState &state)
 
 const char *HWHorizonPortal::GetName() { return "Horizon"; }
 const char *HWEEHorizonPortal::GetName() { return "EEHorizon"; }
-
-

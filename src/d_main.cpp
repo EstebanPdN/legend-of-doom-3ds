@@ -41,8 +41,14 @@
 
 #include <math.h>
 #include <assert.h>
+#include <cstdio>
+#include <cstring>
 
 #include "engineerrors.h"
+#include "m_alloc.h"
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 #include "i_time.h"
 #include "d_gui.h"
@@ -323,6 +329,115 @@ cycle_t FrameCycles;
 
 // [SP] Store the capabilities of the renderer in a global variable, to prevent excessive per-frame processing
 uint32_t r_renderercaps = 0;
+
+#ifdef __3DS__
+bool I_3DSWriteEngineDiagnosticSnapshot(const char *path)
+{
+	if (path == nullptr || *path == '\0') return false;
+	char partialPath[512] = {};
+	const int partialLength = std::snprintf(partialPath, sizeof(partialPath), "%s.part", path);
+	if (partialLength < 0 || static_cast<size_t>(partialLength) >= sizeof(partialPath))
+	{
+		return false;
+	}
+
+	FILE *file = std::fopen(partialPath, "wb");
+	if (file == nullptr) return false;
+	std::fprintf(file, "Legend of Doom 3DS engine snapshot\n");
+	std::fprintf(file,
+		"gamestate=%d wipegamestate=%d gameaction=%d paused=%d pauseext=%d "
+		"menuactive=%d console_state=%d automap=%d\n",
+		static_cast<int>(gamestate), static_cast<int>(wipegamestate),
+		static_cast<int>(gameaction), paused, pauseext ? 1 : 0,
+		static_cast<int>(menuactive), static_cast<int>(ConsoleState), automapactive ? 1 : 0);
+	std::fprintf(file,
+		"gametic=%d maketic=%d consoleplayer=%d playeringame=%d netgame=%d "
+		"multiplayer=%d usergame=%d demoplayback=%d singletics=%d\n",
+		gametic, maketic, consoleplayer,
+		(consoleplayer >= 0 && consoleplayer < MAXPLAYERS && playeringame[consoleplayer]) ? 1 : 0,
+		netgame ? 1 : 0, multiplayer ? 1 : 0, usergame ? 1 : 0,
+		demoplayback ? 1 : 0, singletics ? 1 : 0);
+	std::fprintf(file, "renderer_caps=%08lx screen=%s",
+		static_cast<unsigned long>(r_renderercaps), screen != nullptr ? "ready" : "null");
+	if (screen != nullptr)
+	{
+		std::fprintf(file, " width=%d height=%d", screen->GetWidth(), screen->GetHeight());
+	}
+	std::fputc('\n', file);
+
+	if (primaryLevel != nullptr)
+	{
+		std::fprintf(file,
+			"level.map=%s level.name=%s level.number=%d level.cluster=%d "
+			"time=%d maptime=%d totaltime=%d spawnindex=%lu\n",
+			primaryLevel->MapName.GetChars(), primaryLevel->LevelName.GetChars(),
+			primaryLevel->levelnum, primaryLevel->cluster, primaryLevel->time,
+			primaryLevel->maptime, primaryLevel->totaltime,
+			static_cast<unsigned long>(primaryLevel->spawnindex));
+	}
+	else
+	{
+		std::fprintf(file, "level=unavailable\n");
+	}
+
+	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+	{
+		player_t &player = players[consoleplayer];
+		const usercmd_t &cmd = player.cmd.ucmd;
+		std::fprintf(file,
+			"player.state=%u health=%d cheats=%08lx fov=%.3f desired_fov=%.3f "
+			"viewz=%.6f viewheight=%.6f bob=%.6f centering=%d turnticks=%u\n",
+			static_cast<unsigned>(player.playerstate), player.health,
+			static_cast<unsigned long>(player.cheats), player.FOV, player.DesiredFOV,
+			player.viewz, player.viewheight, player.bob, player.centering ? 1 : 0,
+			static_cast<unsigned>(player.turnticks));
+		std::fprintf(file,
+			"input.buttons=%08lx pitch=%d yaw=%d roll=%d forward=%d side=%d up=%d "
+			"attackdown=%d usedown=%d oldbuttons=%08lx\n",
+			static_cast<unsigned long>(cmd.buttons), cmd.pitch, cmd.yaw, cmd.roll,
+			cmd.forwardmove, cmd.sidemove, cmd.upmove, player.attackdown ? 1 : 0,
+			player.usedown ? 1 : 0, static_cast<unsigned long>(player.oldbuttons));
+
+		const AActor *camera = player.camera;
+		if (camera != nullptr)
+		{
+			std::fprintf(file,
+				"camera.class=%s pos=(%.9f,%.9f,%.9f) vel=(%.9f,%.9f,%.9f) "
+				"angles=(yaw:%.6f,pitch:%.6f,roll:%.6f) health=%d flags=%08lx "
+				"renderflags=%08lx\n",
+				camera->GetClass()->TypeName.GetChars(), camera->X(), camera->Y(), camera->Z(),
+				camera->Vel.X, camera->Vel.Y, camera->Vel.Z, camera->Angles.Yaw.Degrees,
+				camera->Angles.Pitch.Degrees, camera->Angles.Roll.Degrees, camera->health,
+				static_cast<unsigned long>(camera->flags),
+				static_cast<unsigned long>(camera->renderflags));
+		}
+		else
+		{
+			std::fprintf(file, "camera=unavailable\n");
+		}
+
+		const AActor *weapon = player.ReadyWeapon;
+		std::fprintf(file, "ready_weapon=%s\n",
+			weapon != nullptr ? weapon->GetClass()->TypeName.GetChars() : "none");
+	}
+	else
+	{
+		std::fprintf(file, "player=unavailable\n");
+	}
+
+	const bool flushed = std::fflush(file) == 0;
+	const bool closed = std::fclose(file) == 0;
+	const bool ok = flushed && closed;
+	if (ok && std::rename(partialPath, path) == 0) return true;
+	std::remove(partialPath);
+	return false;
+}
+
+CCMD(lod3ds_dump)
+{
+	I_3DSRequestDiagnosticDump();
+}
+#endif
 
 
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
@@ -1765,10 +1880,18 @@ static void GetCmdLineFiles(TArray<FString> &wadfiles)
 
 static void CopyFiles(TArray<FString> &to, TArray<FString> &from)
 {
-	unsigned int ndx = to.Reserve(from.Size());
-	for(unsigned i=0;i<from.Size(); i++)
+	for (unsigned i = 0; i < from.Size(); i++)
 	{
-		to[ndx+i] = from[i];
+		bool duplicate = false;
+		for (const auto &existing : to)
+		{
+			if (existing.CompareNoCase(from[i]) == 0)
+			{
+				duplicate = true;
+				break;
+			}
+		}
+		if (!duplicate) to.Push(from[i]);
 	}
 }
 
@@ -2197,6 +2320,13 @@ static void CheckCmdLine()
 
 static void NewFailure ()
 {
+#ifdef __3DS__
+    extern size_t I_3DSLastFailedNewRequest();
+    extern uintptr_t I_3DSLastFailedNewCaller();
+    M_3DSLogHeap("operator new failure");
+    Printf("[3DS memory] failed C++ allocation: %zu bytes from %p\n",
+        I_3DSLastFailedNewRequest(), (void *)I_3DSLastFailedNewCaller());
+#endif
     I_FatalError ("Failed to allocate memory from system heap");
 }
 
@@ -3075,6 +3205,9 @@ static int D_DoomMain_Internal (void)
 	if (!batchrun) Printf(PRINT_LOG, "%s version %s\n", GAMENAME, GetVersionString());
 
 	D_DoomInit();
+#ifdef __3DS__
+	M_3DSLogHeap("after D_DoomInit");
+#endif
 
 	extern void D_ConfirmSendStats();
 	D_ConfirmSendStats();
@@ -3091,6 +3224,9 @@ static int D_DoomMain_Internal (void)
 	FString optionalwad = BaseFileSearch(OPTIONALWAD, NULL, true, GameConfig);
 
 	iwad_man = new FIWadManager(basewad, optionalwad);
+#ifdef __3DS__
+	M_3DSLogHeap("after IWAD manager");
+#endif
 
 	// Now that we have the IWADINFO, initialize the autoload ini sections.
 	GameConfig->DoAutoloadSetup(iwad_man);
@@ -3114,6 +3250,9 @@ static int D_DoomMain_Internal (void)
 	{
 		PClass::StaticInit();
 		PType::StaticInit();
+#ifdef __3DS__
+		M_3DSLogHeap("after PClass/PType init");
+#endif
 
 		if (restart)
 		{
@@ -3136,12 +3275,21 @@ static int D_DoomMain_Internal (void)
 			iwad_man = new FIWadManager(basewad, optionalwad);
 		}
 		const FIWADInfo *iwad_info = iwad_man->FindIWAD(allwads, iwad, basewad, optionalwad);
-		if (!iwad_info) return 0;	// user exited the selection popup via cancel button.
+		if (!iwad_info)
+		{
+#ifdef __3DS__
+			Printf("Nintendo 3DS: IWAD selection returned no usable IWAD.\n");
+#endif
+			return 0;	// user exited the selection popup via cancel button.
+		}
 		gameinfo.gametype = iwad_info->gametype;
 		gameinfo.flags = iwad_info->flags;
 		gameinfo.nokeyboardcheats = iwad_info->nokeyboardcheats;
 		gameinfo.ConfigName = iwad_info->Configname;
 		lastIWAD = iwad;
+#ifdef __3DS__
+		M_3DSLogHeap("after IWAD selection");
+#endif
 
 
 		if ((gameinfo.flags & GI_SHAREWARE) && pwads.Size() > 0)
@@ -3171,6 +3319,9 @@ static int D_DoomMain_Internal (void)
 		exec = C_ParseCmdLineParams(exec);
 
 		CopyFiles(allwads, pwads);
+#ifdef __3DS__
+		M_3DSLogHeap("after command-line files");
+#endif
 		if (exec != NULL)
 		{
 			exec->AddPullins(allwads, GameConfig);
@@ -3216,6 +3367,9 @@ static int D_DoomMain_Internal (void)
 		};
 
 		fileSystem.InitMultipleFiles (allwads, false, &lfi);
+#ifdef __3DS__
+		M_3DSLogHeap("after filesystem init");
+#endif
 		allwads.Clear();
 		allwads.ShrinkToFit();
 		SetMapxxFlag();
@@ -3248,25 +3402,49 @@ static int D_DoomMain_Internal (void)
 		if (!restart)
 		{
 			if (!batchrun) Printf ("I_Init: Setting up machine state.\n");
+#ifdef __3DS__
+			I_3DSStartupLog("cpu-detection-enter");
+#endif
 			CheckCPUID(&CPU);
 			CalculateCPUSpeed();
 			auto ci = DumpCPUInfo(&CPU);
 			Printf("%s", ci.GetChars());
+#ifdef __3DS__
+			I_3DSStartupLog("cpu-detection-ready");
+#endif
 		}
 
 		// [RH] Initialize palette management
+		#ifdef __3DS__
+		I_3DSStartupLog("palette-enter");
+		#endif
 		InitPalette ();
+		#ifdef __3DS__
+		I_3DSStartupLog("palette-ready");
+		#endif
 		
 		if (!batchrun) Printf ("V_Init: allocate screen.\n");
 		if (!restart)
 		{
+			#ifdef __3DS__
+			I_3DSStartupLog("screen-size-enter");
+			#endif
 			V_InitScreenSize();
+			#ifdef __3DS__
+			I_3DSStartupLog("screen-size-ready");
+			#endif
 		}
 		
 		if (!restart)
 		{
 			// This allocates a dummy framebuffer as a stand-in until V_Init2 is called.
+			#ifdef __3DS__
+			I_3DSStartupLog("video-init-enter");
+			#endif
 			V_InitScreen ();
+			#ifdef __3DS__
+			I_3DSStartupLog("video-init-ready");
+			#endif
 		}
 		
 		if (restart)
@@ -3279,7 +3457,13 @@ static int D_DoomMain_Internal (void)
 		FBaseCVar::EnableCallbacks ();
 
 		if (!batchrun) Printf ("S_Init: Setting up sound.\n");
+		#ifdef __3DS__
+		I_3DSStartupLog("sound-system-enter");
+		#endif
 		S_Init ();
+		#ifdef __3DS__
+		I_3DSStartupLog("sound-system-ready");
+		#endif
 
 		if (!batchrun) Printf ("ST_Init: Init startup screen.\n");
 		if (!restart)
@@ -3310,6 +3494,9 @@ static int D_DoomMain_Internal (void)
 		{
 			StartScreen = new FStartupScreen(0);
 		}
+		#ifdef __3DS__
+		I_3DSStartupLog("startup-screen-ready");
+		#endif
 
 		CheckCmdLine();
 
@@ -3319,10 +3506,16 @@ static int D_DoomMain_Internal (void)
 		// [RH] Parse any SNDINFO lumps
 		if (!batchrun) Printf ("S_InitData: Load sound definitions.\n");
 		S_InitData ();
+#ifdef __3DS__
+		M_3DSLogHeap("after sound definitions");
+#endif
 
 		// [RH] Parse through all loaded mapinfo lumps
 		if (!batchrun) Printf ("G_ParseMapInfo: Load map definitions.\n");
 		G_ParseMapInfo (iwad_info->MapInfo);
+#ifdef __3DS__
+		M_3DSLogHeap("after map definitions");
+#endif
 		MessageBoxClass = gameinfo.MessageBoxClass;
 		endoomName = gameinfo.Endoom;
 		menuBlurAmount = gameinfo.bluramount;
@@ -3335,23 +3528,53 @@ static int D_DoomMain_Internal (void)
 		UpdateUpscaleMask();
 		SpriteFrames.Clear();
 		TexMan.Init([]() { StartScreen->Progress(); }, CheckForHacks);
+#ifdef __3DS__
+		M_3DSLogHeap("after texture manager");
+#endif
 		PatchTextures();
+#ifdef __3DS__
+		M_3DSLogHeap("after texture patches");
+#endif
 		TexAnim.Init();
+#ifdef __3DS__
+		M_3DSLogHeap("after texture animations");
+#endif
 		C_InitConback(TexMan.CheckForTexture(gameinfo.BorderFlat, ETextureType::Flat), true, 0.25);
+#ifdef __3DS__
+		M_3DSLogHeap("after console background");
+#endif
 
 		FixWideStatusBar();
 
 		StartScreen->Progress();
 		V_InitFonts();
+#ifdef __3DS__
+		M_3DSLogHeap("after V_InitFonts");
+#endif
 		InitDoomFonts();
+#ifdef __3DS__
+		M_3DSLogHeap("after Doom fonts");
+#endif
 		V_LoadTranslations();
+#ifdef __3DS__
+		M_3DSLogHeap("after translations");
+#endif
 		UpdateGenericUI(false);
+#ifdef __3DS__
+		M_3DSLogHeap("after generic UI");
+#endif
 
 		// [CW] Parse any TEAMINFO lumps.
 		if (!batchrun) Printf ("ParseTeamInfo: Load team definitions.\n");
 		TeamLibrary.ParseTeamInfo ();
+#ifdef __3DS__
+		M_3DSLogHeap("after team definitions");
+#endif
 
 		R_ParseTrnslate();
+#ifdef __3DS__
+		M_3DSLogHeap("after translate definitions");
+#endif
 		PClassActor::StaticInit ();
 
 		// [GRB] Initialize player class list
@@ -3614,13 +3837,22 @@ int GameMain()
 	try
 	{
 		ret = D_DoomMain_Internal();
+		#ifdef __3DS__
+		Printf("Nintendo 3DS: D_DoomMain_Internal returned %d.\n", ret);
+		#endif
 	}
 	catch (const CExitEvent &exit)	// This is a regular exit initiated from deeply nested code.
 	{
 		ret = exit.Reason();
+		#ifdef __3DS__
+		Printf("Nintendo 3DS: caught CExitEvent with reason %d.\n", ret);
+		#endif
 	}
 	catch (const std::exception &error)
 	{
+		#ifdef __3DS__
+		Printf("Nintendo 3DS: startup exception: %s\n", error.what());
+		#endif
 		I_ShowFatalError(error.what());
 		ret = -1;
 	}

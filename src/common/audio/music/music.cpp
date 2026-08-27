@@ -204,7 +204,18 @@ void S_CreateStream()
 		if (abs(fmt.mNumChannels) < 2) flags |= SoundStream::Mono;
 
 		musicStream.reset(GSnd->CreateStream(FillStream, fmt.mBufferSize, flags, fmt.mSampleRate, nullptr));
-		if (musicStream) musicStream->Play(true, 1);
+		if (musicStream)
+		{
+			// OpenAL pre-fills its entire buffer queue inside Play(). A successful
+			// return therefore proves that ZMusic produced decoded PCM, not merely
+			// that the compressed stream was identified.
+			const bool started = musicStream->Play(true, 1);
+#ifdef __3DS__
+			Printf("[3DS audio] Music stream '%s': %s; %s; decoder: %s\n",
+				mus_playing.name.GetChars(), started ? "started" : "start failed",
+				musicStream->GetStats().GetChars(), ZMusic_GetStats(mus_playing.handle));
+#endif
+		}
 	}
 }
 

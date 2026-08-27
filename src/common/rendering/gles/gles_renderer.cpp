@@ -153,7 +153,9 @@ void FGLRenderer::BindToFrameBuffer(FTexture *tex)
 
 void FGLRenderer::BeginFrame()
 {
+#ifndef NO_RENDER_BUFFER
 	mScreenBuffers->Setup(screen->mScreenViewport.width, screen->mScreenViewport.height, screen->mSceneViewport.width, screen->mSceneViewport.height);
+#endif
 }
 
 }

@@ -1,0 +1,81 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index f5b64a0..e75f66a 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -1614,9 +1614,7 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+         /* Fixed attributes bypass GPU_UNSIGNED_BYTE loader normalization, but
+          * the shaders unconditionally multiply v2 by 1/255. Supply byte-range
+          * values so glColor(1,1,1,1) remains white instead of near-black. */
+-        C3D_FixedAttribSet(2,
+-            g.cur_color[0] * 255.0f, g.cur_color[1] * 255.0f,
+-            g.cur_color[2] * 255.0f, g.cur_color[3] * 255.0f);
++        nova_setup_fixed_color();
+     }
+     if (lit && nrmr != 1)
+         C3D_FixedAttribSet(3, g.cur_normal[0], g.cur_normal[1], g.cur_normal[2], 0.0f);
+diff --git a/src/utils.c b/src/utils.c
+index 96397bf..866ce61 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -30,6 +30,8 @@ static int   s_attr_pos_elements = -1;
+ static void *s_buf_base          = (void *) -1;
+ static int   s_buf_stride        = -1;
+ static int   s_buf_layout        = -1;
++static float s_fixed_color[4];
++static int   s_fixed_color_valid = 0;
+
+ unsigned int nova_next_pow2(unsigned int v) {
+     v--;
+@@ -1705,6 +1707,18 @@ void nova_setup_attr_info(int pos_elements) {
+     s_attr_pos_elements = pos_elements;
+ }
+
++void nova_setup_fixed_color(void) {
++    const float color[4] = {
++        g.cur_color[0] * 255.0f, g.cur_color[1] * 255.0f,
++        g.cur_color[2] * 255.0f, g.cur_color[3] * 255.0f
++    };
++    if (!s_fixed_color_valid || memcmp(s_fixed_color, color, sizeof(color)) != 0) {
++        C3D_FixedAttribSet(2, color[0], color[1], color[2], color[3]);
++        memcpy(s_fixed_color, color, sizeof(color));
++        s_fixed_color_valid = 1;
++    }
++}
++
+ void nova_setup_posuv_fixed_color(void *base, int stride) {
+     /* Sentinel -3 identifies pos3f/uv2f/fixed-color and is distinct from the
+      * packed 24-byte (- ordinary 3) and lit (-4) layouts. */
+@@ -1724,12 +1738,7 @@ void nova_setup_posuv_fixed_color(void *base, int stride) {
+         s_buf_stride = stride;
+         s_buf_layout = 2;
+     }
+-    /* Fixed attributes are global PICA state and other draw paths may have
+-     * changed slot 2. Setting four scalars is still far cheaper than gathering
+-     * the vertex stream or rebuilding BufInfo for every wall. */
+-    C3D_FixedAttribSet(2,
+-        g.cur_color[0] * 255.0f, g.cur_color[1] * 255.0f,
+-        g.cur_color[2] * 255.0f, g.cur_color[3] * 255.0f);
++    nova_setup_fixed_color();
+ }
+
+ void nova_setup_buf_info(void *base, int stride) {
+@@ -1795,6 +1804,7 @@ void nova_invalidate_state_cache(void) {
+     s_buf_base                = (void *) -1;
+     s_buf_layout              = -1;
+     s_buf_stride              = -1;
++    s_fixed_color_valid       = 0;
+     // Также метим грязным основной кэш матриц/фога/TEV — на всякий случай.
+     g.matrices_dirty = 1;
+     g.proj_dirty = g.mv_dirty = g.tex_mtx_dirty = 1;
+diff --git a/src/utils.h b/src/utils.h
+index 134b47d..454d04a 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -282,6 +282,7 @@ void nova_setup_attr_info(int pos_elements);
+ /* GZDoom's native 20-byte FFlatVertex layout: pos3f + uv2f and a fixed color.
+  * Keeping it native avoids gathering/copying and keeps BufInfo stable. */
+ void nova_setup_posuv_fixed_color(void *base, int stride);
++void nova_setup_fixed_color(void);
+
+ /* Lit-draw attribute/buffer layout: adds a normal loader (attr3, 3 floats)
+  * after pos/texcoord/color. */

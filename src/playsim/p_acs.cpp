@@ -1048,7 +1048,7 @@ void ACSStringPool::MarkString(int strnum)
 //
 //============================================================================
 
-void ACSStringPool::LockStringArray(int levelnum, const int *strnum, unsigned int count)
+void ACSStringPool::LockStringArray(int levelnum, const int32_t *strnum, unsigned int count)
 {
 	for (unsigned int i = 0; i < count; ++i)
 	{
@@ -1072,7 +1072,7 @@ void ACSStringPool::LockStringArray(int levelnum, const int *strnum, unsigned in
 //
 //============================================================================
 
-void ACSStringPool::MarkStringArray(const int *strnum, unsigned int count)
+void ACSStringPool::MarkStringArray(const int32_t *strnum, unsigned int count)
 {
 	for (unsigned int i = 0; i < count; ++i)
 	{
@@ -5230,7 +5230,7 @@ int DLevelScript::SwapActorTeleFog(AActor *activator, int tid)
 			// The only types allowed are int, bool, double, Name, Sound, Color and String
 			if (argtype == TypeSInt32 || argtype == TypeColor)
 			{
-				params.Push(args[i]);
+				params.Push((int)args[i]);
 			}
 			else if (argtype == TypeBool)
 			{

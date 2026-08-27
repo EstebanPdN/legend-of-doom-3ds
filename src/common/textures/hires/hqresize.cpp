@@ -315,7 +315,7 @@ static unsigned char *hqNxAsmHelper( void (*hqNxFunction) ( int*, unsigned char*
 }
 #endif
 
-static unsigned char *hqNxHelper( void (HQX_CALLCONV *hqNxFunction) ( unsigned*, unsigned*, int, int ),
+static unsigned char *hqNxHelper( void (HQX_CALLCONV *hqNxFunction) ( uint32_t*, uint32_t*, int, int ),
 							  const int N,
 							  unsigned char *inputBuffer,
 							  const int inWidth,
@@ -334,7 +334,7 @@ static unsigned char *hqNxHelper( void (HQX_CALLCONV *hqNxFunction) ( unsigned*,
 	outHeight = N *inHeight;
 
 	unsigned char * newBuffer = new unsigned char[outWidth*outHeight*4];
-	hqNxFunction( reinterpret_cast<unsigned*>(inputBuffer), reinterpret_cast<unsigned*>(newBuffer), inWidth, inHeight );
+	hqNxFunction( reinterpret_cast<uint32_t*>(inputBuffer), reinterpret_cast<uint32_t*>(newBuffer), inWidth, inHeight );
 	delete[] inputBuffer;
 	return newBuffer;
 }

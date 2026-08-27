@@ -1,0 +1,300 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 22e9c52..d214f47 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -151,6 +151,9 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+     //}
+
+     nova_hw_stage_reset();
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    nova_hw_watchdog_reset();
++#endif
+     nova_hw_stage("init-before-c3d-init", 0.0f);
+     C3D_Init(cmd_buf_size);
+     nova_hw_stage("init-after-c3d-init", C3D_GetCmdBufUsage());
+@@ -958,7 +961,11 @@ void novaSwapBuffers(void) {
+      * a rolling per-frame tag budget it floods the log and drowns the rare
+      * wait sites the tags exist to expose. */
+     if (log_stage) nova_hw_stage("swap-before-next-frame-begin", 0.0f);
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    nova_hw_watchdog_frame_begin(g.c3d_frame_flag);
++#else
+     C3D_FrameBegin(g.c3d_frame_flag);   /* zero: queue fence without duplicate display sync */
++#endif
+     if (log_stage) nova_hw_stage("swap-after-next-frame-begin", C3D_GetCmdBufUsage());
+     ++hw_swap_count;
+
+diff --git a/src/utils.c b/src/utils.c
+index 866ce61..2e0c8a4 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -33,6 +33,210 @@ static int   s_buf_layout        = -1;
+ static float s_fixed_color[4];
+ static int   s_fixed_color_valid = 0;
+
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++/* Citro3D 1.7.1 exports __C3D_Context and its first field is the GX queue.
++ * Only that public-layout prefix is needed; no private header is included. */
++typedef struct {
++    gxCmdQueue_s gxQueue;
++} NovaC3DContextPrefix;
++extern NovaC3DContextPrefix __C3D_Context;
++
++typedef struct {
++    unsigned serial;
++    int primitive, first, count, indexed, index_type;
++    const void *indices;
++    unsigned cmd_words;
++    C3D_BufInfo buf_info;
++    C3D_AttrInfo attr_info;
++} NovaHwDrawSnapshot;
++
++static NovaHwDrawSnapshot s_hw_draw;
++static unsigned s_hw_checkpoints;
++static int s_hw_watchdog_enabled;
++static const char *s_hw_last_file = "(none)";
++static int s_hw_last_line;
++static const char *s_hw_report_path =
++    "sdmc:/3ds/legend-of-doom/gpu-diagnostic.log";
++
++static const char *nova_hw_gx_type(unsigned type)
++{
++    switch (type) {
++        case 0: return "dma";
++        case 1: return "pica-command-list";
++        case 2: return "memory-fill";
++        case 3: return "display-transfer";
++        case 4: return "texture-copy";
++        default: return "unknown";
++    }
++}
++
++static void nova_hw_write_report(const char *result, const char *tag)
++{
++    gxCmdQueue_s *q = &__C3D_Context.gxQueue;
++    __sync_synchronize();
++    FILE *f = fopen(s_hw_report_path, "w");
++    if (!f) return;
++    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v1\n");
++    fprintf(f, "result=%s\n", result ? result : "UNKNOWN");
++    fprintf(f, "tag=%s source=%s:%d\n",
++            tag ? tag : "(null)", s_hw_last_file, s_hw_last_line);
++    fprintf(f, "draw_serial=%u checkpoints=%u frame_index=%d\n",
++            s_hw_draw.serial, s_hw_checkpoints, g.frame_index);
++    fprintf(f, "draw primitive=%d first=%d count=%d indexed=%d "
++               "index_type=%d indices_vaddr=%p indices_paddr=%08X\n",
++            s_hw_draw.primitive, s_hw_draw.first, s_hw_draw.count,
++            s_hw_draw.indexed, s_hw_draw.index_type, s_hw_draw.indices,
++            s_hw_draw.indices ? (unsigned)osConvertVirtToPhys(s_hw_draw.indices) : 0u);
++    fprintf(f, "draw_cmd_words=%u live_cmd_words=%u cmd_capacity_words=%u\n",
++            s_hw_draw.cmd_words, (unsigned)gpuCmdBufOffset,
++            (unsigned)gpuCmdBufSize);
++    fprintf(f, "state shader=%d tex_unit=%d tex0=%u fbo=%u target=%p "
++               "depth=%d stencil=%d alpha=%d cull=%d\n",
++            g.active_shader, g.active_texture_unit,
++            (unsigned)g.bound_texture[0], (unsigned)g.bound_fbo,
++            (void *)g.current_target, g.depth_test_enabled,
++            g.stencil_test_enabled, g.alpha_test_enabled,
++            g.cull_face_enabled);
++    fprintf(f, "arrays vertex={en=%d vbo=%u ptr=%p stride=%d size=%d type=%u} "
++               "uv={en=%d vbo=%u ptr=%p stride=%d size=%d type=%u} "
++               "color={en=%d vbo=%u ptr=%p stride=%d size=%d type=%u} ebo=%u\n",
++            g.va_vertex.enabled, (unsigned)g.va_vertex.vbo_id,
++            g.va_vertex.pointer, (int)g.va_vertex.stride,
++            (int)g.va_vertex.size, (unsigned)g.va_vertex.type,
++            g.va_texcoord.enabled, (unsigned)g.va_texcoord.vbo_id,
++            g.va_texcoord.pointer, (int)g.va_texcoord.stride,
++            (int)g.va_texcoord.size, (unsigned)g.va_texcoord.type,
++            g.va_color.enabled, (unsigned)g.va_color.vbo_id,
++            g.va_color.pointer, (int)g.va_color.stride,
++            (int)g.va_color.size, (unsigned)g.va_color.type,
++            (unsigned)g.bound_element_array_buffer);
++    fprintf(f, "buf_info base_paddr=%08X count=%d attr_count=%d "
++               "attr_perm=%08X%08X\n",
++            (unsigned)s_hw_draw.buf_info.base_paddr,
++            s_hw_draw.buf_info.bufCount, s_hw_draw.attr_info.attrCount,
++            (unsigned)(s_hw_draw.attr_info.permutation >> 32),
++            (unsigned)s_hw_draw.attr_info.permutation);
++    for (int i = 0; i < s_hw_draw.buf_info.bufCount && i < 12; ++i) {
++        const C3D_BufCfg *b = &s_hw_draw.buf_info.buffers[i];
++        fprintf(f, "buffer[%d] offset=%08X flags=%08X,%08X\n", i,
++                (unsigned)b->offset, (unsigned)b->flags[0],
++                (unsigned)b->flags[1]);
++    }
++    fprintf(f, "queue max=%u num=%u submitted=%u completed=%u "
++               "first_incomplete=%u\n",
++            (unsigned)q->maxEntries, (unsigned)q->numEntries,
++            (unsigned)q->curEntry, (unsigned)q->lastEntry,
++            (unsigned)q->lastEntry);
++    unsigned n = q->numEntries;
++    if (n > q->maxEntries) n = q->maxEntries;
++    for (unsigned i = 0; i < n; ++i) {
++        const gxCmdEntry_s *e = &q->entries[i];
++        fprintf(f, "queue[%u] status=%s type=%u(%s) "
++                   "args=%08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
++                i, i < q->lastEntry ? "complete" :
++                   (i == q->lastEntry ? "HUNG_OR_PENDING" : "pending"),
++                (unsigned)e->type, nova_hw_gx_type(e->type),
++                (unsigned)e->args[0], (unsigned)e->args[1],
++                (unsigned)e->args[2], (unsigned)e->args[3],
++                (unsigned)e->args[4], (unsigned)e->args[5],
++                (unsigned)e->args[6]);
++    }
++    fflush(f);
++    fclose(f);
++}
++
++static void nova_hw_abort(const char *tag)
++{
++    nova_hw_write_report("TIMEOUT", tag);
++    /* C3D_Fini and normal exit both wait forever on a wedged queue. */
++    svcExitProcess();
++}
++
++static void nova_hw_wait_and_rearm(const char *tag)
++{
++    if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
++    gxCmdQueue_s *q = &__C3D_Context.gxQueue;
++    ++s_hw_checkpoints;
++    /* Wait through Citro3D's queue owner, never directly on the P3D event.
++     * System ticks run at SYSCLOCK_ARM11: this is a real two-second limit. */
++    if (!gxCmdQueueWait(q, (s64)(2 * SYSCLOCK_ARM11)))
++        nova_hw_abort(tag);
++    gxCmdQueueStop(q);
++    gxCmdQueueClear(q);
++    gxCmdQueueRun(q);
++}
++
++void nova_hw_watchdog_reset(void)
++{
++    memset(&s_hw_draw, 0, sizeof(s_hw_draw));
++    s_hw_checkpoints = 0;
++    s_hw_watchdog_enabled = 1;
++    s_hw_last_file = "(none)";
++    s_hw_last_line = 0;
++    FILE *f = fopen(s_hw_report_path, "w");
++    if (f) {
++        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v1\n");
++        fprintf(f, "result=RUNNING\n");
++        fflush(f);
++        fclose(f);
++    }
++}
++
++void nova_hw_watchdog_before_draw(int primitive, int first, int count,
++                                  int indexed, int index_type,
++                                  const void *indices)
++{
++    if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
++    ++s_hw_draw.serial;
++    s_hw_draw.primitive = primitive;
++    s_hw_draw.first = first;
++    s_hw_draw.count = count;
++    s_hw_draw.indexed = indexed;
++    s_hw_draw.index_type = index_type;
++    s_hw_draw.indices = indices;
++    s_hw_draw.cmd_words = (unsigned)gpuCmdBufOffset;
++    s_hw_draw.buf_info = *C3D_GetBufInfo();
++    s_hw_draw.attr_info = *C3D_GetAttrInfo();
++    s_hw_last_file = "draw-wrapper";
++    s_hw_last_line = (int)s_hw_draw.serial;
++}
++
++void nova_hw_watchdog_after_draw(void)
++{
++    if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
++    s_hw_draw.cmd_words = (unsigned)gpuCmdBufOffset;
++    (C3D_FrameSplit)(0);
++    nova_hw_wait_and_rearm("draw");
++}
++
++void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line)
++{
++    (C3D_FrameSplit)((u8)flags);
++    if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
++    s_hw_last_file = file ? file : "(null)";
++    s_hw_last_line = line;
++    nova_hw_wait_and_rearm("explicit-frame-split");
++}
++
++int nova_hw_watchdog_frame_begin(unsigned flags)
++{
++    if (!s_hw_watchdog_enabled || g.frame_index != 0)
++        return C3D_FrameBegin((u8)flags) ? 1 : 0;
++
++    const u64 deadline = svcGetSystemTick() + (u64)(2 * SYSCLOCK_ARM11);
++    s_hw_last_file = "novaSwapBuffers";
++    s_hw_last_line = 0;
++    while (!C3D_FrameBegin(C3D_FRAME_NONBLOCK)) {
++        if ((s64)(svcGetSystemTick() - deadline) >= 0)
++            nova_hw_abort("frame-end-or-display-transfer");
++        svcSleepThread(1000000);
++    }
++    s_hw_watchdog_enabled = 0;
++    nova_hw_write_report("PASS", "first-frame-complete");
++    return 1;
++}
++#endif
++
+ unsigned int nova_next_pow2(unsigned int v) {
+     v--;
+     v |= v >> 1;
+diff --git a/src/utils.h b/src/utils.h
+index 454d04a..f3b9652 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -213,6 +213,28 @@ void apply_depth_map(void);
+
+ void apply_gpu_state(void);
+
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++/* First-frame hardware supervisor. It submits each draw as an isolated
++ * Citro3D command list and waits on Citro3D's own GX queue with a deadline.
++ * A wedged PICA command therefore produces a persistent report and terminates
++ * the process instead of parking forever inside C3D_FrameBegin. */
++void nova_hw_watchdog_reset(void);
++void nova_hw_watchdog_before_draw(int primitive, int first, int count,
++                                  int indexed, int index_type,
++                                  const void *indices);
++void nova_hw_watchdog_after_draw(void);
++void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line);
++int nova_hw_watchdog_frame_begin(unsigned flags);
++
++static inline void nova_c3d_frame_split_(unsigned flags,
++                                         const char *file, int line)
++{
++    nova_hw_watchdog_frame_split(flags, file, line);
++}
++#define C3D_FrameSplit(flags) \
++    nova_c3d_frame_split_((flags), __FILE__, __LINE__)
++#endif
++
+
+ /* ---- P3D-pending tracking -----------------------------------------------
+  * Every draw submission must set g.p3d_pending so glFinish()/GC sync points
+@@ -239,13 +261,25 @@ static inline void nova_c3d_draw_arrays_(GPU_Primitive_t primitive, int first, i
+ {
+     nova_cmd_buffer_guard_();
+     g.p3d_pending = 1;
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    nova_hw_watchdog_before_draw((int)primitive, first, size, 0, 0, NULL);
++#endif
+     (C3D_DrawArrays)(primitive, first, size);
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    nova_hw_watchdog_after_draw();
++#endif
+ }
+ static inline void nova_c3d_draw_elements_(GPU_Primitive_t primitive, int count, int type, const void* indices)
+ {
+     nova_cmd_buffer_guard_();
+     g.p3d_pending = 1;
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    nova_hw_watchdog_before_draw((int)primitive, 0, count, 1, type, indices);
++#endif
+     (C3D_DrawElements)(primitive, count, type, indices);
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    nova_hw_watchdog_after_draw();
++#endif
+ }
+ #define C3D_DrawArrays(primitive, first, size) nova_c3d_draw_arrays_((primitive), (first), (size))
+ #define C3D_DrawElements(primitive, count, type, indices) nova_c3d_draw_elements_((primitive), (count), (type), (indices))

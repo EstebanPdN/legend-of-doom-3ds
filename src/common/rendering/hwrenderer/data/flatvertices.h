@@ -60,7 +60,15 @@ public:
 
 	unsigned int mMapStart;
 
+#ifdef __3DS__
+	// The desktop allocation is 40 MiB even after accounting for bytes
+	// correctly. Legend of Doom's largest map has 19,552 node segments
+	// (under 39,104 base plane vertices before de-duplication), so 100k keeps
+	// substantial dynamic per-frame headroom for a 2 MiB cost.
+	static const unsigned int BUFFER_SIZE = 100000;
+#else
 	static const unsigned int BUFFER_SIZE = 2000000;
+#endif
 	static const unsigned int BUFFER_SIZE_TO_USE = BUFFER_SIZE-500;
 
 public:

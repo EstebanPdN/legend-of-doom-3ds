@@ -1,0 +1,389 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index c498127..80d6b8c 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -956,7 +956,7 @@ void nova_fini(void) {
+     g.index_buf = NULL;
+
+     if (g.tex_staging) {
+-        free(g.tex_staging);
++        linearFree(g.tex_staging);
+         g.tex_staging = NULL;
+         g.tex_staging_size = 0;
+     }
+diff --git a/src/framebuffer.c b/src/framebuffer.c
+index 2193f79..40aa622 100644
+--- a/src/framebuffer.c
++++ b/src/framebuffer.c
+@@ -728,20 +728,8 @@ int novaCreateRenderTextureFBO(int width, int height, int has_depth,
+     }
+     fbo->color_tex_id = tex_id;
+
+-    /* Zero out the freshly-allocated VRAM texture so the first sample of the
+-     * FBO (before anything's been rendered into it) returns transparent
+-     * black instead of whatever random VRAM contents happened to be there —
+-     * which would manifest as wrong textures showing through on geometry
+-     * that incidentally samples this FBO before its first render pass. */
+-    if (slot->tex.data && slot->tex.size > 0) {
+-        memset(slot->tex.data, 0, slot->tex.size);
+-        GSPGPU_FlushDataCache(slot->tex.data, slot->tex.size);
+-    }
+-
+-    /* CPU-memset нулей до VRAM-сэмплера в Citra может не доехать (hw-рендерер
+-     * не перечитывает emulated VRAM при создании host-поверхности) — чистим и
+-     * GPU-заливкой тоже: это идёт через GX memory fill, который Citra честно
+-     * исполняет. Иначе несэмплированный ещё FBO читается как цветной шум. */
++    /* Clear through the GPU. User-mode CPU stores to the 0x1f VRAM window are
++     * permission faults on real hardware (Azahar incorrectly permits them). */
+     C3D_RenderTargetClear(fbo->target, C3D_CLEAR_COLOR, 0x00000000, 0);
+
+     *out_tex_id = tex_id;
+diff --git a/src/texture.c b/src/texture.c
+index 5d317dd..7fd0fd2 100644
+--- a/src/texture.c
++++ b/src/texture.c
+@@ -93,6 +93,33 @@ static size_t nova_texcache_total_size(int pot_w, int pot_h, GPU_TEXCOLOR fmt, u
+     return total;
+ }
+
++/* VRAM uploads are staged in a bounded linear buffer before GX copies them. */
++#define NOVA_VRAM_UPLOAD_MAX (1024 * 1024)
++
++static int texture_data_is_vram(const void *data) {
++    const uintptr_t address = (uintptr_t)data;
++    return address >= 0x1f000000u && address < 0x1f600000u;
++}
++
++static int zero_texture_storage_safe(C3D_Tex *tex) {
++    if (!tex || !tex->data || tex->size == 0) return 1;
++    const size_t bytes = tex->maxLevel > 0
++        ? (size_t)C3D_TexCalcTotalSize((u32)tex->size, tex->maxLevel)
++        : (size_t)tex->size;
++    if (!texture_data_is_vram(tex->data)) {
++        memset(tex->data, 0, bytes);
++        GSPGPU_FlushDataCache(tex->data, (u32)bytes);
++        return 1;
++    }
++    if (bytes > NOVA_VRAM_UPLOAD_MAX) return 0;
++    void *staging = get_tex_staging((int)bytes);
++    if (!staging) return 0;
++    memset(staging, 0, bytes);
++    GSPGPU_FlushDataCache(staging, (u32)bytes);
++    C3D_TexLoadImage(tex, staging, GPU_TEXFACE_2D, -1);
++    return 1;
++}
++
+ static char g_tex_cache_dir[256] = {0};
+ static int g_tex_cache_dir_ready = 0;
+
+@@ -245,7 +272,8 @@ static int nova_texcache_load_path(const char *path, int *out_orig_w, int *out_o
+          * byte of linear RAM handed back to vertex buffers (the open world
+          * was running linear down to a few hundred bytes on geometry alone).
+          * Keep a reserve for render targets and FBO RTT (local map). */
+-        params.onVram = vramSpaceFree() > expected + (size_t) (1536 * 1024);
++        params.onVram = expected <= NOVA_VRAM_UPLOAD_MAX &&
++                        vramSpaceFree() > expected + (size_t) (1536 * 1024);
+         if (!C3D_TexInitWithParams(&slot->tex, NULL, params)) {
+             if (params.onVram) {
+                 params.onVram = false;
+@@ -273,23 +301,21 @@ static int nova_texcache_load_path(const char *path, int *out_orig_w, int *out_o
+     slot->orig_height = (int) hdr.orig_h;
+     slot->has_mipmap = hdr.mip_levels > 1;
+     slot->mip_uploaded_mask = (uint16_t) ((1u << hdr.mip_levels) - 1u);
++    slot->is_vram = on_vram;
+     slot->is_solid_optimized = (slot->pot_w == 8 && slot->pot_h == 8 && (
+                                     slot->orig_width > 8 || slot->orig_height > 8));
+
+     /* citro3d stores mip levels contiguously — one read fills the pyramid. */
+     if (on_vram) {
+-        /* Plain CPU write into VRAM — deliberately NO GX transfer here. The
+-         * first attempt staged through linear + C3D_SyncTextureCopy, but
+-         * cache loads run MID-FRAME (OSG texture apply inside the render
+-         * traversal) and a synchronous GX transfer races citro3d's render
+-         * queue for the GX command slot: sometimes fine, sometimes the queue
+-         * corrupts (garbage DisplayTransfer addresses, then a PANIC assert).
+-         * Uncached VRAM stores are slower per byte, but NSW textures are
+-         * <=~700KB and this only runs at load time. No cache flush needed —
+-         * VRAM is uncached for the CPU. */
+-        size_t got = fread(slot->tex.data, 1, hdr.data_size, f);
++        /* User-mode CPU writes to VRAM fault on real hardware. Read the tiled
++         * cache image into linear staging, then let citro3d perform a raw GX
++         * copy; C3D_TexLoadImage safely splits an active frame when needed. */
++        void *staging = get_tex_staging((int)hdr.data_size);
++        size_t got = staging ? fread(staging, 1, hdr.data_size, f) : 0;
+         fclose(f);
+         if (got != hdr.data_size) return 0;
++        GSPGPU_FlushDataCache(staging, hdr.data_size);
++        C3D_TexLoadImage(&slot->tex, staging, GPU_TEXFACE_2D, -1);
+         apply_slot_params_to_tex(&slot->tex, slot);
+     } else {
+         size_t got = fread(slot->tex.data, 1, hdr.data_size, f);
+@@ -334,6 +360,7 @@ void nova_texture_cache_save(uint32_t hash) {
+     if (bound == 0 || bound >= NOVA_MAX_TEXTURES) return;
+     TexSlot *slot = &g.textures[bound];
+     if (!slot->allocated || slot->tex.data == NULL) return;
++    if (texture_data_is_vram(slot->tex.data)) return;
+
+     nova_tex_cache_ensure_dir();
+
+@@ -795,6 +822,43 @@ static void free_texture_storage(TexSlot *slot) {
+     slot->orig_height = 0;
+ }
+
++/* Partial CPU updates cannot target VRAM directly. Preserve the tiled image
++ * with a synchronous raw GX copy, then continue the update in linear RAM. */
++static int ensure_texture_cpu_writable(TexSlot *slot) {
++    if (!slot || !slot->allocated || !slot->tex.data) return 0;
++    if (!texture_data_is_vram(slot->tex.data)) return 1;
++
++    C3D_TexInitParams params;
++    memset(&params, 0, sizeof(params));
++    params.width = slot->tex.width;
++    params.height = slot->tex.height;
++    params.maxLevel = slot->tex.maxLevel;
++    params.format = slot->fmt;
++    params.type = GPU_TEX_2D;
++    params.onVram = false;
++
++    C3D_Tex linear_tex;
++    memset(&linear_tex, 0, sizeof(linear_tex));
++    if (!C3D_TexInitWithParams(&linear_tex, NULL, params)) {
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return 0;
++    }
++
++    const u32 bytes = slot->tex.maxLevel > 0
++        ? C3D_TexCalcTotalSize((u32)slot->tex.size, slot->tex.maxLevel)
++        : (u32)slot->tex.size;
++    C3D_SyncTextureCopy((u32 *)slot->tex.data, 0, (u32 *)linear_tex.data, 0,
++                        bytes, GX_TRANSFER_RAW_COPY(1));
++    GSPGPU_InvalidateDataCache(linear_tex.data, bytes);
++
++    nova_tex_gc_push(&slot->tex);
++    slot->tex = linear_tex;
++    slot->is_vram = 0;
++    nova_invalidate_tex_bind((GLuint)(slot - g.textures));
++    apply_slot_params_to_tex(&slot->tex, slot);
++    return 1;
++}
++
+ // Re-home a texture slot's storage in VRAM so it can serve as a PICA render
+ // target color buffer. Stock glTexImage2D allocates linear RAM, which
+ // C3D_RenderTargetCreateFromTex accepts but the GPU then renders to the wrong
+@@ -834,10 +898,7 @@ int nova_texture_make_vram_target(GLuint texture) {
+          * don't re-zero the texture every call. */
+         slot->is_vram = 1;
+         apply_slot_params_to_tex(&slot->tex, slot);
+-        if (slot->tex.data && slot->tex.size > 0) {
+-            memset(slot->tex.data, 0, slot->tex.size);
+-            GSPGPU_FlushDataCache(slot->tex.data, slot->tex.size);
+-        }
++        zero_texture_storage_safe(&slot->tex);
+         return 1;
+     }
+     C3D_TexDelete(&slot->tex);
+@@ -847,9 +908,9 @@ int nova_texture_make_vram_target(GLuint texture) {
+     slot->mip_uploaded_mask = 1;
+     apply_slot_params_to_tex(&slot->tex, slot);
+
+-    if (slot->tex.data && slot->tex.size > 0) {
+-        memset(slot->tex.data, 0, slot->tex.size);
+-        GSPGPU_FlushDataCache(slot->tex.data, slot->tex.size);
++    if (!zero_texture_storage_safe(&slot->tex)) {
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return 0;
+     }
+     return 1;
+ }
+@@ -928,8 +989,22 @@ static int is_texture_solid(const void *pixels, int width, int height, GLenum fo
+ }
+
+ static void upload_solid_texture(C3D_Tex *tex, GPU_TEXCOLOR fmt, const GLvoid *pixels, GLenum format, GLenum type) {
++    C3D_Tex staging_tex;
++    C3D_Tex *write_tex = tex;
++    void *vram_staging = NULL;
++    if (texture_data_is_vram(tex->data)) {
++        vram_staging = get_tex_staging((int)tex->size);
++        if (!vram_staging) {
++            gl_set_error(GL_OUT_OF_MEMORY);
++            return;
++        }
++        staging_tex = *tex;
++        staging_tex.data = vram_staging;
++        staging_tex.maxLevel = 0;
++        write_tex = &staging_tex;
++    }
+     const uint8_t *px = (const uint8_t *) pixels; // Only 1st px
+-    int num_pixels = tex->width * tex->height;
++    int num_pixels = write_tex->width * write_tex->height;
+
+     if (fmt == GPU_RGBA8) {
+         uint32_t out_pixel = 0;
+@@ -944,7 +1019,7 @@ static void upload_solid_texture(C3D_Tex *tex, GPU_TEXCOLOR fmt, const GLvoid *p
+             out_pixel = ((uint32_t) px[0] << 24) | ((uint32_t) px[1] << 16) | ((uint32_t) px[2] << 8) | (uint32_t) px[
+                             3];
+         }
+-        uint32_t *dst = (uint32_t *) tex->data;
++        uint32_t *dst = (uint32_t *) write_tex->data;
+         for (int i = 0; i < num_pixels; i++) dst[i] = out_pixel;
+     } else if (gpu_texfmt_bpp(fmt) == 2) {
+         uint16_t val;
+@@ -954,13 +1029,16 @@ static void upload_solid_texture(C3D_Tex *tex, GPU_TEXCOLOR fmt, const GLvoid *p
+         } else {
+             memcpy(&val, px, sizeof(uint16_t)); /* packed short, layouts match */
+         }
+-        uint16_t *dst = (uint16_t *) tex->data;
++        uint16_t *dst = (uint16_t *) write_tex->data;
+         for (int i = 0; i < num_pixels; i++) dst[i] = val;
+     } else {
+         uint8_t val = px[0];
+-        memset(tex->data, val, num_pixels);
++        memset(write_tex->data, val, num_pixels);
++    }
++    C3D_TexFlush(write_tex);
++    if (vram_staging) {
++        C3D_TexLoadImage(tex, vram_staging, GPU_TEXFACE_2D, 0);
+     }
+-    C3D_TexFlush(tex);
+ }
+
+ /* Per-pixel morton offset inside an 8x8 tile, precomputed at file scope.
+@@ -1132,9 +1210,35 @@ static int can_use_hw_swizzle(GPU_TEXCOLOR fmt, int pot_w, int pot_h, int width,
+ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int pot_h, const GLvoid *pixels, int width,
+                                   int height, int src_x0, int src_y0, int copy_w, int copy_h, GLenum format,
+                                   GLenum type, GLint unpack_alignment) {
++    C3D_Tex staging_tex;
++    C3D_Tex *write_tex = tex;
++    void *vram_staging = NULL;
++    int transient_vram_staging = 0;
++    if (texture_data_is_vram(tex->data)) {
++        const size_t bytes = (size_t)pot_w * (size_t)pot_h * (size_t)gpu_texfmt_bpp(fmt);
++        /* An oversized-image downscale can already use g.tex_staging as its
++         * source. Do not recycle/free that buffer while reading from it. */
++        if (pixels != NULL && pixels == g.tex_staging) {
++            vram_staging = linearAlloc(bytes);
++            transient_vram_staging = 1;
++        } else if (bytes <= NOVA_VRAM_UPLOAD_MAX) {
++            vram_staging = get_tex_staging((int)bytes);
++        }
++        if (!vram_staging) {
++            gl_set_error(GL_OUT_OF_MEMORY);
++            return;
++        }
++        staging_tex = *tex;
++        staging_tex.data = vram_staging;
++        staging_tex.size = bytes;
++        staging_tex.maxLevel = 0;
++        write_tex = &staging_tex;
++    }
+     if (!pixels) {
+-        memset(tex->data, 0, (size_t) pot_w * (size_t) pot_h * (size_t) gpu_texfmt_bpp(fmt));
+-        C3D_TexFlush(tex);
++        memset(write_tex->data, 0, (size_t) pot_w * (size_t) pot_h * (size_t) gpu_texfmt_bpp(fmt));
++        C3D_TexFlush(write_tex);
++        if (vram_staging) C3D_TexLoadImage(tex, vram_staging, GPU_TEXFACE_2D, 0);
++        if (transient_vram_staging) linearFree(vram_staging);
+         return;
+     }
+     (void) type; /* only the opt-in HW-swizzle path below consults it */
+@@ -1153,7 +1257,7 @@ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int
+      * game-heap pointers will silently produce garbage or crash the GPU,
+      * hence the tex_staging copy (which IS linearAlloc'd). */
+ #ifdef NOVAGL_ENABLE_HW_SWIZZLE
+-    if (can_use_hw_swizzle(fmt, pot_w, pot_h, width, height, copy_w, copy_h, src_x0, src_y0,
++    if (!vram_staging && can_use_hw_swizzle(fmt, pot_w, pot_h, width, height, copy_w, copy_h, src_x0, src_y0,
+                            format, type, unpack_alignment)) {
+         int bytes = pot_w * pot_h * gpu_texfmt_bpp(fmt);
+         /* Cap HW staging at 1MB — bigger textures are rare on 3DS and we'd
+@@ -1190,7 +1294,7 @@ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int
+                                src8 + (size_t) (pot_h - 1 - y) * row, (size_t) row);
+                     }
+                 }
+-                nova_hardware_swizzle(tex, linear_src, pot_w, pot_h, fmt);
++                nova_hardware_swizzle(write_tex, linear_src, pot_w, pot_h, fmt);
+                 return;
+             }
+         }
+@@ -1199,15 +1303,19 @@ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int
+ #endif
+     if (fmt == GPU_RGBA8) {
+         int row_stride = row_stride_bytes(width, (format == GL_RGB || format == GL_BGR) ? 3 : 4, unpack_alignment);
+-        upload_page_rgba8(tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h,
++        upload_page_rgba8(write_tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h,
+                           format);
+     } else if (gpu_texfmt_bpp(fmt) == 2) {
+         int row_stride = row_stride_bytes(width, 2, unpack_alignment);
+-        upload_page_16bit(tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h,
++        upload_page_16bit(write_tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h,
+                           fmt);
+     } else {
+         int row_stride = row_stride_bytes(width, 1, unpack_alignment);
+-        upload_page_8bit(tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h);
++        upload_page_8bit(write_tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h);
++    }
++    if (vram_staging) {
++        C3D_TexLoadImage(tex, vram_staging, GPU_TEXFACE_2D, 0);
++        if (transient_vram_staging) linearFree(vram_staging);
+     }
+ }
+
+@@ -1784,7 +1892,8 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
+         const size_t vram_reserve = 1536u * 1024u;
+         bool ok = false;
+         bool on_vram = false;
+-        if ((size_t)vramSpaceFree() >= tex_bytes + vram_reserve) {
++        if (tex_bytes <= NOVA_VRAM_UPLOAD_MAX &&
++            (size_t)vramSpaceFree() >= tex_bytes + vram_reserve) {
+             C3D_TexInitParams params;
+             memset(&params, 0, sizeof(params));
+             params.width = (u16)pot_w;
+@@ -1940,6 +2049,8 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
+     if (!tex_check_format_type(format, type)) return;
+     if (!pixels) return;
+
++    if (!ensure_texture_cpu_writable(slot)) return;
++
+     // If game wanna draw on full tex -> uncompressing it.
+     if (slot->is_solid_optimized) {
+         C3D_Tex old_tex = slot->tex;
+@@ -2813,6 +2924,8 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
+     /* CPU readback needs the queued draws retired first. See
+      * nova_midframe_drain: a raw split+wait would park forever here. */
+     nova_midframe_drain();
++    if (!ensure_texture_cpu_writable(slot)) return;
++    tex_data = (uint32_t *)slot->tex.data;
+
+     for (int cy = 0; cy < height; cy++) {
+         for (int cx = 0; cx < width; cx++) {
+diff --git a/src/utils.c b/src/utils.c
+index f27264e..b68c789 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -649,10 +649,15 @@ void *get_tex_staging(int size) {
+     }
+     s_tex_staging_idle_frames = 0; /* a real staging use this frame */
+     if (g.tex_staging_size < size) {
+-        void *new_buf = realloc(g.tex_staging, (size_t) size);
++        /* GX texture transfers require physically contiguous linear memory.
++         * malloc/realloc happened to work in Azahar but gave the real DMA
++         * engine an invalid source. Staging is scratch, so growth does not
++         * need to preserve its previous contents. */
++        void *new_buf = linearAlloc((size_t) size);
+         if (!new_buf) {
+             return NULL;
+         }
++        if (g.tex_staging) linearFree(g.tex_staging);
+         g.tex_staging = new_buf;
+         g.tex_staging_size = size;
+     }
+@@ -668,8 +673,9 @@ void nova_tex_staging_tick(void) {
+         return;
+     if (++s_tex_staging_idle_frames < NOVA_TEX_STAGING_SHRINK_FRAMES)
+         return;
+-    void *shrunk = realloc(g.tex_staging, (size_t) NOVA_TEX_STAGING_FLOOR);
++    void *shrunk = linearAlloc((size_t) NOVA_TEX_STAGING_FLOOR);
+     if (shrunk) {
++        linearFree(g.tex_staging);
+         g.tex_staging = shrunk;
+         g.tex_staging_size = NOVA_TEX_STAGING_FLOOR;
+     }

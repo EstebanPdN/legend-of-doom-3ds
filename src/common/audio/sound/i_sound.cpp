@@ -53,6 +53,9 @@ EXTERN_CVAR (Float, snd_sfxvolume)
 EXTERN_CVAR(Float, snd_musicvolume)
 CUSTOM_CVAR(Int, snd_samplerate, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
+	#ifdef __3DS__
+	if (self == 0) self = 32000;
+	#endif
 	if (self != 0 && self != 8000 && self != 11025 && self != 22050 && self != 32000 && self != 44100 && self != 48000)
 	{
 		self = 0;
@@ -60,7 +63,11 @@ CUSTOM_CVAR(Int, snd_samplerate, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 	}
 }
 CVAR(Int, snd_buffersize, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#ifdef __3DS__
+CVAR(Int, snd_hrtf, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#else
 CVAR(Int, snd_hrtf, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#endif
 
 #if !defined(NO_OPENAL)	
 #define DEF_BACKEND "openal"
@@ -262,6 +269,11 @@ void I_InitSound ()
 		GSnd = new NullSoundRenderer;
 		return;
 	}
+	#ifdef __3DS__
+	// Migrate configs written by earlier silent builds. -nosound remains the
+	// explicit way to disable audio on Nintendo 3DS.
+	snd_backend = "openal";
+	#endif
 
 	// Keep it simple: let everything except "null" init the sound.
 	if (stricmp(snd_backend, "null") == 0)
@@ -493,4 +505,3 @@ SoundHandle SoundRenderer::LoadSoundVoc(uint8_t *sfxdata, int length)
 	if (data) delete[] data;
 	return retval;
 }
-

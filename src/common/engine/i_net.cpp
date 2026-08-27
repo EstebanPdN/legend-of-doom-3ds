@@ -79,6 +79,11 @@
 
 #include "i_net.h"
 
+#ifdef __3DS__
+using u_short = uint16_t;
+using u_long = uint32_t;
+#endif
+
 // As per http://support.microsoft.com/kb/q192599/ the standard
 // size for network buffers is 8k.
 #define TRANSMIT_SIZE		8000

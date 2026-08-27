@@ -30,7 +30,7 @@ public:
 		SetUniqueSoundNames();
 	}
 
-	FSerializer &Sprite(const char *key, int32_t &spritenum, int32_t *def) override;
+	FSerializer &Sprite(const char *key, int &spritenum, int *def) override;
 	FSerializer& StatePointer(const char* key, void* ptraddr, bool *res) override;
 
 };

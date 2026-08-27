@@ -1,0 +1,15 @@
+# Native generators used while cross-compiling GZDoom for Nintendo 3DS.
+add_executable(re2c IMPORTED)
+set_target_properties(re2c PROPERTIES IMPORTED_LOCATION "@LOD3DS_RE2C@")
+
+add_executable(lemon IMPORTED)
+set_target_properties(lemon PROPERTIES IMPORTED_LOCATION "@LOD3DS_LEMON@")
+
+add_executable(zipdir IMPORTED)
+set_target_properties(zipdir PROPERTIES IMPORTED_LOCATION "@LOD3DS_ZIPDIR@")
+
+add_executable(arithchk IMPORTED)
+set_target_properties(arithchk PROPERTIES IMPORTED_LOCATION "@LOD3DS_ARITHCHK@")
+
+add_executable(qnan IMPORTED)
+set_target_properties(qnan PROPERTIES IMPORTED_LOCATION "@LOD3DS_QNAN@")

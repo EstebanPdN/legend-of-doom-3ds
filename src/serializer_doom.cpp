@@ -175,7 +175,7 @@ FSerializer &SerializeTerrain(FSerializer &arc, const char *key, int &terrain, i
 //
 //==========================================================================
 
-FSerializer &FDoomSerializer::Sprite(const char *key, int32_t &spritenum, int32_t *def)
+FSerializer &FDoomSerializer::Sprite(const char *key, int &spritenum, int *def)
 {
 	if (isWriting())
 	{
@@ -617,4 +617,3 @@ template<> FSerializer &Serialize(FSerializer &arc, const char *key, FLevelLocal
 	}
 	return arc;
 }
-

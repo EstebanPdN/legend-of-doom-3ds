@@ -84,4 +84,8 @@ inline void* M_Calloc(size_t v1, size_t v2)
 
 void M_Free (void *memblock);
 
+#ifdef __3DS__
+void M_3DSLogHeap(const char *stage);
+#endif
+
 #endif //__M_ALLOC_H__

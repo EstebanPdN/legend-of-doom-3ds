@@ -1,0 +1,33 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 605046a..f38ef34 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -1071,7 +1071,14 @@ static void draw_packed_run(GLenum mode, GPU_Primitive_t prim, uint8_t *base, i
+     nova_setup_attr_info(pos_elements);
+     nova_setup_buf_info(base, stride);
+
+-    if (mode == GL_QUADS) {
++    if ((mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) &&
++        count == 4 && g.static_quad_indices) {
++        /* GZDoom emits walls as four-vertex fans and actor billboards as
++         * four-vertex strips. Convert both to two ordinary triangles. This
++         * avoids PICA/Azahar strip-restart instability and reuses all four
++         * transformed vertices without repacking them. */
++        C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT, g.static_quad_indices);
++    } else if (mode == GL_QUADS) {
+         // === [DIAG] alternate quad path: draw as TRIANGLE_FAN ===
+         // Original path uses C3D_DrawElements with persistent static_quad_indices.
+         // If that index buffer is being cached/aliased by PICA200 we'd see ghosting.
+@@ -1573,7 +1580,11 @@ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first,
+     if (lit && nrmr != 1)
+         C3D_FixedAttribSet(3, g.cur_normal[0], g.cur_normal[1], g.cur_normal[2], 0.0f);
+
+-    if (is_elements)
++    if (!is_elements &&
++        (mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) &&
++        count == 4 && g.static_quad_indices)
++        C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT, g.static_quad_indices);
++    else if (is_elements)
+         C3D_DrawElements(prim, count, c3dType, gpuIdx);
+     else
+         C3D_DrawArrays(prim, 0, count);

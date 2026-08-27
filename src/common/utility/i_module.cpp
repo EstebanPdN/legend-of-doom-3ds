@@ -36,12 +36,17 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#else
+#elif !defined(__3DS__)
 #include <dlfcn.h>
 #endif
 
 
-#ifndef _WIN32
+#if defined(__3DS__)
+#define LoadLibraryA(x) nullptr
+#define GetProcAddress(a,b) nullptr
+#define FreeLibrary(x) ((void)0)
+using HMODULE = void*;
+#elif !defined(_WIN32)
 #define LoadLibraryA(x) dlopen((x), RTLD_LAZY)
 #define GetProcAddress(a,b) dlsym((a),(b))
 #define FreeLibrary(x) dlclose((x))

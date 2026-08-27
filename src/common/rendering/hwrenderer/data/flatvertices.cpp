@@ -147,15 +147,13 @@ void FFlatVertexBuffer::OutputResized(int width, int height)
 
 std::pair<FFlatVertex *, unsigned int> FFlatVertexBuffer::AllocVertices(unsigned int count)
 {
-	FFlatVertex *p = GetBuffer();
 	auto index = mCurIndex.fetch_add(count);
-	auto offset = index;
-	if (index + count >= BUFFER_SIZE_TO_USE)
+	if (count >= BUFFER_SIZE_TO_USE || index >= BUFFER_SIZE_TO_USE - count)
 	{
-		// If a single scene needs 2'000'000 vertices there must be something very wrong. 
-		I_FatalError("Out of vertex memory. Tried to allocate more than %u vertices for a single frame", index + count);
+		I_FatalError("Out of vertex memory. Tried to allocate %u vertices for a single frame (capacity is %u)",
+			index + count, BUFFER_SIZE_TO_USE);
 	}
-	return std::make_pair(p, index);
+	return std::make_pair(GetBuffer(index), index);
 }
 
 //==========================================================================
@@ -166,6 +164,13 @@ std::pair<FFlatVertex *, unsigned int> FFlatVertexBuffer::AllocVertices(unsigned
 
 void FFlatVertexBuffer::Copy(int start, int count)
 {
+	if (start < 0 || count < 0 || (unsigned int)start > BUFFER_SIZE ||
+		(unsigned int)count > BUFFER_SIZE - (unsigned int)start)
+	{
+		I_FatalError("Out of vertex memory. Vertex range start=%d count=%d exceeds capacity %u",
+			start, count, BUFFER_SIZE);
+	}
+
 	IVertexBuffer* old = mVertexBuffer;
 
 	for (int n = 0; n < mPipelineNbr; n++)
@@ -179,4 +184,3 @@ void FFlatVertexBuffer::Copy(int start, int count)
 
 	mVertexBuffer = old;
 }
-

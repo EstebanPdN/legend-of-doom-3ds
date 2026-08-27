@@ -11,7 +11,7 @@ CVAR(Int, gles_max_lights_per_surface, 32, 0);
 EXTERN_CVAR(Bool, gl_customshader);
 
 
-#if USE_GLES2
+#if USE_GLES2 && !defined(__3DS__)
 
 PFNGLMAPBUFFERRANGEEXTPROC glMapBufferRange = NULL;
 PFNGLUNMAPBUFFEROESPROC glUnmapBuffer = NULL;
@@ -126,6 +126,7 @@ namespace OpenGLESRenderer
 
 #if USE_GLES2
 
+#if !defined(__3DS__)
 		if (!gladLoadGLES2Loader(&LoadGLES2Proc))
 		{
 			exit(-1);
@@ -133,6 +134,7 @@ namespace OpenGLESRenderer
 
 		glMapBufferRange = (PFNGLMAPBUFFERRANGEEXTPROC)LoadGLES2Proc("glMapBufferRange");
 		glUnmapBuffer = (PFNGLUNMAPBUFFEROESPROC)LoadGLES2Proc("glUnmapBuffer");
+#endif
 
 #else
 		static bool first = true;
@@ -163,9 +165,21 @@ namespace OpenGLESRenderer
 
 		gles.flags = RFL_NO_CLIP_PLANES;
 
+#ifdef __3DS__
+		// NovaGL cannot honor GL_MAP_UNSYNCHRONIZED_BIT with a PICA completion
+		// fence. Direct mapping therefore lets the CPU rewrite world vertices that
+		// queued draws are still fetching: MAP01 can be correct for one frame and
+		// fold into corrupted geometry immediately afterwards. New 3DS has room
+		// for the 2 MiB CPU shadow, so upload only completed ranges instead.
+		gles.useMappedBuffers = false;
+		gles.forceGLSLv100 = true;
+		gles.maxlights = 0;
+		Printf("[3DS] VBO mode: shadowed range uploads (direct mapping disabled)\n");
+#else
 		gles.useMappedBuffers = gles_use_mapped_buffer;
 		gles.forceGLSLv100 = gles_force_glsl_v100;
 		gles.maxlights = gles_max_lights_per_surface;
+#endif
 
 		gles.modelstring = (char*)glGetString(GL_RENDERER);
 		gles.vendorstring = (char*)glGetString(GL_VENDOR);
@@ -176,12 +190,24 @@ namespace OpenGLESRenderer
 		glGetIntegerv(GL_MAX_TEXTURE_SIZE, maxTextureSize);
 
 		gles.max_texturesize = maxTextureSize[0];
+#ifdef __3DS__
+		// At 400x240, 256px preserves the pixel-art source while placing a hard
+		// 256 KiB ceiling on one RGBA texture. Legend of Doom ships several
+		// 1K-2K menu/map images; allowing their POT-expanded desktop sizes would
+		// consume the entire PICA/linear texture budget for pixels never shown.
+		if (gles.max_texturesize > 256) gles.max_texturesize = 256;
+#endif
 		
 		Printf("GL_MAX_TEXTURE_SIZE: %d\n", gles.max_texturesize);
 
 #if USE_GLES2
+#ifdef __3DS__
+		gles.depthStencilAvailable = true;
+		gles.npotAvailable = true;
+#else
 		gles.depthStencilAvailable = CheckExtension("GL_OES_packed_depth_stencil");
 		gles.npotAvailable = CheckExtension("GL_OES_texture_npot");
+#endif
 #else
 		gles.depthStencilAvailable = true;
 		gles.npotAvailable = true;

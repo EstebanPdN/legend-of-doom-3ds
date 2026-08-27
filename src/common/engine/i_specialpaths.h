@@ -2,7 +2,7 @@
 
 #include "zstring.h"
 
-#ifdef __unix__
+#if defined(__unix__) || defined(__3DS__)
 FString GetUserFile (const char *path);
 #endif
 FString M_GetAppDataPath(bool create);

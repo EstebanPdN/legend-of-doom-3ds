@@ -115,16 +115,27 @@ CVAR(Int, gl_satformula, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG);
 // Texture CVARs
 //
 //==========================================================================
-CUSTOM_CVARD(Float, gl_texture_filter_anisotropic, 8, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "changes the OpenGL texture anisotropy setting")
+#ifdef __3DS__
+#define DEFAULT_TEXTURE_ANISOTROPY 1
+#define DEFAULT_TEXTURE_FILTER 0
+#else
+#define DEFAULT_TEXTURE_ANISOTROPY 8
+#define DEFAULT_TEXTURE_FILTER 4
+#endif
+
+CUSTOM_CVARD(Float, gl_texture_filter_anisotropic, DEFAULT_TEXTURE_ANISOTROPY, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "changes the OpenGL texture anisotropy setting")
 {
 	screen->SetTextureFilterMode();
 }
 
-CUSTOM_CVARD(Int, gl_texture_filter, 4, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL, "changes the texture filtering settings")
+CUSTOM_CVARD(Int, gl_texture_filter, DEFAULT_TEXTURE_FILTER, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL, "changes the texture filtering settings")
 {
 	if (self < 0 || self > 6) self=4;
 	screen->SetTextureFilterMode();
 }
+
+#undef DEFAULT_TEXTURE_ANISOTROPY
+#undef DEFAULT_TEXTURE_FILTER
 
 CVAR(Bool, gl_precache, false, CVAR_ARCHIVE)
 

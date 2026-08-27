@@ -36,7 +36,7 @@
 #define __D_GUI_H__
 
 // For a GUIEvent, x and y specify absolute location of mouse pointer
-enum EGUIEvent
+enum EGUIEvent : int
 {
 	EV_GUI_None,
 	EV_GUI_KeyDown,			// data1: unshifted ASCII, data2: shifted ASCII, data3: modifiers

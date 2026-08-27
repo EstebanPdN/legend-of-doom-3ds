@@ -1,0 +1,120 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -145,6 +145,11 @@ option(NOVAGL_GZDOOM_COMPAT "Enable the GZDoom GLES fixed-function bridge" OFF)
+ set(NOVAGL_DIAG_DRAW_LIMIT "0" CACHE STRING "Number of initial GL draws to log")
+ set(NOVAGL_DIAG_TEX_LIMIT "0" CACHE STRING "Number of initial texture uploads to log")
+ option(NOVAGL_DIAG_TEX_DUMP_RAW "Write raw/swizzled texture diagnostics to SD" OFF)
++option(NOVAGL_HARDWARE_STAGE_LOG "Write first-frame Citro3D swap breadcrumbs to SD" OFF)
++if (NOVAGL_HARDWARE_STAGE_LOG)
++    target_compile_definitions(NovaGL PRIVATE NOVAGL_HARDWARE_STAGE_LOG=1)
++endif ()
++
+ if (NOVAGL_GZDOOM_COMPAT)
+     target_compile_definitions(NovaGL PUBLIC
+         NOVAGL_GZDOOM_COMPAT=1
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -23,6 +23,41 @@
+ #include "NovaGL_shader_clipspace_shbin.h"
+ #include "NovaGL_shader_lighting_shbin.h"
+
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++static const char *s_nova_hw_stage_path =
++    "sdmc:/3ds/legend-of-doom/novagl-stage.log";
++
++static void nova_hw_stage_reset(void)
++{
++    FILE *f = fopen(s_nova_hw_stage_path, "w");
++    if (!f) return;
++    fprintf(f, "NovaGL hardware swap stages v1\n");
++    fflush(f);
++    fclose(f);
++}
++
++static void nova_hw_stage(const char *stage, float cmd_usage)
++{
++    FILE *f = fopen(s_nova_hw_stage_path, "a");
++    if (!f) return;
++    fprintf(f, "%llu %s cmd_usage=%.6f\n",
++            (unsigned long long)osGetTime(),
++            stage ? stage : "(null)", (double)cmd_usage);
++    fflush(f);
++    fclose(f);
++}
++#else
++static void nova_hw_stage_reset(void)
++{
++}
++
++static void nova_hw_stage(const char *stage, float cmd_usage)
++{
++    (void)stage;
++    (void)cmd_usage;
++}
++#endif
++
+ /* VBlank pacing default for novaSwapBuffers (runtime-overridable through
+  * novaSetSwapInterval). Compile with -DNOVAGL_VSYNC=0 to free-run. Must be
+  * defined before nova_init_ex seeds g.swap_interval from it. */
+@@ -114,7 +149,10 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+     //    index_buf_size = 512 * 1024;
+     //}
+
++    nova_hw_stage_reset();
++    nova_hw_stage("init-before-c3d-init", 0.0f);
+     C3D_Init(cmd_buf_size);
++    nova_hw_stage("init-after-c3d-init", C3D_GetCmdBufUsage());
+
+     /* GZDoom renders one native 400x240 top-screen view. Enabling stereo
+      * reserves/advertises a second physical eye buffer despite never drawing
+@@ -574,7 +612,9 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+
+     g.initialized = 1;
+
++    nova_hw_stage("init-before-frame-begin", C3D_GetCmdBufUsage());
+     C3D_FrameBegin(g.c3d_frame_flag);
++    nova_hw_stage("init-after-frame-begin", C3D_GetCmdBufUsage());
+     g.client_array_buf_offset = 0;
+     g.index_buf_offset = 0;
+
+@@ -835,13 +875,19 @@ void novaSetSwapInterval(int interval) {
+ }
+
+ void novaSwapBuffers(void) {
++    static unsigned hw_swap_count;
++    const int log_stage = hw_swap_count < 3;
+     /* Commit any pending batch before the frame ends + the ring slot rotates —
+      * an un-issued batch's verts would be lost when its slot is reused. */
++    if (log_stage) nova_hw_stage("swap-before-batch-flush", C3D_GetCmdBufUsage());
+     nova_batch_flush();
++    if (log_stage) nova_hw_stage("swap-after-batch-flush", C3D_GetCmdBufUsage());
+     /* Present the app surface to the physical top LCD before ending the frame. */
+     if (g.app_target) nova_present_app(g.render_target_top);
+
++    if (log_stage) nova_hw_stage("swap-before-frame-end", C3D_GetCmdBufUsage());
+     C3D_FrameEnd(0);
++    if (log_stage) nova_hw_stage("swap-after-frame-end", 0.0f);
+     /* VBlank pacing quantizes the frame rate to 60/N: a 45ms frame stalls
+      * until the 4th impulse and reads as a hard 15 FPS. Engines that pace
+      * themselves (OpenMW advances simulation by measured dt) disable this
+@@ -849,6 +896,7 @@ void novaSwapBuffers(void) {
+      * via novaSetSwapInterval(0). */
+     for (int vb = 0; vb < g.swap_interval; vb++)
+         gspWaitForVBlank();
++    if (log_stage) nova_hw_stage("swap-after-vblank", 0.0f);
+
+     /* Rotate to the next frame slot. The vertex/index rings and the orphan GC
+      * buckets for THIS slot were last used `frame_buffers` frames ago, so the
+@@ -863,7 +911,10 @@ void novaSwapBuffers(void) {
+     /* No wait tag here: this is the HEALTHY once-per-frame swap wait — under
+      * a rolling per-frame tag budget it floods the log and drowns the rare
+      * wait sites the tags exist to expose. */
++    if (log_stage) nova_hw_stage("swap-before-next-frame-begin", 0.0f);
+     C3D_FrameBegin(g.c3d_frame_flag);   /* SYNCDRAW (K==1) waits; async (K>1) doesn't */
++    if (log_stage) nova_hw_stage("swap-after-next-frame-begin", C3D_GetCmdBufUsage());
++    ++hw_swap_count;
+
+     /* FrameEnd retired every draw from the old command list and FrameBegin
+      * opened a fresh one. If this flag leaks across the boundary, the next

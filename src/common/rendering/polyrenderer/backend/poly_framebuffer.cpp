@@ -180,17 +180,19 @@ void PolyFrameBuffer::Update()
 		uint8_t *dst = I_PolyPresentLock(w, h, cur_vsync, pitch);
 		if (dst)
 		{
-#if 1
-			// [GEC] with the help of dpJudas a new system of copying and applying gamma in the video buffer
 			auto copyqueue = std::make_shared<DrawerCommandQueue>(&mFrameMemory);
-			copyqueue->Push<CopyAndApplyGammaCommand>(dst, pitch / pixelsize, src, w, h, w, vid_gamma, vid_contrast, vid_brightness, vid_saturation);
-			DrawerThreads::Execute(copyqueue);
-#else
-			for (int y = 0; y < h; y++)
+			if (vid_gamma == 1.0f && vid_contrast == 1.0f &&
+				vid_brightness == 0.0f && vid_saturation == 1.0f)
 			{
-				memcpy(dst + y * pitch, src + y * w * pixelsize, w * pixelsize);
+				copyqueue->Push<MemcpyCommand>(dst, pitch / pixelsize, src, w, h,
+					mCanvas->GetPitch(), pixelsize);
 			}
-#endif
+			else
+			{
+				copyqueue->Push<CopyAndApplyGammaCommand>(dst, pitch / pixelsize, src, w, h,
+					mCanvas->GetPitch(), vid_gamma, vid_contrast, vid_brightness, vid_saturation);
+			}
+			DrawerThreads::Execute(copyqueue);
 
 			DrawerThreads::WaitForWorkers();
 			I_PolyPresentUnlock(mOutputLetterbox.left, mOutputLetterbox.top, mOutputLetterbox.width, mOutputLetterbox.height);

@@ -55,6 +55,7 @@
 #include "thingdef.h"
 #include "zcc_parser.h"
 #include "zcc_compile_doom.h"
+#include "m_alloc.h"
 
 // EXTERNAL FUNCTION PROTOTYPES --------------------------------------------
 void InitThingdef();
@@ -447,14 +448,26 @@ void LoadActors()
 
 	SetDoomCompileEnvironment();
 	InitThingdef();
+#ifdef __3DS__
+	M_3DSLogHeap("actors: compiler environment");
+#endif
 	FScriptPosition::StrictErrors = true;
 	ParseScripts();
+#ifdef __3DS__
+	M_3DSLogHeap("actors: ZScript parsed");
+#endif
 
 	FScriptPosition::StrictErrors = strictdecorate;
 	ParseAllDecorate();
 	SynthesizeFlagFields();
+#ifdef __3DS__
+	M_3DSLogHeap("actors: DECORATE parsed");
+#endif
 
 	FunctionBuildList.Build();
+#ifdef __3DS__
+	M_3DSLogHeap("actors: functions built");
+#endif
 
 	if (FScriptPosition::ErrorCounter > 0)
 	{

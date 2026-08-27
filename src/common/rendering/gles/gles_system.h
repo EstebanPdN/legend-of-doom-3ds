@@ -23,9 +23,15 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define USE_GLES2 0
+#if defined(__3DS__)
+	#define USE_GLES2 1
+	#include <NovaGL.h>
+	#define NO_RENDER_BUFFER 1
+#else
+	#define USE_GLES2 0
+#endif
 
-#if (USE_GLES2)
+#if (USE_GLES2) && !defined(__3DS__)
 	#include "glad/glad.h"
 
 // Below are used extensions for GLES
@@ -43,7 +49,7 @@ GLAPI PFNGLUNMAPBUFFEROESPROC glUnmapBuffer;
 #define GL_MAP_INVALIDATE_BUFFER_BIT      0x0008
 #define GL_BGRA                           0x80E1
 
-#else
+#elif !defined(__3DS__)
 	#include "gl_load/gl_load.h"
 #endif
 
@@ -53,8 +59,6 @@ GLAPI PFNGLUNMAPBUFFEROESPROC glUnmapBuffer;
 
 // This is the number of vec4s make up the light data
 #define LIGHT_VEC4_NUM 4
-
-//#define NO_RENDER_BUFFER
 
 //#define NPOT_EMULATION
 

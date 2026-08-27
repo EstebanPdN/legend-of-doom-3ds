@@ -111,6 +111,15 @@ const T MIN (const T a, const T b)
 	return a < b ? a : b;
 }
 
+#ifdef __3DS__
+template<class T, class U>
+inline
+auto MIN (const T a, const U b) -> decltype(a < b ? a : b)
+{
+	return a < b ? a : b;
+}
+#endif
+
 //==========================================================================
 //
 // MAX
@@ -128,6 +137,15 @@ const T MAX (const T a, const T b)
 {
 	return a > b ? a : b;
 }
+
+#ifdef __3DS__
+template<class T, class U>
+inline
+auto MAX (const T a, const U b) -> decltype(a > b ? a : b)
+{
+	return a > b ? a : b;
+}
+#endif
 
 //==========================================================================
 //

@@ -451,7 +451,7 @@ PInt::PInt(unsigned int size, bool unsign, bool compatible)
 	else
 	{
 		Symbols.AddSymbol(Create<PSymbolConstNumeric>(NAME_Min, this, 0u));
-		Symbols.AddSymbol(Create<PSymbolConstNumeric>(NAME_Max, this, (uint32_t) (((uint64_t) 1u << (size * 8)) - 1uL)));
+		Symbols.AddSymbol(Create<PSymbolConstNumeric>(NAME_Max, this, (unsigned int) (((uint64_t) 1u << (size * 8)) - 1uL)));
 	}
 	SetOps();
 }
@@ -1141,7 +1141,7 @@ PSpriteID::PSpriteID()
 
 void PSpriteID::WriteValue(FSerializer &ar, const char *key, const void *addr) const
 {
-	int32_t val = *(int*)addr;
+	int val = *(int*)addr;
 	ar.Sprite(key, val, nullptr);
 }
 
@@ -1153,7 +1153,7 @@ void PSpriteID::WriteValue(FSerializer &ar, const char *key, const void *addr) c
 
 bool PSpriteID::ReadValue(FSerializer &ar, const char *key, void *addr) const
 {
-	int32_t val = 0;
+	int val = 0;
 	ar.Sprite(key, val, nullptr);
 	*(int*)addr = val;
 	return true;
@@ -2562,4 +2562,3 @@ CCMD(typetable)
 {
 	DumpTypeTable();
 }
-
