@@ -73,7 +73,7 @@ lod3ds_checkout_openal() {
 
   if ! git diff --no-index --quiet --ignore-space-at-eol -- \
       "${LOD3DS_OPENAL_PATCH}" \
-      <(git -C "${LOD3DS_OPENAL_CHECKOUT}" diff -- alc/backends/ndsp_driver.cpp); then
+      <(git -C "${LOD3DS_OPENAL_CHECKOUT}" diff --abbrev=8 -- alc/backends/ndsp_driver.cpp); then
     printf 'OpenAL Soft checkout does not match the pinned Nintendo 3DS audio patch.\n' >&2
     exit 1
   fi
