@@ -1,0 +1,16 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1962,9 +1962,11 @@ target_compile_definitions(${IMPL_TARGET}
+     ${CPP_DEFS})
+ target_compile_options(${IMPL_TARGET} PRIVATE ${C_FLAGS})
+ 
+ if(TARGET alsoft.build_version)
+     add_dependencies(${IMPL_TARGET} alsoft.build_version)
+ endif()
+-add_dependencies(${IMPL_TARGET} ${HRTF_DATA_TARGETS})
++if(HRTF_DATA_TARGETS)
++    add_dependencies(${IMPL_TARGET} ${HRTF_DATA_TARGETS})
++endif()
+ 
+ if(WIN32 AND MINGW AND ALSOFT_BUILD_IMPORT_LIB AND NOT LIBTYPE STREQUAL "STATIC")
