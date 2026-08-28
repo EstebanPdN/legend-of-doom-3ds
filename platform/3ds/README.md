@@ -19,10 +19,10 @@ MAKEROM               explicit makerom executable
 BANNERTOOL            explicit bannertool executable
 LOD3DS_OPENAL_SOURCE_DIR  optional existing OpenAL Soft/NDSP checkout
 LOD3DS_SKIP_CIA=1     build only 3DSX and SD ZIP
-LOD3DS_BUILD_PROFILE  `release` (default) or `hardware-diagnostic`; the latter disables audio, keeps L+R+A dumps/telemetry and opens MAP01
+LOD3DS_BUILD_PROFILE  `release` (default), `hardware-candidate` or `hardware-diagnostic`; both hardware profiles keep L+R+A dumps/telemetry and open MAP01, while only `hardware-diagnostic` disables audio
 ```
 
-The source and data revisions are pinned in `dependencies.sh`. Generated dependency checkouts live under `build-3ds/_deps/`; they are never committed. The ordered NovaGL patch stack is validated by `test-patches.sh`. The New 3DS profile uses one synchronized CPU/GPU frame slot, a 32 MiB linear arena, top-screen-only render targets, 256px texture clamping and CPU-writable linear storage for ordinary sampled textures; VRAM is reserved for render targets. Single buffering uses Citro3D's official `C3D_FRAME_SYNCDRAW` completion boundary before any ring or deferred allocation is reused. Merely counting asynchronously submitted frames is not a hardware fence. Clears are ordered through Citro3D's GX queue; the experimental shader-quad clear is disabled. Keeping sampled textures out of VRAM prevents the fixed 32-entry Citro3D GX queue from overflowing during startup uploads, while render-target creation fails cleanly instead of mislabelling linear RAM as renderable. NovaGL keeps its safe 3 MiB world command list plus 2 MiB vertex and 512 KiB index rings; MAP01 can overflow a 512 KiB command list before its first present. The renderer clips walls, indexed floors and sprite strips at the perspective eye plane, rejects batches wholly behind the camera without copying, emulates GZDoom's portal clip plane, tracks `GL_DEPTH_CLAMP`, and prevents Early-Z from skipping stencil side effects. Native 20/24-byte wall and sprite VBOs use stable 32K-vertex bases with a persistent sequential-u16 quad table, avoiding per-draw buffer reprogramming while preserving the established triangle topology.
+The source and data revisions are pinned in `dependencies.sh`. Generated dependency checkouts live under `build-3ds/_deps/`; they are never committed. The ordered NovaGL patch stack is validated by `test-patches.sh`. The New 3DS profile uses one synchronized CPU/GPU frame slot, a 32 MiB linear arena, top-screen-only render targets, 256px texture clamping and CPU-writable linear storage for ordinary sampled textures; VRAM is reserved for render targets. Single buffering uses Citro3D's official `C3D_FRAME_SYNCDRAW` completion boundary before any ring or deferred allocation is reused. Merely counting asynchronously submitted frames is not a hardware fence. Clears are ordered through Citro3D's GX queue; the experimental shader-quad clear is disabled. Keeping sampled textures out of VRAM prevents the fixed 32-entry Citro3D GX queue from overflowing during startup uploads, while render-target creation fails cleanly instead of mislabelling linear RAM as renderable. NovaGL keeps its safe 3 MiB world command list plus 2 MiB vertex and 512 KiB index rings; MAP01 can overflow a 512 KiB command list before its first present. The renderer clips walls, indexed floors and sprite strips at the perspective eye plane and all four homogeneous side planes, rejects batches wholly behind the camera without copying, reserves only the exact clipped stream, emulates GZDoom's portal clip plane, tracks `GL_DEPTH_CLAMP`, and prevents Early-Z from skipping stencil side effects. Native 20/24-byte wall and sprite VBOs use stable 32K-vertex bases with a persistent sequential-u16 quad table, avoiding per-draw buffer reprogramming while preserving the established triangle topology.
 
 The diagnostic profile keeps the complete L+R+A artifact set (both screen captures, raw framebuffers, telemetry, engine state, logs and memory map). Per-draw GL validation and NovaGL trace logging are compiled out by default so the diagnostic build remains a meaningful performance measurement; explicit `NOVAGL_NO_DEBUG=OFF`, `NOVAGL_DRAW_DIAGNOSTICS=N` and `NOVAGL_TEXTURE_DIAGNOSTICS=N` overrides are available for a targeted deep renderer capture.
 
@@ -39,22 +39,22 @@ build-3ds/dist/legend-of-doom-3ds-v0.1-<profile>-<build-id>-debug-symbols.zip
 
 Every profile adds its name and 12-character source-state ID to every artifact. The debug ZIP contains the exact unstripped ELF, linker map, and manifest required to symbolize a Luma crash dump.
 
-The hardware-diagnostic profile enables a first-frame PICA200 supervisor.
+The `hardware-candidate` and `hardware-diagnostic` profiles enable a first-frame PICA200 supervisor.
 The production profile keeps PICA early-Z disabled: the hardware supervisor
 proved that its raw clear sequence could be submitted before Citro3D emitted a
 framebuffer bind, wedging a 48-byte PICA command list on real New 3DS hardware.
-The supervisor now also records the bounded command words, framebuffer physical
-addresses and buffer/attribute descriptors for the exact first draw that fails.
-Ordinary depth testing is unchanged.
-Every draw command list is submitted in isolation and waited through
-Citro3D's own GX queue with a two-second deadline. A timeout writes
-`sdmc:/3ds/legend-of-doom/gpu-diagnostic.log` with the exact draw serial,
-attribute/buffer state, queue entries and first incomplete GX operation, then
-uses `svcExitProcess` instead of entering normal Citro3D teardown (which would
-wait forever on the wedged queue). A successful first frame records `PASS` and
-the supervisor disables itself, so later frames use the normal render path.
+The supervisor records bounded command words, framebuffer physical addresses,
+buffer/attribute descriptors, VBO capacity and current linear/VRAM headroom for
+the last draw issued by the CPU. Ordinary depth testing is unchanged. Draws are
+submitted using the normal Citro3D frame command list; the diagnostic no longer
+splits, waits, stops, clears and restarts the GX queue after each draw. At the
+real frame boundary it polls completion with a two-second deadline. A timeout
+writes `sdmc:/3ds/legend-of-doom/gpu-diagnostic.log` with the queue entries and
+first incomplete GX operation, then uses `svcExitProcess` instead of entering
+normal Citro3D teardown (which would wait forever on the wedged queue). A
+successful first frame records `PASS` and disables the supervisor.
 
-The hardware-diagnostic profile also writes a bounded
+Both hardware profiles also write a bounded
 `sdmc:/3ds/legend-of-doom/frame-telemetry.csv` segment. It records render/present
 wall time, Citro3D command-processing and GPU drawing time, plus heap, linear
 memory, VRAM, draw calls, submitted vertices and topology counts once per

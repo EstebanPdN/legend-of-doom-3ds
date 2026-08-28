@@ -52,6 +52,25 @@ class HardwareStartupContractTests(unittest.TestCase):
             "initial_scanout=owned-exclusively-by-citro3d", build
         )
 
+    def test_new3ds_memory_budget_is_explicit_and_bounded(self):
+        memory = (ROOT / "src/common/platform/3ds/memory.cpp").read_text(
+            encoding="utf-8"
+        )
+        rsf = (ROOT / "platform/3ds/cia/legend-of-doom-3ds.rsf").read_text(
+            encoding="utf-8"
+        )
+        video = (
+            ROOT / "src/common/platform/posix/sdl/sdlglvideo.cpp"
+        ).read_text(encoding="utf-8")
+        vertices = (
+            ROOT / "src/common/rendering/hwrenderer/data/flatvertices.h"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("__ctru_linear_heap_size = 32 * 1024 * 1024", memory)
+        self.assertIn("SystemModeExt: 124MB", rsf)
+        self.assertIn("nova_init_ex(NOVA_CMD_BUF_SIZE, 2 * 1024 * 1024", video)
+        self.assertIn("static const unsigned int BUFFER_SIZE = 100000", vertices)
+
     def test_early_z_cannot_submit_an_unbound_first_frame_command_list(self):
         patch = (
             ROOT / "platform/3ds/patches/novagl-hardware-safe-earlyz.patch"
@@ -82,6 +101,26 @@ class HardwareStartupContractTests(unittest.TestCase):
         self.assertIn("-DUSE_MPG123=OFF", build)
         self.assertIn('option(USE_MPG123 "Enable the libmpg123 decoder" ON)', patch)
         self.assertIn("if(USE_MPG123)", patch)
+
+    def test_physical_candidate_keeps_audio_and_watchdog_separable(self):
+        build = (ROOT / "platform/3ds/build.sh").read_text(encoding="utf-8")
+        main = (
+            ROOT / "src/common/platform/posix/sdl/i_main.cpp"
+        ).read_text(encoding="utf-8")
+
+        candidate = build[build.index("  hardware-candidate)") :]
+        candidate = candidate[: candidate.index("    ;;")]
+        self.assertIn("HARDWARE_DIAGNOSTIC=ON", candidate)
+        self.assertIn("HARDWARE_DIAGNOSTIC_SILENT=OFF", candidate)
+        self.assertIn("#ifdef LOD3DS_HARDWARE_DIAGNOSTIC_SILENT", main)
+        self.assertIn('Args->AppendArg("-nosound")', main)
+
+    def test_telemetry_embeds_the_actual_build_profile(self):
+        source = (
+            ROOT / "src/common/platform/3ds/diagnostics_3ds.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("LOD3DS_BUILD_PROFILE_NAME", source)
+        self.assertNotIn('"%s,hardware-diagnostic,New Nintendo 3DS', source)
 
 
 if __name__ == "__main__":

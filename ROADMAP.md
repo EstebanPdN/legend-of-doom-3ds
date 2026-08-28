@@ -115,10 +115,10 @@ La pila de parches NovaGL vuelve a aplicar limpiamente sobre la revisión fijada
 | Build cruzado | Parcial | CMake/devkitARM produce ELF, 3DSX y CIA | Build limpio desde cero y CI verde |
 | Trazabilidad | Parcial | ID de 12 caracteres, hashes, ELF/map | Prohibir releases desde árbol dirty |
 | CI | Implementada | El workflow resuelve el nombre desde el manifiesto, verifica hashes y bloquea contenido privado | Confirmar el primer run público limpio |
-| Arranque CIA | Roto en New 3DS física | La cola PICA200 se detiene antes del primer frame | Probar el candidato conservador y devolver los cuatro logs |
+| Arranque CIA | Roto en New 3DS física | Early-Z ya no bloquea; el siguiente dump aísla un cielo recortado de 384 vértices | Probar el guard de frustum con envío normal de frame |
 | Arranque 3DSX | Compila | Rutas SD y CRT propios existen | Validación posterior en consola real |
 | Cámara | Sin validar | No existe todavía un frame físico correcto | Validar después de cerrar el bloqueo de GPU |
-| Cielo | Sin validar en hardware | Near clip está implementado, pero no hay imagen física estable | Suite visual después del primer frame |
+| Cielo | Corrección candidata | El draw bloqueado cruza `w=0`; ahora se recorta también contra los cuatro planos laterales | Validar el primer frame en New 3DS |
 | Color/luz | Sin validar en hardware | La ruta TEV/uniformes existe, pero no hay imagen física estable | Patrón de color y escenas de referencia |
 | Texturas | Parcial | Subidas y fallback funcionan; límite 256 global | Samplers, wrap, traducciones y política por recurso |
 | Portales/stencil | Parcial | Hay CPU user clip y Early-Z condicionado | Escenas de referencia y contadores de clipping |
@@ -148,7 +148,9 @@ La ruta conservadora restaura `C3D_FRAME_SYNCDRAW`, evita dividir una command li
 
 ### 5.3 Supervisor del primer frame
 
-Cada draw anterior al primer swap se envía por separado con un límite de dos segundos. Ante un timeout se guardan el serial, las palabras de comando acotadas, las direcciones físicas de color/depth, atributos, buffers y estado de la cola GX. El proceso sale mediante `svcExitProcess` para no entrar en un teardown que espere indefinidamente a la GPU.
+El dump físico más reciente confirma que el primer draw termina y el segundo, una lista de 384 vértices con shader de matriz de textura, queda pendiente. Las 10 palabras añadidas entre el snapshot y la lista enviada son el cierre normal de Citro3D, no un overflow. Por topología, formato y cantidad, el draw encaja exactamente con el fan del cielo recortado al cruzar el plano del ojo; la versión anterior sólo recortaba `w` y podía entregar al rasterizador coordenadas `x/w` o `y/w` extremas. El nuevo guard recorta además contra izquierda, derecha, arriba y abajo, descarta matrices/vértices no finitos y reserva exactamente la salida calculada en dos pasadas.
+
+El supervisor ya no altera el patrón de ejecución enviando cada draw por separado. Registra el último draw emitido por CPU y deja que Citro3D construya el frame normal. En el siguiente `C3D_FrameBegin` espera como máximo dos segundos; ante timeout guarda palabras de comando, direcciones físicas, capacidad del VBO, memoria libre y estado de la cola GX. El proceso sale mediante `svcExitProcess` para no entrar en un teardown que espere indefinidamente a la GPU.
 
 Este supervisor no convierte el build en una versión jugable; convierte el siguiente fallo físico en evidencia accionable y pretende evitar que el usuario tenga que reiniciar la consola a la fuerza.
 
@@ -191,7 +193,7 @@ Objetivo: sustituir pistas dispersas por una captura determinista por ejecución
 - `OBS-005`: registrar high-water de command list, vertex ring, index ring, staging, VRAM, linear heap y heap convencional.
 - `OBS-006`: registrar uploads/evictions de texturas y bytes por frame, separados de cargas iniciales.
 - `OBS-007`: crear un modo benchmark reproducible: MAP01, posición/yaw fijos, IA congelada opcional, 600 frames, warm-up de 120.
-- `OBS-008`: crear un perfil `full-diagnostic` con audio y menú; el perfil actual `hardware-diagnostic` usa `-nosound` y salta directamente a MAP01.
+- `OBS-008` (implementado): `hardware-candidate` conserva audio, watchdog y telemetría, y salta directamente a MAP01; `hardware-diagnostic` mantiene `-nosound` para aislamiento.
 - `OBS-009`: incluir build ID, perfil, mapa, posición, CVars forzadas y modelo de consola en cada salida.
 - `OBS-010`: crear una herramienta host que resuma p50/p95/p99, 1 % low, draw calls y memoria sin abrir el juego.
 
@@ -378,7 +380,7 @@ Criterio de salida:
 1. Limpiar workspace y preservar sólo el CIA/evidencia actuales.
 2. Crear commits lógicos del port existente y una etiqueta interna de baseline.
 3. Corregir la CI de nombres de artefactos y añadir patch-apply tests.
-4. Compilar desde cero el perfil `hardware-diagnostic` y luego `release`.
+4. Compilar desde cero `hardware-candidate`; conservar `hardware-diagnostic` como aislamiento silencioso y compilar `release` sólo después de validar hardware.
 5. Añadir contadores/timing CPU-GPU de Fase 1.
 6. Corregir el fast path 24 B del sky fan y validar cuatro capturas.
 7. Definir `GL_DEPTH_CLAMP` por pass y ejecutar regresión de portales.

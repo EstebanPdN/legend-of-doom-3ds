@@ -133,12 +133,14 @@ done
 case "${BUILD_PROFILE}" in
   release)
     HARDWARE_DIAGNOSTIC=OFF
+    HARDWARE_DIAGNOSTIC_SILENT=OFF
     NOVAGL_NO_DEBUG=ON
     NOVAGL_DRAW_DIAGNOSTICS=0
     NOVAGL_TEXTURE_DIAGNOSTICS=0
     ;;
   hardware-diagnostic)
     HARDWARE_DIAGNOSTIC=ON
+    HARDWARE_DIAGNOSTIC_SILENT=ON
     # L+R+A, screenshots, telemetry, engine state and the full memory map stay
     # enabled, but per-draw validation/probe logging does not. The latter was
     # executing inside thousands of draw calls and made a diagnostic build a
@@ -149,9 +151,18 @@ case "${BUILD_PROFILE}" in
     NOVAGL_DRAW_DIAGNOSTICS="${NOVAGL_DRAW_DIAGNOSTICS:-0}"
     NOVAGL_TEXTURE_DIAGNOSTICS="${NOVAGL_TEXTURE_DIAGNOSTICS:-0}"
     ;;
+  hardware-candidate)
+    HARDWARE_DIAGNOSTIC=ON
+    HARDWARE_DIAGNOSTIC_SILENT=OFF
+    # Exercise the actual NDSP/ZMusic path while retaining the bounded
+    # physical-console telemetry and first-frame watchdog.
+    NOVAGL_NO_DEBUG="${NOVAGL_NO_DEBUG:-ON}"
+    NOVAGL_DRAW_DIAGNOSTICS="${NOVAGL_DRAW_DIAGNOSTICS:-0}"
+    NOVAGL_TEXTURE_DIAGNOSTICS="${NOVAGL_TEXTURE_DIAGNOSTICS:-0}"
+    ;;
   *)
     printf 'Unknown LOD3DS_BUILD_PROFILE: %s\n' "${BUILD_PROFILE}" >&2
-    printf 'Expected release or hardware-diagnostic.\n' >&2
+    printf 'Expected release, hardware-candidate or hardware-diagnostic.\n' >&2
     exit 1
     ;;
 esac
@@ -265,7 +276,7 @@ cmake -S "${NOVAGL_SOURCE}" -B "${NOVAGL_BUILD}" \
   -DNOVAGL_DIAG_DRAW_CUTOFF="${NOVAGL_DRAW_CUTOFF:--1}" \
   -DNOVAGL_DIAG_TEX_LIMIT="${NOVAGL_TEXTURE_DIAGNOSTICS}" \
   -DNOVAGL_DIAG_TEX_DUMP_RAW=OFF \
-  -DNOVAGL_HARDWARE_STAGE_LOG="$([[ "${BUILD_PROFILE}" == "hardware-diagnostic" ]] && printf ON || printf OFF)" \
+  -DNOVAGL_HARDWARE_STAGE_LOG="$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf ON || printf OFF)" \
   -DNOVAGL_SPLASHSCREEN=OFF \
   -DNOVAGL_FRAME_BUFFERS=1 \
   -DNOVAGL_SPEEDHACKS=ON
@@ -285,8 +296,10 @@ cmake -S "${ROOT}" -B "${GAME_BUILD}" \
   -DOPENAL_LIBRARY="${OPENAL_PREFIX}/lib/libopenal.a" \
   -DNO_OPENMP=ON \
   -DNO_STRIP=ON \
+  -DLOD3DS_BUILD_PROFILE="${BUILD_PROFILE}" \
   -DLOD3DS_BUILD_ID="${BUILD_ID}" \
   -DLOD3DS_HARDWARE_DIAGNOSTIC="${HARDWARE_DIAGNOSTIC}" \
+  -DLOD3DS_HARDWARE_DIAGNOSTIC_SILENT="${HARDWARE_DIAGNOSTIC_SILENT}" \
   -DNOVAGL_INCLUDE_DIR="${NOVAGL_PREFIX}/include" \
   -DNOVAGL_LIBRARY="${NOVAGL_PREFIX}/lib/libNovaGL.a" \
   -DZMUSIC_INCLUDE_DIR="${ZMUSIC_SOURCE}/include" \
@@ -381,6 +394,8 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'novagl_eye_clip_topologies=triangles,indexed-triangles,fans,strips,quads\n'
 	printf 'novagl_eye_clip_fully_behind=early-reject\n'
 	printf 'novagl_eye_clip_epsilon=0.0625\n'
+	printf 'novagl_eye_clip_side_planes=left,right,bottom,top\n'
+	printf 'novagl_eye_clip_allocation=exact-two-pass\n'
 	printf 'novagl_actor_billboards=indexed-triangles\n'
 	printf 'novagl_fflat_fast_path=stable-32k-base-sequential-u16\n'
 	printf 'novagl_vram_upload=linear-staging-gx-copy\n'
@@ -400,10 +415,11 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'novagl_per_draw_validation=%s\n' "$([[ "${NOVAGL_NO_DEBUG}" == "ON" ]] && printf compiled-out || printf enabled)"
 	printf 'novagl_draw_trace_limit=%s\n' "${NOVAGL_DRAW_DIAGNOSTICS}"
 	printf 'novagl_texture_trace_limit=%s\n' "${NOVAGL_TEXTURE_DIAGNOSTICS}"
-	printf 'novagl_hardware_stage_log=%s\n' "$([[ "${BUILD_PROFILE}" == "hardware-diagnostic" ]] && printf first-three-swaps || printf disabled)"
-	printf 'novagl_hardware_watchdog=%s\n' "$([[ "${BUILD_PROFILE}" == "hardware-diagnostic" ]] && printf first-frame-per-draw-2s-timeout || printf disabled)"
+	printf 'novagl_hardware_stage_log=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf first-three-swaps || printf disabled)"
+	printf 'novagl_hardware_watchdog=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf first-frame-boundary-2s-timeout || printf disabled)"
 	printf 'gzdoom_render_traces=compiled-out\n'
 	printf 'frame_telemetry=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf ram-buffered-csv-720 || printf compiled-out)"
+	printf 'audio=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC_SILENT}" == "ON" ]] && printf disabled || printf enabled)"
   printf '3dsx_sha256=%s\n' "$(sha256_file "${THREEDSX}")"
   printf 'elf_sha256=%s\n' "$(sha256_file "${GAME_BUILD}/gzdoom.elf")"
   printf 'map_sha256=%s\n' "$(sha256_file "${GAME_BUILD}/gzdoom.map")"

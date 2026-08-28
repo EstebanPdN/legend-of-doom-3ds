@@ -52,9 +52,7 @@
 #define LOD3DS_BUILD_ID "untracked"
 #endif
 
-#ifdef LOD3DS_HARDWARE_DIAGNOSTIC
-#define LOD3DS_BUILD_PROFILE_NAME "hardware-diagnostic"
-#else
+#ifndef LOD3DS_BUILD_PROFILE_NAME
 #define LOD3DS_BUILD_PROFILE_NAME "release"
 #endif
 
@@ -334,11 +332,13 @@ int main (int argc, char **argv)
 	Args->AppendArg("0");
 	Args->AppendArg("+r_drawvoxels");
 	Args->AppendArg("0");
-	// The hardware-diagnostic profile removes audio and enters MAP01 directly.
-	// This exercises filesystem, VM, level setup, the world renderer and the
-	// first physical-screen present in one deterministic run.
+	// Diagnostic-capable profiles enter MAP01 directly. The separate silent
+	// profile can isolate audio, while the hardware candidate keeps sound and
+	// still exercises the physical world renderer in one deterministic run.
 #ifdef LOD3DS_HARDWARE_DIAGNOSTIC
+	#ifdef LOD3DS_HARDWARE_DIAGNOSTIC_SILENT
 	Args->AppendArg("-nosound");
+	#endif
 	Args->AppendArg("+vid_fps");
 	Args->AppendArg("1");
 	Args->AppendArg("+logfile");

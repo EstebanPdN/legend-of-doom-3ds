@@ -1297,9 +1297,13 @@ if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
 	target_compile_definitions( zdoom PRIVATE
 		NOVAGL_GZDOOM_COMPAT=1
 		NO_RENDER_BUFFER=1
+		LOD3DS_BUILD_PROFILE_NAME="${LOD3DS_BUILD_PROFILE}"
 		LOD3DS_BUILD_ID="${LOD3DS_BUILD_ID}" )
 	if( LOD3DS_HARDWARE_DIAGNOSTIC )
 		target_compile_definitions( zdoom PRIVATE LOD3DS_HARDWARE_DIAGNOSTIC=1 )
+	endif()
+	if( LOD3DS_HARDWARE_DIAGNOSTIC_SILENT )
+		target_compile_definitions( zdoom PRIVATE LOD3DS_HARDWARE_DIAGNOSTIC_SILENT=1 )
 	endif()
 	target_link_libraries( zdoom "${NOVAGL_LIBRARY}" citro3d )
 	target_link_directories( zdoom PRIVATE "$ENV{DEVKITPRO}/libctru/lib" )

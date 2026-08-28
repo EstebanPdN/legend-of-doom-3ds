@@ -92,6 +92,12 @@ Build the silent first-frame hardware diagnostic with:
 LOD3DS_BUILD_PROFILE=hardware-diagnostic ./platform/3ds/build.sh
 ```
 
+Build the physical-console candidate with audio and the same watchdog with:
+
+```sh
+LOD3DS_BUILD_PROFILE=hardware-candidate ./platform/3ds/build.sh
+```
+
 The scripts download pinned SDL2, ZMusic, minimp3, OpenAL Soft/NDSP, Legend of Doom and Freedoom inputs; apply the documented 3DS patches; build the executable; and write packages below `build-3ds/dist/`.
 
 No ROM, commercial IWAD, save or crash dump is read during the build. See [platform/3ds/README.md](platform/3ds/README.md) for the renderer contract, diagnostic format and complete build options.
