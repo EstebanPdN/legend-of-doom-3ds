@@ -11,11 +11,9 @@ The port is based on GZDoom 4.7.1 and uses the freely redistributable Freedoom: 
 ## Project status
 
 > [!WARNING]
-> This port is under active hardware bring-up and is not a playable release yet. The current blocker is first-frame GPU submission on physical New Nintendo 3DS systems. No release or pre-release package has been published.
+> This port is under active development and it is not a playable release yet.
 
-The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL. The native render target is 400×240 on the top screen. A stable 30 FPS is the initial performance goal, but no compatibility, stability or frame-rate claim will be made until the exact candidate has been measured during sustained play on physical hardware.
-
-Emulator results are not accepted as proof of New 3DS compatibility or performance. Current development uses instrumented CI builds and logs returned from a physical console.
+The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL. The native render target is 400×240 on the top screen. A stable 30 FPS is the initial performance goal
 
 ## Implemented foundation
 
@@ -38,9 +36,10 @@ https://discord.gg/SMW49UMkw
 
 ## Installation
 
-There is currently no supported public download. A release will only be published after its exact CIA hash boots, renders, accepts input and survives a meaningful gameplay test on physical New 3DS hardware.
+There is currently no supported public download.
 
-When a validated release exists, the CIA will be installable through FBI and will not need an external game-data directory. The 3DSX package will include a matching SD ZIP that expands to:
+When a release exists, the CIA will be installable through FBI and will not need an external game-data directory. 
+The 3DSX package will include a matching SD ZIP that expands to:
 
 ```text
 sdmc:/3ds/legend-of-doom/
@@ -55,8 +54,6 @@ sdmc:/3ds/legend-of-doom/
     ├── game_support.pk3
     └── gzdoom.pk3
 ```
-
-Do not copy a Zelda NES ROM into this folder; the port does not use one.
 
 Audio on real hardware requires the console's own DSP firmware at `sdmc:/3ds/dspfirm.cdc`. With Luma3DS, open the Rosalina menu, choose **Miscellaneous options...**, then **Dump DSP firmware**. This system file is never distributed with the port.
 
@@ -78,24 +75,6 @@ Audio on real hardware requires the console's own DSP firmware at `sdmc:/3ds/dsp
 | D-Pad up | Automap |
 | START | Pause |
 | SELECT | Main menu |
-
-## Physical-hardware diagnostics
-
-The `hardware-diagnostic` build profile disables audio, starts MAP01 directly and supervises every draw submitted before the first completed frame. If the PICA200 queue stops progressing, it writes the exact command packet and GPU state to:
-
-```text
-sdmc:/3ds/legend-of-doom/gpu-diagnostic.log
-```
-
-It then terminates instead of waiting forever in Citro3D teardown. This should avoid the forced power cycle caused by previous builds. A successful first frame records `PASS` and returns to the normal render path.
-
-Press **L + R + A** together once to capture the wider diagnostic package under:
-
-```text
-sdmc:/3ds/legend-of-doom/dumps/dump-<timestamp>-<serial>-<attempt>/
-```
-
-The package includes both screens, engine and renderer state, the exact build manifest, logs, telemetry and segmented readable process memory. A full dump can contain resource bytes already loaded by the game; inspect it before sharing it publicly.
 
 ## Building
 
@@ -121,12 +100,6 @@ LOD3DS_BUILD_PROFILE=hardware-diagnostic ./platform/3ds/build.sh
 The scripts download pinned SDL2, ZMusic, minimp3, OpenAL Soft/NDSP, Legend of Doom and Freedoom inputs; apply the documented 3DS patches; build the executable; and write packages below `build-3ds/dist/`.
 
 No ROM, commercial IWAD, save or crash dump is read during the build. See [platform/3ds/README.md](platform/3ds/README.md) for the renderer contract, diagnostic format and complete build options.
-
-## Release policy
-
-The [Releases page](https://github.com/EstebanPdN/legend-of-doom-3ds/releases) intentionally remains empty while physical-hardware validation is incomplete. A future release package is expected to contain the installable CIA, 3DSX, SD ZIP, SHA-256 checksums, build manifest and matching symbols used for crash analysis.
-
-CI artifacts are development outputs, not releases.
 
 ## Credits
 
