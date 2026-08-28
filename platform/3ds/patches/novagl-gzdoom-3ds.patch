@@ -1067,22 +1067,33 @@ diff --git a/src/utils.h b/src/utils.h
 index dc0ea89..4a715d3 100644
 --- a/src/utils.h
 +++ b/src/utils.h
-@@ -220,13 +220,30 @@ void apply_gpu_state(void);
+@@ -220,13 +220,41 @@ void apply_gpu_state(void);
   * an empty command list raises none, and waiting on it deadlocks). The
   * function-like macros below shadow the citro3d names inside NovaGL only;
   * the parenthesised calls inside the shims bypass macro expansion. */
 +static inline void nova_cmd_buffer_guard_(void)
 +{
-+    /* GZDoom can issue several thousand small world draws in one frame.  A
-+     * single 512 KiB citro3d command list is not large enough for MAP01, and
-+     * GPUCMD_Add deliberately panics instead of overflowing it.  Split while
-+     * there is still ample room for C3Di_UpdateContext plus the draw packet.
-+     * C3D_FrameSplit preserves PICA state and draw order; it only starts a new
-+     * command list inside the same logical frame. */
-+    /* C3D_GetCmdBufUsage() is updated when a list is submitted; it is not the
-+     * live fill level while the CPU is still appending commands.  The libctru
-+     * globals are the authoritative word offset/capacity for that purpose. */
-+    if (gpuCmdBufSize && gpuCmdBufOffset >= (gpuCmdBufSize * 3u) / 4u)
++    /* GZDoom can issue several thousand small world draws in one frame. The
++     * first physical-hardware capture contained one 0xD2360-byte PICA list,
++     * over three times Citro3D's 0x40000-byte default, and that list never
++     * completed on a New 3DS. The old guard compared against 75% of NovaGL's
++     * enlarged 3 MiB backing store, so it allowed that entire frame to become
++     * one hardware submission.
++     *
++     * Keep the large backing store because GPUCMD_Split advances through it,
++     * but bound each submitted list to 75% of Citro3D's normal list size.
++     * That leaves room for C3Di_UpdateContext, framebuffer cache commands and
++     * GPUCMD_Split's finalize/alignment words. PICA state and draw order live
++     * across C3D_FrameSplit; only the natural frame command stream is divided.
++     * A 3 MiB store can produce at most 16 bounded lists, below Citro3D's
++     * 32-entry GX queue even with the frame's clears and display transfer. */
++    enum {
++        NOVA_CMDLIST_SEGMENT_WORDS =
++            (C3D_DEFAULT_CMDBUF_SIZE * 3u) / (4u * sizeof(u32))
++    };
++    /* C3D_GetCmdBufUsage() is updated only after a split. gpuCmdBufOffset is
++     * the authoritative live fill level, expressed in words. */
++    if (gpuCmdBufSize && gpuCmdBufOffset >= NOVA_CMDLIST_SEGMENT_WORDS)
 +        C3D_FrameSplit(0);
 +}
 +

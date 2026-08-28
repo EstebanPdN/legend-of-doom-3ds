@@ -46,9 +46,16 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertIn("gxCmdQueueWait", watchdog)
         self.assertIn("svcExitProcess", watchdog)
         self.assertIn("HUNG_OR_PENDING", watchdog)
-        self.assertIn("submission=natural-frame-boundary", frame_watchdog)
+        self.assertIn("submission=bounded-natural-segments", frame_watchdog)
         self.assertIn("-    (C3D_FrameSplit)(0);", frame_watchdog)
         self.assertIn("first-frame-boundary-2s-timeout", manifest)
+
+        renderer = (
+            ROOT / "platform/3ds/patches/novagl-gzdoom-3ds.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn("C3D_DEFAULT_CMDBUF_SIZE * 3u", renderer)
+        self.assertIn("NOVA_CMDLIST_SEGMENT_WORDS", renderer)
+        self.assertNotIn("gpuCmdBufSize * 3u", renderer)
 
     def test_telemetry_is_buffered_outside_the_frame_loop(self):
         source = (

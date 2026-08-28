@@ -409,6 +409,7 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'novagl_early_z=disabled-hardware-safe\n'
 	printf 'novagl_index_diagnostics=resolved-ebo-indices\n'
 	printf 'novagl_command_buffer_bytes=%u\n' "$((3 * 1024 * 1024))"
+	printf 'novagl_command_segment_limit_bytes=%u\n' "$((0x40000 * 3 / 4))"
 	printf 'novagl_vertex_ring_bytes_per_slot=%u\n' "$((2 * 1024 * 1024))"
 	printf 'novagl_index_ring_bytes_per_slot=%u\n' "$((512 * 1024))"
 	printf 'novagl_texture_staging_bytes=%u\n' "$((512 * 1024))"

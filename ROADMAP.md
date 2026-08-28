@@ -4,7 +4,7 @@ Estado de la auditoría: 27 de agosto de 2026
 Objetivo de hardware: New Nintendo 3DS, New Nintendo 3DS XL y New Nintendo 2DS XL
 Resolución objetivo: 400×240, pantalla superior, sin 3D estereoscópico en la primera versión estable
 
-Actualización de hardware: los logs de una New 3DS real confirmaron un bloqueo de la cola PICA200 antes del primer frame. El primer bloqueo era una lista cruda de Early-Z enviada antes de que Citro3D enlazara el framebuffer. La corrección actual elimina esa ruta, restaura `C3D_FRAME_SYNCDRAW` para el único frame slot, usa clears ordenados por Citro3D y prohíbe presentar memoria lineal como render target cuando falla la reserva de VRAM. El candidato instrumentado que contiene estas correcciones sigue pendiente de validación física; por tanto, ninguna afirmación visual o de rendimiento posterior al arranque se considera cerrada.
+Actualización de hardware: el último log de una New 3DS real confirma que CPU, audio, heaps, render targets y la construcción completa de MAP01 llegan al final del primer frame. El bloqueo está en una única operación PICA de 861.024 bytes que contiene 2.453 draws y no completa; quedan 21,7 MiB lineales y 3,9 MiB de VRAM, por lo que no es un agotamiento global de memoria. La corrección actual conserva el backing store de 3 MiB, pero divide el flujo natural en segmentos de 192 KiB usando `C3D_FrameSplit`, sin esperar ni reactivar la cola durante el frame. La validación física de este cambio sigue pendiente; ninguna afirmación visual o de rendimiento se considera cerrada.
 
 ## 1. Dictamen
 
@@ -115,7 +115,7 @@ La pila de parches NovaGL vuelve a aplicar limpiamente sobre la revisión fijada
 | Build cruzado | Parcial | CMake/devkitARM produce ELF, 3DSX y CIA | Build limpio desde cero y CI verde |
 | Trazabilidad | Parcial | ID de 12 caracteres, hashes, ELF/map | Prohibir releases desde árbol dirty |
 | CI | Implementada | El workflow resuelve el nombre desde el manifiesto, verifica hashes y bloquea contenido privado | Confirmar el primer run público limpio |
-| Arranque CIA | Roto en New 3DS física | Early-Z ya no bloquea; el siguiente dump aísla un cielo recortado de 384 vértices | Probar el guard de frustum con envío normal de frame |
+| Arranque CIA | Roto en New 3DS física | El frame completo produce una lista PICA de 861.024 bytes que no termina | Validar segmentos naturales de 192 KiB en consola |
 | Arranque 3DSX | Compila | Rutas SD y CRT propios existen | Validación posterior en consola real |
 | Cámara | Sin validar | No existe todavía un frame físico correcto | Validar después de cerrar el bloqueo de GPU |
 | Cielo | Corrección candidata | El draw bloqueado cruza `w=0`; ahora se recorta también contra los cuatro planos laterales | Validar el primer frame en New 3DS |
@@ -148,9 +148,9 @@ La ruta conservadora restaura `C3D_FRAME_SYNCDRAW`, evita dividir una command li
 
 ### 5.3 Supervisor del primer frame
 
-El dump físico más reciente confirma que el primer draw termina y el segundo, una lista de 384 vértices con shader de matriz de textura, queda pendiente. Las 10 palabras añadidas entre el snapshot y la lista enviada son el cierre normal de Citro3D, no un overflow. Por topología, formato y cantidad, el draw encaja exactamente con el fan del cielo recortado al cruzar el plano del ojo; la versión anterior sólo recortaba `w` y podía entregar al rasterizador coordenadas `x/w` o `y/w` extremas. El nuevo guard recorta además contra izquierda, derecha, arriba y abajo, descarta matrices/vértices no finitos y reserva exactamente la salida calculada en dos pasadas.
+El diagnóstico anterior que separaba y esperaba cada draw alteraba la ejecución: reactivaba la cola durante un frame y podía enviar comandos antes del vaciado de caché de `C3D_FrameEnd`. El dump más reciente usa el envío natural y demuestra que la atribución al segundo draw/cielo no era válida. La operación pendiente es la lista completa del frame: `0xD2360` bytes con 2.453 draws, más de tres veces el tamaño predeterminado de Citro3D (`0x40000`).
 
-El supervisor ya no altera el patrón de ejecución enviando cada draw por separado. Registra el último draw emitido por CPU y deja que Citro3D construya el frame normal. En el siguiente `C3D_FrameBegin` espera como máximo dos segundos; ante timeout guarda palabras de comando, direcciones físicas, capacidad del VBO, memoria libre y estado de la cola GX. El proceso sale mediante `svcExitProcess` para no entrar en un teardown que espere indefinidamente a la GPU.
+El renderer divide ahora el flujo cuando el tramo vivo alcanza 192 KiB, dejando margen para el estado pendiente, los comandos de framebuffer y la finalización/alineación de libctru. `GPUCMD_Split` avanza dentro del mismo backing store y conserva orden y estado PICA; la cola permanece inactiva hasta que `C3D_FrameEnd` vacía la caché y arranca el lote. El supervisor registra el último draw emitido y las entradas GX sin cambiar esa semántica. En el siguiente `C3D_FrameBegin` espera como máximo dos segundos; ante timeout guarda palabras de comando, direcciones físicas, capacidad del VBO, memoria libre y estado de la cola, y sale mediante `svcExitProcess` para evitar un teardown bloqueado.
 
 Este supervisor no convierte el build en una versión jugable; convierte el siguiente fallo físico en evidencia accionable y pretende evitar que el usuario tenga que reiniciar la consola a la fuerza.
 
