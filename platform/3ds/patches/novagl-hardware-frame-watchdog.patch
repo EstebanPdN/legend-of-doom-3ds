@@ -17,7 +17,7 @@ index eb085bc..61f6a89 100644
      if (!f) return;
 -    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v1\n");
 +    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v2\n");
-+    fprintf(f, "submission=natural-frame-boundary\n");
++    fprintf(f, "submission=bounded-natural-segments\n");
      fprintf(f, "result=%s\n", result ? result : "UNKNOWN");
      fprintf(f, "tag=%s source=%s:%d\n",
              tag ? tag : "(null)", s_hw_last_file, s_hw_last_line);
@@ -61,7 +61,7 @@ index eb085bc..61f6a89 100644
      if (f) {
 -        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v1\n");
 +        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v2\n");
-+        fprintf(f, "submission=natural-frame-boundary\n");
++        fprintf(f, "submission=bounded-natural-segments\n");
          fprintf(f, "result=RUNNING\n");
          fflush(f);
          fclose(f);
