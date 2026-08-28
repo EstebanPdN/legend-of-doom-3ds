@@ -144,7 +144,9 @@ checkout_pinned \
   "${ROOT}/platform/3ds/patches/novagl-hardware-frame-sync.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-watchdog.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-safe-earlyz.patch" \
-  "${ROOT}/platform/3ds/patches/novagl-hardware-conservative-submit.patch"
+  "${ROOT}/platform/3ds/patches/novagl-hardware-conservative-submit.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-frustum-guard.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-frame-watchdog.patch"
 checkout_pinned \
   "${LOD3DS_MOD_URL}" "${LOD3DS_MOD_REV}" \
   "${DEPS_ROOT}/legend-of-doom" "${ROOT}/platform/3ds/patches/legend-of-doom-3ds.patch"

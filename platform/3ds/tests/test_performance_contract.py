@@ -34,15 +34,21 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertIn("novagl_frame_slots=1", manifest)
         self.assertIn("gles_world_vbo_pipeline=1", manifest)
         self.assertIn("gpu_completion_boundary=c3d-queue-wait", manifest)
-        self.assertIn("first-frame-per-draw-2s-timeout", manifest)
+        self.assertIn("first-frame-boundary-2s-timeout", manifest)
 
         watchdog = (
             ROOT / "platform/3ds/patches/novagl-hardware-watchdog.patch"
+        ).read_text(encoding="utf-8")
+        frame_watchdog = (
+            ROOT / "platform/3ds/patches/novagl-hardware-frame-watchdog.patch"
         ).read_text(encoding="utf-8")
         self.assertIn("gpu-diagnostic.log", watchdog)
         self.assertIn("gxCmdQueueWait", watchdog)
         self.assertIn("svcExitProcess", watchdog)
         self.assertIn("HUNG_OR_PENDING", watchdog)
+        self.assertIn("submission=natural-frame-boundary", frame_watchdog)
+        self.assertIn("-    (C3D_FrameSplit)(0);", frame_watchdog)
+        self.assertIn("first-frame-boundary-2s-timeout", manifest)
 
     def test_telemetry_is_buffered_outside_the_frame_loop(self):
         source = (

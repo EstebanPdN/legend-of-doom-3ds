@@ -1,0 +1,131 @@
+diff --git a/src/utils.c b/src/utils.c
+index eb085bc..61f6a89 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -48,6 +48,8 @@ typedef struct {
+     unsigned cmd_words_before, cmd_words_after;
+     unsigned cmd_capture_start, cmd_capture_count;
+     u32 cmd_capture[512];
++    int vbo_size, vbo_capacity, vbo_mem_kind;
++    const void *vbo_data;
+     C3D_BufInfo buf_info;
+     C3D_AttrInfo attr_info;
+ } NovaHwDrawSnapshot;
+@@ -78,7 +80,8 @@ static void nova_hw_write_report(const char *result, const char *tag)
+     __sync_synchronize();
+     FILE *f = fopen(s_hw_report_path, "w");
+     if (!f) return;
+-    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v1\n");
++    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v2\n");
++    fprintf(f, "submission=natural-frame-boundary\n");
+     fprintf(f, "result=%s\n", result ? result : "UNKNOWN");
+     fprintf(f, "tag=%s source=%s:%d\n",
+             tag ? tag : "(null)", s_hw_last_file, s_hw_last_line);
+@@ -94,6 +97,12 @@ static void nova_hw_write_report(const char *result, const char *tag)
+             s_hw_draw.cmd_words_before, s_hw_draw.cmd_words_after,
+             (unsigned)gpuCmdBufOffset,
+             (unsigned)gpuCmdBufSize);
++    fprintf(f, "memory linear_free=%u vram_free=%u\n",
++            (unsigned)linearSpaceFree(), (unsigned)vramSpaceFree());
++    fprintf(f, "vertex_vbo data=%p paddr=%08X size=%d capacity=%d mem_kind=%d\n",
++            s_hw_draw.vbo_data,
++            s_hw_draw.vbo_data ? (unsigned)osConvertVirtToPhys(s_hw_draw.vbo_data) : 0u,
++            s_hw_draw.vbo_size, s_hw_draw.vbo_capacity, s_hw_draw.vbo_mem_kind);
+     fprintf(f, "framebuffer color_paddr=%08X depth_paddr=%08X width=%u height=%u\n",
+             g.current_target ? (unsigned)osConvertVirtToPhys(g.current_target->frameBuf.colorBuf) : 0u,
+             g.current_target ? (unsigned)osConvertVirtToPhys(g.current_target->frameBuf.depthBuf) : 0u,
+@@ -169,20 +178,6 @@ static void nova_hw_abort(const char *tag)
+     svcExitProcess();
+ }
+ 
+-static void nova_hw_wait_and_rearm(const char *tag)
+-{
+-    if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
+-    gxCmdQueue_s *q = &__C3D_Context.gxQueue;
+-    ++s_hw_checkpoints;
+-    /* Wait through Citro3D's queue owner, never directly on the P3D event.
+-     * System ticks run at SYSCLOCK_ARM11: this is a real two-second limit. */
+-    if (!gxCmdQueueWait(q, (s64)(2 * SYSCLOCK_ARM11)))
+-        nova_hw_abort(tag);
+-    gxCmdQueueStop(q);
+-    gxCmdQueueClear(q);
+-    gxCmdQueueRun(q);
+-}
+-
+ void nova_hw_watchdog_reset(void)
+ {
+     memset(&s_hw_draw, 0, sizeof(s_hw_draw));
+@@ -192,7 +187,8 @@ void nova_hw_watchdog_reset(void)
+     s_hw_last_line = 0;
+     FILE *f = fopen(s_hw_report_path, "w");
+     if (f) {
+-        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v1\n");
++        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v2\n");
++        fprintf(f, "submission=natural-frame-boundary\n");
+         fprintf(f, "result=RUNNING\n");
+         fflush(f);
+         fclose(f);
+@@ -215,6 +211,17 @@ void nova_hw_watchdog_before_draw(int primitive, int first, int count,
+     s_hw_draw.cmd_words_after = (unsigned)gpuCmdBufOffset;
+     s_hw_draw.cmd_capture_start = 0;
+     s_hw_draw.cmd_capture_count = 0;
++    s_hw_draw.vbo_size = 0;
++    s_hw_draw.vbo_capacity = 0;
++    s_hw_draw.vbo_mem_kind = -1;
++    s_hw_draw.vbo_data = NULL;
++    if (g.va_vertex.vbo_id > 0 && g.va_vertex.vbo_id < NOVA_MAX_VBOS) {
++        const VBOSlot *vbo = &g.vbos[g.va_vertex.vbo_id];
++        s_hw_draw.vbo_size = vbo->size;
++        s_hw_draw.vbo_capacity = vbo->capacity;
++        s_hw_draw.vbo_mem_kind = vbo->mem_kind;
++        s_hw_draw.vbo_data = vbo->data;
++    }
+     s_hw_draw.buf_info = *C3D_GetBufInfo();
+     s_hw_draw.attr_info = *C3D_GetAttrInfo();
+     s_hw_last_file = "draw-wrapper";
+@@ -234,17 +241,20 @@ void nova_hw_watchdog_after_draw(void)
+         memcpy(s_hw_draw.cmd_capture, gpuCmdBuf + begin,
+                s_hw_draw.cmd_capture_count * sizeof(u32));
+     }
+-    (C3D_FrameSplit)(0);
+-    nova_hw_wait_and_rearm("draw");
++    /* Observation must not change submission semantics. The former supervisor
++     * split, waited, stopped, cleared and restarted the Citro3D queue after
++     * every draw. That created a hardware-only execution pattern the real game
++     * never uses and could itself provoke the second-draw stall. */
+ }
+ 
+ void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line)
+ {
++    if (s_hw_watchdog_enabled && g.frame_index == 0) {
++        s_hw_last_file = file ? file : "(null)";
++        s_hw_last_line = line;
++        ++s_hw_checkpoints;
++    }
+     (C3D_FrameSplit)((u8)flags);
+-    if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
+-    s_hw_last_file = file ? file : "(null)";
+-    s_hw_last_line = line;
+-    nova_hw_wait_and_rearm("explicit-frame-split");
+ }
+ 
+ int nova_hw_watchdog_frame_begin(unsigned flags)
+diff --git a/src/utils.h b/src/utils.h
+index f3b9652..e017738 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -214,10 +214,10 @@ void apply_depth_map(void);
+ void apply_gpu_state(void);
+ 
+ #if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
+-/* First-frame hardware supervisor. It submits each draw as an isolated
+- * Citro3D command list and waits on Citro3D's own GX queue with a deadline.
+- * A wedged PICA command therefore produces a persistent report and terminates
+- * the process instead of parking forever inside C3D_FrameBegin. */
++/* First-frame hardware supervisor. It records draw/state/list/queue snapshots
++ * without altering normal Citro3D submission, then polls the real frame-end
++ * completion boundary with a finite timeout. A wedged PICA command therefore
++ * produces a persistent report instead of parking forever in C3D_FrameBegin. */
+ void nova_hw_watchdog_reset(void);
+ void nova_hw_watchdog_before_draw(int primitive, int first, int count,
+                                   int indexed, int index_type,
