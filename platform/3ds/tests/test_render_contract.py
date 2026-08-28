@@ -29,7 +29,7 @@ def clip_polygon(vertices, distance):
     return result
 
 
-def classify_eye_batch(w_values, epsilon=1.0 / 4096.0):
+def classify_eye_batch(w_values, epsilon=1.0 / 16.0):
     """Reference for NovaGL's cheap safe/crossing/behind classification."""
     inside = any(value >= epsilon for value in w_values)
     outside = any(value < epsilon for value in w_values)
@@ -119,13 +119,35 @@ class RenderContractTests(unittest.TestCase):
             (1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
             (-1.0, 1.0, 0.0, -1.0, 0.0, 1.0),
         ]
-        epsilon = 1.0 / 4096.0
+        epsilon = 1.0 / 16.0
         clipped = clip_polygon(quad, lambda vertex: vertex[3] - epsilon)
 
         self.assertEqual(len(clipped), 4)
         self.assertTrue(all(vertex[3] >= epsilon - 1e-12 for vertex in clipped))
         self.assertTrue(all(math.isfinite(value) for vertex in clipped for value in vertex))
         self.assertTrue(all(0.0 <= vertex[4] <= 1.0 and 0.0 <= vertex[5] <= 1.0 for vertex in clipped))
+
+    def test_eye_crossing_triangle_is_clipped_to_homogeneous_side_planes(self):
+        # One point sits just in front of the eye with a huge projected X/Y.
+        polygon = [
+            (1000.0, 1000.0, 0.0, 0.0625, 0.0, 0.0),
+            (-0.5, -0.5, 0.0, 1.0, 1.0, 0.0),
+            (0.5, -0.5, 0.0, 1.0, 0.5, 1.0),
+        ]
+        planes = (
+            lambda vertex: vertex[3] - 1.0 / 16.0,
+            lambda vertex: vertex[0] + vertex[3],
+            lambda vertex: vertex[3] - vertex[0],
+            lambda vertex: vertex[1] + vertex[3],
+            lambda vertex: vertex[3] - vertex[1],
+        )
+        for plane in planes:
+            polygon = clip_polygon(polygon, plane)
+
+        self.assertGreaterEqual(len(polygon), 3)
+        self.assertTrue(all(math.isfinite(value) for vertex in polygon for value in vertex))
+        self.assertTrue(all(-vertex[3] <= vertex[0] <= vertex[3] for vertex in polygon))
+        self.assertTrue(all(-vertex[3] <= vertex[1] <= vertex[3] for vertex in polygon))
 
     def test_eye_classifier_covers_floor_and_sprite_topologies(self):
         self.assertEqual(classify_eye_batch((4.0, 3.0, 2.0, 1.0)), "safe")
@@ -136,6 +158,9 @@ class RenderContractTests(unittest.TestCase):
         state = (PATCHES / "novagl-gzdoom-state-dedup.patch").read_text(encoding="utf-8")
         quads = (PATCHES / "novagl-gzdoom-indexed-quads.patch").read_text(encoding="utf-8")
         eye = (PATCHES / "novagl-gzdoom-eyeclip.patch").read_text(encoding="utf-8")
+        frustum = (PATCHES / "novagl-hardware-frustum-guard.patch").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("GzdProgramState", state)
         self.assertIn("gzd_load_matrix(GL_TEXTURE", state)
@@ -148,6 +173,12 @@ class RenderContractTests(unittest.TestCase):
         self.assertIn("mode == GL_TRIANGLE_STRIP", eye)
         self.assertIn("if (!eye_inside) return 3", eye)
         self.assertIn("eye_epsilon = 1.0f / 16.0f", eye)
+        self.assertIn("x + w >= 0", frustum)
+        self.assertIn("w - x >= 0", frustum)
+        self.assertIn("y + w >= 0", frustum)
+        self.assertIn("w - y >= 0", frustum)
+        self.assertIn("Count first, then reserve exactly", frustum)
+        self.assertIn("never submit NaN/Inf", frustum)
 
     def test_hardware_vram_uploads_use_linear_staging_and_gx_copy(self):
         vram = (PATCHES / "novagl-hardware-vram-upload.patch").read_text(

@@ -1,0 +1,284 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index d7cc66e..ff2621e 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -11,6 +11,7 @@
+ #endif
+ 
+ #include "context.h"
++#include <limits.h>
+ #include <math.h>
+ #include <stdio.h>
+ 
+@@ -1265,6 +1266,8 @@ static int nova_clip_tri_near(const NovaClipV tri[3], NovaClipV out[6]) {
+ #ifndef NOVAGL_NO_NEAR_CLIP
+ typedef struct { float x, y, z, u, v; uint8_t r, g, b, a; } NovaModelV; /* 24 B = [pos3|uv2|col4] */
+ 
++typedef struct { float x, y, z, w; } NovaModelPlane;
++
+ static inline NovaModelV nova_modelv_lerp(const NovaModelV *a, const NovaModelV *b, float t) {
+     NovaModelV o;
+     o.x = a->x + t * (b->x - a->x); o.y = a->y + t * (b->y - a->y); o.z = a->z + t * (b->z - a->z);
+@@ -1299,17 +1302,74 @@ static int nova_clip_poly_model(const NovaModelV *in, int in_count,
+         int j = (i + 1) % in_count;
+         float dc = nova_modelv_plane_distance(&in[i], plane, ax, ay, az, aw);
+         float dn = nova_modelv_plane_distance(&in[j], plane, ax, ay, az, aw);
++        if (!isfinite(dc) || !isfinite(dn)) return 0;
+         int ci = dc >= 0.0f, ni = dn >= 0.0f;
+         if (ci) out[n++] = in[i];
+         if (ci != ni && n < out_cap) {
+             float denom = dc - dn;
+-            float t = (denom != 0.0f) ? (dc / denom) : 0.0f;
++            if (!isfinite(denom) || denom == 0.0f) return 0;
++            float t = dc / denom;
++            if (!isfinite(t)) return 0;
++            t = clampf(t, 0.0f, 1.0f);
+             out[n++] = nova_modelv_lerp(&in[i], &in[j], t);
+         }
+     }
+     return n;
+ }
+ 
++static void nova_modelv_triangle_at(GLenum mode, const NovaModelV *vin,
++                                    int triangle, NovaModelV out[3]) {
++    if (mode == GL_TRIANGLES) {
++        out[0] = vin[triangle * 3 + 0];
++        out[1] = vin[triangle * 3 + 1];
++        out[2] = vin[triangle * 3 + 2];
++    } else if (mode == GL_TRIANGLE_FAN) {
++        out[0] = vin[0];
++        out[1] = vin[triangle + 1];
++        out[2] = vin[triangle + 2];
++    } else if (mode == GL_TRIANGLE_STRIP) {
++        if ((triangle & 1) == 0) {
++            out[0] = vin[triangle];
++            out[1] = vin[triangle + 1];
++        } else {
++            out[0] = vin[triangle + 1];
++            out[1] = vin[triangle];
++        }
++        out[2] = vin[triangle + 2];
++    } else { /* GL_QUADS: (0,1,2) and (0,2,3) per group. */
++        int q = (triangle / 2) * 4;
++        out[0] = vin[q];
++        out[1] = vin[q + ((triangle & 1) ? 2 : 1)];
++        out[2] = vin[q + ((triangle & 1) ? 3 : 2)];
++    }
++}
++
++static int nova_clip_model_triangle(const NovaModelV tri[3], NovaModelV out[12],
++                                    int user_clip, const NovaModelPlane *planes,
++                                    int plane_count) {
++    NovaModelV poly_a[12], poly_b[12];
++    poly_a[0] = tri[0];
++    poly_a[1] = tri[1];
++    poly_a[2] = tri[2];
++    int poly_count = 3;
++
++    if (user_clip) {
++        poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 12,
++                                          0, 0.0f, 0.0f, 0.0f, 0.0f);
++        if (poly_count < 3) return 0;
++        memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
++    }
++    for (int i = 0; i < plane_count; ++i) {
++        const NovaModelPlane *p = &planes[i];
++        poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 12,
++                                          1, p->x, p->y, p->z, p->w);
++        if (poly_count < 3) return 0;
++        memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
++    }
++    memcpy(out, poly_a, (size_t)poly_count * sizeof(NovaModelV));
++    return poly_count;
++}
++
+ /* Clip the GPU-MVP triangle path (basic/texmtx/full shaders). `flat` is the
+  * de-indexed [pos3|uv2|col4]=24B buffer nova_draw_internal builds. We emulate
+  * both GZDoom's programmable portal/reflective-flat plane and PICA's missing
+@@ -1332,6 +1392,11 @@ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t
+      * d = z_clip + w_clip = a·(x,y,z,1). */
+     C3D_Mtx mvp;
+     Mtx_Multiply(&mvp, &g.final_proj_cached, &g.mv_stack[g.mv_sp]);
++    for (int row = 0; row < 4; ++row) {
++        if (!isfinite(mvp.r[row].x) || !isfinite(mvp.r[row].y) ||
++            !isfinite(mvp.r[row].z) || !isfinite(mvp.r[row].w))
++            return 3; /* invalid matrix: skip instead of wedging PICA */
++    }
+     const C3D_FVec rz = mvp.r[2], rw = mvp.r[3];
+     float ax = rz.x + rw.x, ay = rz.y + rw.y, az = rz.z + rw.z, aw = rz.w + rw.w;
+     /* PICA's perspective interpolator loses useful UV precision when a
+@@ -1379,79 +1444,70 @@ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t
+         case GL_QUADS:         in_tris = (count / 4) * 2; break;
+         default:               return 0;
+     }
+-    /* A triangle clipped by three planes has at most six polygon vertices,
+-     * which fan-triangulate to at most twelve output vertices. */
+-    int out_bytes = in_tris * 12 * 24;
+-    if (out_bytes > g.client_array_buf_size) return 0;
++    /* Eye-plane intersections can have tiny positive w and enormous x/w or
++     * y/w. Letting PICA side-clip those coordinates can overflow the real
++     * rasterizer even though permissive emulators accept them. When a draw
++     * crosses the eye, clip the result to the four homogeneous side planes too
++     * so every submitted vertex stays inside the visible guard band. */
++    NovaModelPlane planes[6];
++    int plane_count = 0;
++    if (force_eye_clip) {
++        planes[plane_count++] = (NovaModelPlane){ ex, ey, ez, ew }; /* w >= epsilon */
++        planes[plane_count++] = (NovaModelPlane){
++            mvp.r[3].x + mvp.r[0].x, mvp.r[3].y + mvp.r[0].y,
++            mvp.r[3].z + mvp.r[0].z, mvp.r[3].w + mvp.r[0].w }; /* x + w >= 0 */
++        planes[plane_count++] = (NovaModelPlane){
++            mvp.r[3].x - mvp.r[0].x, mvp.r[3].y - mvp.r[0].y,
++            mvp.r[3].z - mvp.r[0].z, mvp.r[3].w - mvp.r[0].w }; /* w - x >= 0 */
++        planes[plane_count++] = (NovaModelPlane){
++            mvp.r[3].x + mvp.r[1].x, mvp.r[3].y + mvp.r[1].y,
++            mvp.r[3].z + mvp.r[1].z, mvp.r[3].w + mvp.r[1].w }; /* y + w >= 0 */
++        planes[plane_count++] = (NovaModelPlane){
++            mvp.r[3].x - mvp.r[1].x, mvp.r[3].y - mvp.r[1].y,
++            mvp.r[3].z - mvp.r[1].z, mvp.r[3].w - mvp.r[1].w }; /* w - y >= 0 */
++    }
++    if (near_clip)
++        planes[plane_count++] = (NovaModelPlane){ ax, ay, az, aw };
++
++    /* Count first, then reserve exactly the produced stream. The previous
++     * worst-case reservation consumed up to 8x the useful linear-ring bytes on
++     * eye-crossing sky/wall draws, which is the wrong trade on a 32 MiB arena. */
++    int out_count = 0;
++    for (int t = 0; t < in_tris; ++t) {
++        NovaModelV tri[3], poly[12];
++        nova_modelv_triangle_at(mode, vin, t, tri);
++        int poly_count = nova_clip_model_triangle(tri, poly, user_clip,
++                                                  planes, plane_count);
++        if (poly_count >= 3) {
++            int added = (poly_count - 2) * 3;
++            if (out_count > INT_MAX - added) return 0;
++            out_count += added;
++        }
++    }
++    if (out_count == 0) return 1; /* whole batch behind near — nothing to draw */
++
++    if (out_count > g.client_array_buf_size / (int)sizeof(NovaModelV)) return 0;
++    int out_bytes = out_count * (int)sizeof(NovaModelV);
+     NovaModelV *out = (NovaModelV *) linear_alloc_ring(
+         g.client_array_buf, &g.client_array_buf_offset, out_bytes, g.client_array_buf_size);
+     /* Ring couldn't fit the clipped output. Returning 0 makes the caller fall
+      * through to its own (unclipped) draw path — which will also hit the ring
+      * and skip if it can't fit. Either way, no NULL deref. */
+     if (!out) return 0;
+-    int out_count = 0;
+-    for (int t = 0; t < in_tris; t++) {
+-        NovaModelV tri_storage[3];
+-        const NovaModelV *tri = tri_storage;
+-        if (mode == GL_TRIANGLES) {
+-            tri = &vin[t * 3];
+-        } else if (mode == GL_TRIANGLE_FAN) {
+-            tri_storage[0] = vin[0];
+-            tri_storage[1] = vin[t + 1];
+-            tri_storage[2] = vin[t + 2];
+-        } else if (mode == GL_TRIANGLE_STRIP) {
+-            if ((t & 1) == 0) {
+-                tri_storage[0] = vin[t];
+-                tri_storage[1] = vin[t + 1];
+-            } else {
+-                /* Preserve the strip's alternating winding when converting
+-                 * to a standalone triangle list. */
+-                tri_storage[0] = vin[t + 1];
+-                tri_storage[1] = vin[t];
+-            }
+-            tri_storage[2] = vin[t + 2];
+-        } else { /* GL_QUADS: (0,1,2) and (0,2,3) per group. */
+-            int q = (t / 2) * 4;
+-            if ((t & 1) == 0) {
+-                tri_storage[0] = vin[q + 0];
+-                tri_storage[1] = vin[q + 1];
+-                tri_storage[2] = vin[q + 2];
+-            } else {
+-                tri_storage[0] = vin[q + 0];
+-                tri_storage[1] = vin[q + 2];
+-                tri_storage[2] = vin[q + 3];
+-            }
+-        }
+-        NovaModelV poly_a[6], poly_b[6];
+-        poly_a[0] = tri[0];
+-        poly_a[1] = tri[1];
+-        poly_a[2] = tri[2];
+-        int poly_count = 3;
+-        if (user_clip) {
+-            poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
+-                                              0, ax, ay, az, aw);
+-            if (poly_count < 3) continue;
+-            memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
+-        }
+-        if (near_clip) {
+-            poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
+-                                              1, ax, ay, az, aw);
+-            if (poly_count < 3) continue;
+-            memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
+-        }
+-        if (force_eye_clip) {
+-            poly_count = nova_clip_poly_model(poly_a, poly_count, poly_b, 6,
+-                                              2, ex, ey, ez, ew);
+-            if (poly_count < 3) continue;
+-            memcpy(poly_a, poly_b, (size_t)poly_count * sizeof(NovaModelV));
+-        }
+-        for (int k = 1; k + 1 < poly_count; k++) {
+-            out[out_count++] = poly_a[0];
+-            out[out_count++] = poly_a[k];
+-            out[out_count++] = poly_a[k + 1];
++
++    int written = 0;
++    for (int t = 0; t < in_tris; ++t) {
++        NovaModelV tri[3], poly[12];
++        nova_modelv_triangle_at(mode, vin, t, tri);
++        int poly_count = nova_clip_model_triangle(tri, poly, user_clip,
++                                                  planes, plane_count);
++        for (int k = 1; k + 1 < poly_count; ++k) {
++            out[written++] = poly[0];
++            out[written++] = poly[k];
++            out[written++] = poly[k + 1];
+         }
+     }
+-    if (out_count == 0) return 1; /* whole batch behind near — nothing to draw */
++    if (written != out_count) return 1;
+ 
+     GSPGPU_FlushDataCache(out, (u32) (out_count * 24));
+     /* Clipping fan/strip/quad input produces a plain triangle list. */
+@@ -1821,6 +1877,11 @@ static int gzdoom_draw_needs_near_clip(GLenum mode, GLint first, GLsizei count,
+ 
+     C3D_Mtx mvp;
+     Mtx_Multiply(&mvp, &g.final_proj_cached, &g.mv_stack[g.mv_sp]);
++    for (int row = 0; row < 4; ++row) {
++        if (!isfinite(mvp.r[row].x) || !isfinite(mvp.r[row].y) ||
++            !isfinite(mvp.r[row].z) || !isfinite(mvp.r[row].w))
++            return 3; /* skip invalid geometry before it reaches PICA */
++    }
+     const C3D_FVec rz = mvp.r[2], rw = mvp.r[3];
+     const float ax = rz.x + rw.x, ay = rz.y + rw.y;
+     const float az = rz.z + rw.z, aw = rz.w + rw.w;
+@@ -1873,6 +1934,8 @@ static int gzdoom_draw_needs_near_clip(GLenum mode, GLint first, GLsizei count,
+         }
+         float p[3];
+         memcpy(p, base + byte_offset, sizeof(p));
++        if (!isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2]))
++            return 3; /* never submit NaN/Inf coordinates to the real PICA */
+ #if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
+         if (geom_probe) {
+             const float cx = mvp.r[0].x*p[0] + mvp.r[0].y*p[1] + mvp.r[0].z*p[2] + mvp.r[0].w;
+diff --git a/src/draw.c b/src/draw.c
+index e0d70e5..a6cd57e 100644
+--- a/src/draw.c
++++ b/src/draw.c
+@@ -445,9 +445,12 @@ void novaIndexPointerFast(GLuint vbo, GLenum type) {
+  * fallback storage (linear exhaustion, see vbo.c) can't be fetched by PICA —
+  * stage the span through the client ring instead. Returns NULL = skip draw. */
+ static uint8_t *fast_vbo_gpu_base(VBOSlot *vbo, GLuint offset, int bytes) {
++    if (bytes <= 0 || offset > (GLuint)vbo->size ||
++        (GLuint)bytes > (GLuint)vbo->size - offset)
++        return NULL;
+     uint8_t *base = (uint8_t *) vbo->data + offset;
+     if (vbo_gpu_readable(vbo)) return base;
+-    if (bytes <= 0 || bytes > g.client_array_buf_size) return NULL;
++    if (bytes > g.client_array_buf_size) return NULL;
+     uint8_t *staged = (uint8_t *) linear_alloc_ring(g.client_array_buf,
+                                                     &g.client_array_buf_offset,
+                                                     bytes, g.client_array_buf_size);
