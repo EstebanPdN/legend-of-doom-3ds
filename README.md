@@ -15,7 +15,7 @@ The port is based on GZDoom 4.7.1 and uses the freely redistributable Freedoom: 
 
 The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL. The native render target is 400×240 on the top screen. A stable 30 FPS is the initial performance goal
 
-## Implemented foundation
+## Features
 
 - self-contained CIA packaging with GZDoom, Freedoom and Legend of Doom data in RomFS
 - Homebrew Launcher 3DSX packaging with an external SD data directory
