@@ -19,8 +19,9 @@ With Luma3DS, open Rosalina, select "Miscellaneous options...", then
 The data folder contains Freedoom: Phase 2, the Legend of Doom mod, and the
 GZDoom runtime resources. No NES or commercial Doom ROM/WAD is required.
 
-If BUILD-MANIFEST.txt says "profile=hardware-diagnostic", audio is disabled,
+If BUILD-MANIFEST.txt says "profile=hardware-candidate", audio remains enabled,
 MAP01 opens automatically and the port exercises both 2D and world rendering.
+The "hardware-diagnostic" profile runs the same path with audio disabled.
 Its engine log is written to:
   sdmc:/3ds/legend-of-doom/boot.log
 The first bounded NovaGL draw trace is written to:

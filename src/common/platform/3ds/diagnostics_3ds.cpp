@@ -20,6 +20,10 @@
 #include "gitinfo.h"
 #include "version.h"
 
+#ifndef LOD3DS_BUILD_PROFILE_NAME
+#define LOD3DS_BUILD_PROFILE_NAME "release"
+#endif
+
 namespace
 {
 constexpr const char *AppDirectory = "sdmc:/3ds/legend-of-doom";
@@ -1379,9 +1383,10 @@ void I_3DSFrameTelemetryEnd()
 	const struct mallinfo heap = mallinfo();
 	char row[384] = {};
 	const int rowBytes = std::snprintf(row, sizeof(row),
-		"%s,hardware-diagnostic,New Nintendo 3DS,%llu,%llu,"
+		"%s,%s,New Nintendo 3DS,%llu,%llu,"
 		"%.3f,%.3f,%.3f,%u,%u,%u,%u,%u,%u,%lu,%lu,%d,%d\n",
 		LOD3DS_BUILD_ID,
+		LOD3DS_BUILD_PROFILE_NAME,
 		FrameTelemetrySerial,
 		static_cast<unsigned long long>(osGetTime()),
 		static_cast<double>(osTickCounterRead(&FrameTelemetryTimer)),

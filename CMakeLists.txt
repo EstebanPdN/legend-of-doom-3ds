@@ -23,6 +23,8 @@ include( FindPackageHandleStandardArgs )
 # Support cross compiling
 option( FORCE_CROSSCOMPILE "Turn on cross compiling." NO )
 option( LOD3DS_HARDWARE_DIAGNOSTIC "Build the conservative New 3DS hardware bring-up profile." OFF )
+option( LOD3DS_HARDWARE_DIAGNOSTIC_SILENT "Disable audio in the conservative New 3DS hardware bring-up profile." OFF )
+set( LOD3DS_BUILD_PROFILE "release" CACHE STRING "3DS build profile embedded in logs and diagnostics." )
 set( LOD3DS_BUILD_ID "untracked" CACHE STRING "Stable source-state identifier embedded in 3DS builds." )
 if( FORCE_CROSSCOMPILE )
 	set( CMAKE_CROSSCOMPILING TRUE )
