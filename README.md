@@ -17,16 +17,11 @@ The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Ninte
 
 ## Features
 
-- self-contained CIA packaging with GZDoom, Freedoom and Legend of Doom data in RomFS
-- Homebrew Launcher 3DSX packaging with an external SD data directory
-- Circle Pad, C-Stick, touch-screen and New 3DS shoulder-button input
-- OpenAL Soft/NDSP audio path and ZMusic Lite integration
-- NovaGL/Citro3D world rendering at 400×240
-- reproducible pinned dependency and patch stacks
-- physical-hardware startup, GPU, frame-time and crash diagnostics
-- GitHub Actions builds with package hashes and public-boundary checks
-
-These items describe implemented code, not a claim that the game is currently playable on hardware.
+* New 3DS support
+* Dual-screen support
+* CIA and 3DSX support (planned feature)
+* Circle Pad, C-Stick and touch controls
+* Native 400×240 rendering
 
 ## Community
 
