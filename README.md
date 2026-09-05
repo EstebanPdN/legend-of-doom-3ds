@@ -33,7 +33,7 @@ https://discord.gg/SMW49UMkw
 
 Candidate downloads are published under [GitHub Releases](https://github.com/EstebanPdN/legend-of-doom-3ds/releases). See the [v0.31 review](platform/3ds/CODE-REVIEW-v031.es.md) for changes and known limits.
 
-The CIA is installable through FBI and embeds its matching game data. 
+The CIA is installable through FBI and embeds its matching game data.
 The 3DSX package includes a matching SD ZIP that expands to:
 
 ```text
