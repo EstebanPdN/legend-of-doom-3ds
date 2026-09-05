@@ -1,16 +1,15 @@
 /* Nintendo 3DS defaults layered over the standard gamepad bindings. */
 
 pad_a +use
-pad_b +attack
-pad_x +altattack
+pad_x +speed
 pad_y +jump
-ltrigger +altattack
-rtrigger +attack
-lshoulder weapprev
-rshoulder weapnext
-dpadleft invprev
-dpadright invnext
+lshoulder +altattack
+rshoulder +attack
+dpadleft weapprev
+dpadright weapnext
 dpaddown invuse
 dpadup togglemap
+ltrigger invprev
+rtrigger invnext
 pad_start menu_main
 pad_back menu_main

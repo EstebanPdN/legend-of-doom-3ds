@@ -477,7 +477,9 @@ void MessagePump (const SDL_Event &sev)
 		{
 			// L or R may already have reached gameplay before A completed the
 			// chord. Explicit releases prevent a stuck action/weapon command.
-			static const int ComboKeys[] = { KEY_PAD_A, KEY_PAD_LSHOULDER, KEY_PAD_RSHOULDER };
+			static const int ComboKeys[] = {
+				KEY_PAD_A, KEY_PAD_X, KEY_PAD_Y, KEY_PAD_LSHOULDER, KEY_PAD_RSHOULDER
+			};
 			event.type = EV_KeyUp;
 			for (int key : ComboKeys)
 			{
@@ -497,6 +499,9 @@ void MessagePump (const SDL_Event &sev)
 
 	#ifdef __3DS__
 	case SDL_FINGERDOWN:
+		if (I_3DSDiagnosticTouch(sev.tfinger.x, sev.tfinger.y)) break;
+		I_3DSHandleTouchEvent(sev, GUICapture);
+		break;
 	case SDL_FINGERMOTION:
 	case SDL_FINGERUP:
 		I_3DSHandleTouchEvent(sev, GUICapture);
@@ -533,4 +538,7 @@ void I_ProcessJoysticks ();
 void I_StartFrame ()
 {
 	I_ProcessJoysticks();
+	#ifdef __3DS__
+	I_3DSOverlayFrame();
+	#endif
 }

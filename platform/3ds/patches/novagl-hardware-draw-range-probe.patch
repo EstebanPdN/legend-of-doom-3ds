@@ -1,0 +1,49 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -145,6 +145,9 @@ option(NOVAGL_GZDOOM_COMPAT "Enable the GZDoom GLES fixed-function bridge" OFF)
+ set(NOVAGL_DIAG_DRAW_LIMIT "0" CACHE STRING "Number of initial GL draws to log")
+ set(NOVAGL_DIAG_DRAW_START "0" CACHE STRING "First GL draw selected for diagnostic logging")
+ set(NOVAGL_DIAG_DRAW_CUTOFF "-1" CACHE STRING "First-frame PICA draw prefix (-1 keeps all draws)")
++set(NOVAGL_DIAG_SEGMENT_START "0" CACHE STRING "First first-frame draw in the hardware segment probe")
++set(NOVAGL_DIAG_SEGMENT_END "0" CACHE STRING "Last first-frame draw in the hardware segment probe")
++set(NOVAGL_DIAG_SEGMENT_STRIDE "0" CACHE STRING "Draws per hardware probe command segment (0 disables)")
+ set(NOVAGL_DIAG_TEX_LIMIT "0" CACHE STRING "Number of initial texture uploads to log")
+ option(NOVAGL_DIAG_TEX_DUMP_RAW "Write raw/swizzled texture diagnostics to SD" OFF)
+ option(NOVAGL_HARDWARE_STAGE_LOG "Write first-frame Citro3D swap breadcrumbs to SD" OFF)
+@@ -159,6 +162,10 @@ if (NOVAGL_GZDOOM_COMPAT)
+ endif ()
+ target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_DRAW_LIMIT=${NOVAGL_DIAG_DRAW_LIMIT})
+ target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_DRAW_CUTOFF=${NOVAGL_DIAG_DRAW_CUTOFF})
++target_compile_definitions(NovaGL PRIVATE
++    NOVA_DIAG_SEGMENT_START=${NOVAGL_DIAG_SEGMENT_START}
++    NOVA_DIAG_SEGMENT_END=${NOVAGL_DIAG_SEGMENT_END}
++    NOVA_DIAG_SEGMENT_STRIDE=${NOVAGL_DIAG_SEGMENT_STRIDE})
+ target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_TEX_LIMIT=${NOVAGL_DIAG_TEX_LIMIT})
+ if (NOVAGL_DIAG_TEX_DUMP_RAW)
+     target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_TEX_DUMP_RAW=1)
+diff --git a/src/utils.c b/src/utils.c
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -516,6 +516,21 @@ void nova_hw_watchdog_after_draw(void)
+      * split, waited, stopped, cleared and restarted the Citro3D queue after
+      * every draw. That created a hardware-only execution pattern the real game
+      * never uses and could itself provoke the second-draw stall. */
++#if defined(NOVA_DIAG_SEGMENT_STRIDE) && NOVA_DIAG_SEGMENT_STRIDE > 0
++    /* Hardware-only range probe: close a normal asynchronous command list at
++     * sparse draw boundaries, but never wait, stop or clear the queue here.
++     * This preserves ordering and render state while making GX queue progress
++     * identify a small offending bucket. The selected range/stride is sized
++     * by the build so the complete first frame remains below 32 GX entries. */
++    if (s_hw_draw.serial >= (unsigned)NOVA_DIAG_SEGMENT_START &&
++        s_hw_draw.serial <= (unsigned)NOVA_DIAG_SEGMENT_END &&
++        ((s_hw_draw.serial - (unsigned)NOVA_DIAG_SEGMENT_START + 1u) %
++         (unsigned)NOVA_DIAG_SEGMENT_STRIDE) == 0u) {
++        nova_hw_watchdog_frame_split(GX_CMDLIST_FLUSH,
++                                     "draw-range-probe",
++                                     (int)s_hw_draw.serial);
++    }
++#endif
+ }
+ 
+ void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line)

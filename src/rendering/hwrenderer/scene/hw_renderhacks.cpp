@@ -691,14 +691,38 @@ void HWDrawInfo::CreateFloodStencilPoly(wallseg * ws, FFlatVertex *vertices)
 //
 //==========================================================================
 
-void HWDrawInfo::CreateFloodPoly(wallseg * ws, FFlatVertex *vertices, float planez, sector_t * sec, bool ceiling)
+static bool FloodFloatIsFinite(float value)
+{
+	uint32_t bits;
+	__builtin_memcpy(&bits, &value, sizeof(bits));
+	return (bits & 0x7f800000u) != 0x7f800000u;
+}
+
+bool HWDrawInfo::CreateFloodPoly(wallseg * ws, FFlatVertex *vertices, float planez, sector_t * sec, bool ceiling)
 {
 	float fviewx = Viewpoint.Pos.X;
 	float fviewy = Viewpoint.Pos.Y;
 	float fviewz = Viewpoint.Pos.Z;
+	float numerator = planez - fviewz;
+	float denominator1 = ws->z1 - fviewz;
+	float denominator2 = ws->z2 - fviewz;
 
-	float prj_fac1 = (planez - fviewz) / (ws->z1 - fviewz);
-	float prj_fac2 = (planez - fviewz) / (ws->z2 - fviewz);
+	/* A camera exactly on either flood endpoint used to produce 0/0 or an
+	 * infinite projection factor. This file is compiled with -ffast-math, so
+	 * std::isfinite may be folded to true; inspect IEEE-754 bits instead and
+	 * omit only the undefined flood polygon. */
+	if (!FloodFloatIsFinite(fviewx) || !FloodFloatIsFinite(fviewy) ||
+		!FloodFloatIsFinite(fviewz) || !FloodFloatIsFinite(planez) ||
+		!FloodFloatIsFinite(numerator) ||
+		!FloodFloatIsFinite(denominator1) ||
+		!FloodFloatIsFinite(denominator2) ||
+		denominator1 == 0.0f || denominator2 == 0.0f)
+		return false;
+
+	float prj_fac1 = numerator / denominator1;
+	float prj_fac2 = numerator / denominator2;
+	if (!FloodFloatIsFinite(prj_fac1) || !FloodFloatIsFinite(prj_fac2))
+		return false;
 
 	float px1 = fviewx + prj_fac1 * (ws->x1 - fviewx);
 	float py1 = fviewy + prj_fac1 * (ws->y1 - fviewy);
@@ -711,11 +735,17 @@ void HWDrawInfo::CreateFloodPoly(wallseg * ws, FFlatVertex *vertices, float plan
 
 	float px4 = fviewx + prj_fac1 * (ws->x2 - fviewx);
 	float py4 = fviewy + prj_fac1 * (ws->y2 - fviewy);
+	if (!FloodFloatIsFinite(px1) || !FloodFloatIsFinite(py1) ||
+		!FloodFloatIsFinite(px2) || !FloodFloatIsFinite(py2) ||
+		!FloodFloatIsFinite(px3) || !FloodFloatIsFinite(py3) ||
+		!FloodFloatIsFinite(px4) || !FloodFloatIsFinite(py4))
+		return false;
 
 	vertices[0].Set(px1, planez, py1, px1 / 64, -py1 / 64);
 	vertices[1].Set(px2, planez, py2, px2 / 64, -py2 / 64);
 	vertices[2].Set(px4, planez, py4, px4 / 64, -py4 / 64);
 	vertices[3].Set(px3, planez, py3, px3 / 64, -py3 / 64);
+	return true;
 }
 
 //==========================================================================
@@ -762,7 +792,8 @@ void HWDrawInfo::PrepareUpperGap(seg_t * seg)
 	auto vertices = screen->mVertexData->AllocVertices(8);
 
 	CreateFloodStencilPoly(&ws, vertices.first);
-	CreateFloodPoly(&ws, vertices.first+4, ws.z2, fakebsector, true);
+	if (!CreateFloodPoly(&ws, vertices.first+4, ws.z2, fakebsector, true))
+		return;
 
 	gl_floodrendernode *node = NewFloodRenderNode();
     auto pNode = floodCeilingSegs.CheckKey(fakebsector->sectornum);
@@ -819,7 +850,8 @@ void HWDrawInfo::PrepareLowerGap(seg_t * seg)
 	auto vertices = screen->mVertexData->AllocVertices(8);
 
 	CreateFloodStencilPoly(&ws, vertices.first);
-	CreateFloodPoly(&ws, vertices.first+4, ws.z1, fakebsector, false);
+	if (!CreateFloodPoly(&ws, vertices.first+4, ws.z1, fakebsector, false))
+		return;
 
 	gl_floodrendernode *node = NewFloodRenderNode();
     auto pNode = floodFloorSegs.CheckKey(fakebsector->sectornum);

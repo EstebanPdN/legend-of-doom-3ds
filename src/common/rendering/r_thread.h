@@ -27,6 +27,9 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#ifdef __3DS__
+#include <3ds.h>
+#endif
 #include "templates.h"
 #include "c_cvars.h"
 #include "basics.h"
@@ -35,6 +38,7 @@
 EXTERN_CVAR(Int, r_multithreaded)
 
 class PolyTriangleThreadData;
+class DrawerThreads;
 
 namespace swrenderer { class WallColumnDrawerArgs; }
 
@@ -42,7 +46,12 @@ namespace swrenderer { class WallColumnDrawerArgs; }
 class DrawerThread
 {
 public:
+	#ifdef __3DS__
+	Thread thread = nullptr;
+	DrawerThreads *owner = nullptr;
+	#else
 	std::thread thread;
+	#endif
 	size_t current_queue = 0;
 
 	// Thread line index of this thread
@@ -164,6 +173,10 @@ private:
 	void StartThreads();
 	void StopThreads();
 	void WorkerMain(DrawerThread *thread);
+	#ifdef __3DS__
+	static void WorkerMain3DS(void *argument);
+	bool StartThreads3DS(int numThreads);
+	#endif
 
 	static DrawerThreads *Instance();
 	

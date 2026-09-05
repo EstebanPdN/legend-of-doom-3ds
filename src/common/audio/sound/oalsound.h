@@ -1,7 +1,11 @@
 #ifndef OALSOUND_H
 #define OALSOUND_H
 
+#ifdef __3DS__
+#include <3ds.h>
+#else
 #include <thread>
+#endif
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
@@ -243,6 +247,9 @@ private:
     void (ALC_APIENTRY*alcDeviceResumeSOFT)(ALCdevice *device);
 
     void BackgroundProc();
+#ifdef __3DS__
+    static void BackgroundProc3DS(void *userdata);
+#endif
     void AddStream(OpenALSoundStream *stream);
     void RemoveStream(OpenALSoundStream *stream);
 
@@ -250,7 +257,11 @@ private:
 	void PurgeStoppedSources();
 	static FSoundChan *FindLowestChannel();
 
+#ifdef __3DS__
+    Thread StreamThread = nullptr;
+#else
     std::thread StreamThread;
+#endif
     std::mutex StreamLock;
     std::condition_variable StreamWake;
     std::atomic<bool> QuitThread;

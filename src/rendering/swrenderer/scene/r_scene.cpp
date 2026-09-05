@@ -50,6 +50,7 @@
 #include "swrenderer/segments/r_drawsegment.h"
 #include "swrenderer/segments/r_portalsegment.h"
 #include "swrenderer/plane/r_visibleplanelist.h"
+#include "swrenderer/plane/r_skyplane.h"
 #include "swrenderer/viewport/r_viewport.h"
 #include "swrenderer/drawers/r_draw.h"
 #include "swrenderer/drawers/r_draw_rgba.h"
@@ -263,11 +264,13 @@ namespace swrenderer
 		thread->ClipSegments->Clear(0, viewwidth);
 		thread->DrawSegments->Clear();
 		thread->PlaneList->Clear();
+		#ifdef __3DS__
+		thread->SkyBackgroundFilled = false;
+		#endif
 		thread->TranslucentPass->Clear();
 		thread->OpaquePass->ClearClip();
 		thread->OpaquePass->ResetFakingUnderwater(); // [RH] Hack to make windows into underwater areas possible
 		thread->Portal->SetMainPortal();
-
 		/*if (r_modelscene && thread->MainThread)
 			PolyTriangleDrawer::ClearStencil(MainThread()->DrawQueue, 0);
 
@@ -287,6 +290,12 @@ namespace swrenderer
 		if (viewactive)
 		{
 			thread->PlaneList->Render();
+			#ifdef __3DS__
+			// Fill only still-transparent pixels with the primary sky before portal
+			// passes claim their windows. This is deliberately scene-scheduled: the
+			// v0.2 visplane-triggered fallback never executed on real hardware.
+			RenderSkyPlane(thread).FillPrimarySkyBackground();
+			#endif
 
 			thread->Portal->RenderPlanePortals();
 			thread->Portal->RenderLinePortals();

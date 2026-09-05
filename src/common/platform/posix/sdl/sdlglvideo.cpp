@@ -44,6 +44,8 @@
 #include "c_dispatch.h"
 #include "printf.h"
 
+#include <cstring>
+
 #include "hardware.h"
 #include "gl_sysfb.h"
 #ifndef __3DS__
@@ -59,7 +61,19 @@
 #endif
 #ifdef __3DS__
 #include <3ds.h>
+#ifdef LOD3DS_HYBRID_PERFORMANCE
+#include <citro2d.h>
+
+extern "C"
+{
+	extern u32 __ctru_linear_heap;
+	extern u32 __ctru_linear_heap_size;
+}
+#endif
+#ifndef LOD3DS_SAFE_SOFTWARE
 #include <NovaGL.h>
+#endif
+#include "common/platform/3ds/cache_3ds.h"
 #include "common/platform/3ds/diagnostics_3ds.h"
 #endif
  
@@ -69,6 +83,10 @@
 
 #ifdef HAVE_SOFTPOLY
 #include "poly_framebuffer.h"
+#endif
+
+#if defined(LOD3DS_SAFE_SOFTWARE) && !defined(HAVE_SOFTPOLY)
+#error "LOD3DS_SAFE_SOFTWARE requires the CPU renderer (HAVE_SOFTPOLY)"
 #endif
 
 // MACROS ------------------------------------------------------------------
@@ -138,7 +156,11 @@ namespace Priv
 
 		// Set default size
 		SDL_Rect bounds;
+		#ifdef __3DS__
+		SDL_GetDisplayBounds(0, &bounds);
+		#else
 		SDL_GetDisplayBounds(vid_adapter, &bounds);
+		#endif
 
 #ifdef __3DS__
 		win_w = 400;
@@ -160,9 +182,18 @@ namespace Priv
 #else
 			(win_maximized ? SDL_WINDOW_MAXIMIZED : 0) | SDL_WINDOW_RESIZABLE | extraFlags;
 #endif
+		#ifdef __3DS__
+		// SDL's N3DS backend derives the target LCD from the display encoded in
+		// the window position. Never let archived desktop coordinates or a stale
+		// vid_adapter route the recovery framebuffer to the bottom screen.
+		const int windowX = SDL_WINDOWPOS_CENTERED_DISPLAY(0);
+		const int windowY = SDL_WINDOWPOS_CENTERED_DISPLAY(0);
+		#else
+		const int windowX = (win_x <= 0) ? SDL_WINDOWPOS_CENTERED_DISPLAY(vid_adapter) : win_x;
+		const int windowY = (win_y <= 0) ? SDL_WINDOWPOS_CENTERED_DISPLAY(vid_adapter) : win_y;
+		#endif
 		Priv::window = SDL_CreateWindow(caption,
-			(win_x <= 0) ? SDL_WINDOWPOS_CENTERED_DISPLAY(vid_adapter) : win_x,
-			(win_y <= 0) ? SDL_WINDOWPOS_CENTERED_DISPLAY(vid_adapter) : win_y,
+			windowX, windowY,
 			win_w, win_h, windowFlags);
 
 		if (Priv::window != nullptr)
@@ -265,6 +296,178 @@ namespace
 	int polytextureh = 0;
 	bool polyvsync = false;
 	bool polyfirstinit = true;
+
+	#ifdef LOD3DS_HYBRID_PERFORMANCE
+	constexpr int HybridMaximumCanvasWidth = 400;
+	constexpr int HybridMaximumCanvasHeight = 240;
+	constexpr int HybridTextureWidth = 512;
+	constexpr int HybridTextureHeight = 256;
+	C3D_RenderTarget *hybridTarget = nullptr;
+	C3D_Tex hybridTexture{};
+	Tex3DS_SubTexture hybridSubtexture{};
+	uint32_t *hybridUpload = nullptr;
+	void *hybridC2DFlushBase = nullptr;
+	size_t hybridC2DFlushSize = 0;
+	bool hybridC3DReady = false;
+	bool hybridC2DReady = false;
+	bool hybridPresenterReady = false;
+
+	u32 HybridTextureTransferFlags()
+	{
+		return GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(1) |
+			GX_TRANSFER_RAW_COPY(0) |
+			GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+			GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+			GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
+	}
+
+	u32 HybridOutputTransferFlags()
+	{
+		return GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) |
+			GX_TRANSFER_RAW_COPY(0) |
+			GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+			GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+			GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
+	}
+
+	void ConfigureHybridBgraTexture()
+	{
+		// DCanvas is BGRA in memory. A GX RGBA8 upload therefore exposes those
+		// four bytes to the texture unit as A/R/G/B. Rebuild display RGB from
+		// sampled G/B/A. This exact order is also used by the physically proven
+		// presenter in the other local 3DS ports.
+		C3D_TexEnv *env = C3D_GetTexEnv(0);
+		C3D_TexEnvInit(env);
+		C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_PREVIOUS);
+		C3D_TexEnvOpRgb(env, GPU_TEVOP_RGB_SRC_G,
+			GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
+		C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
+		C3D_TexEnvSrc(env, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+		C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+		C3D_TexEnvColor(env, C2D_Color32(255, 0, 0, 255));
+
+		env = C3D_GetTexEnv(1);
+		C3D_TexEnvInit(env);
+		C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_PREVIOUS);
+		C3D_TexEnvOpRgb(env, GPU_TEVOP_RGB_SRC_B,
+			GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
+		C3D_TexEnvFunc(env, C3D_RGB, GPU_MULTIPLY_ADD);
+		C3D_TexEnvColor(env, C2D_Color32(0, 255, 0, 255));
+
+		env = C3D_GetTexEnv(2);
+		C3D_TexEnvInit(env);
+		C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_PREVIOUS);
+		C3D_TexEnvOpRgb(env, GPU_TEVOP_RGB_SRC_ALPHA,
+			GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
+		C3D_TexEnvFunc(env, C3D_RGB, GPU_MULTIPLY_ADD);
+		C3D_TexEnvColor(env, C2D_Color32(0, 0, 255, 255));
+	}
+
+	void DeinitHybridPresenter()
+	{
+		if (hybridTarget != nullptr)
+		{
+			C3D_RenderTargetDelete(hybridTarget);
+			hybridTarget = nullptr;
+		}
+		if (hybridTexture.data != nullptr)
+		{
+			C3D_TexDelete(&hybridTexture);
+			hybridTexture = {};
+		}
+		if (hybridC2DReady)
+		{
+			C2D_Fini();
+			hybridC2DReady = false;
+		}
+		if (hybridC3DReady)
+		{
+			C3D_Fini();
+			hybridC3DReady = false;
+		}
+		if (hybridUpload != nullptr)
+		{
+			linearFree(hybridUpload);
+			hybridUpload = nullptr;
+		}
+		hybridC2DFlushBase = nullptr;
+		hybridC2DFlushSize = 0;
+		hybridPresenterReady = false;
+	}
+
+	bool InitHybridPresenter()
+	{
+		const size_t uploadBytes = HybridTextureWidth * HybridTextureHeight * sizeof(uint32_t);
+		hybridUpload = static_cast<uint32_t *>(linearMemAlign(uploadBytes, 0x80));
+		if (hybridUpload == nullptr) return false;
+		std::memset(hybridUpload, 0, uploadBytes);
+		GSPGPU_FlushDataCache(hybridUpload, uploadBytes);
+
+		if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE))
+		{
+			DeinitHybridPresenter();
+			return false;
+		}
+		hybridC3DReady = true;
+		if (!C2D_Init(16))
+		{
+			DeinitHybridPresenter();
+			return false;
+		}
+		hybridC2DReady = true;
+		C2D_Prepare();
+		// The game-side cap is independently selectable on the touch screen.
+		// Keep the presenter itself able to reach the LCD refresh rate.
+		C3D_FrameRate(60.0f);
+
+		// With GX_CMDLIST_FLUSH, citro3d does not clean the entire linear heap.
+		// Locate Citro2D's small dynamic vertex area and flush only that range.
+		C3D_BufInfo *buffers = C3D_GetBufInfo();
+		if (buffers != nullptr && buffers->bufCount > 0)
+		{
+			const u32 heapPhysical = osConvertVirtToPhys(
+				reinterpret_cast<void *>(__ctru_linear_heap));
+			const u32 vertexPhysical = buffers->base_paddr + buffers->buffers[0].offset;
+			const uintptr_t heapStart = static_cast<uintptr_t>(__ctru_linear_heap);
+			const uintptr_t heapEnd = heapStart + __ctru_linear_heap_size;
+			const uintptr_t vertexAddress = heapStart + (vertexPhysical - heapPhysical);
+			const uintptr_t flushStart = vertexAddress & ~static_cast<uintptr_t>(0x7f);
+			const uintptr_t flushEnd = std::min(flushStart + 64u * 1024u, heapEnd);
+			if (flushStart >= heapStart && flushStart < flushEnd)
+			{
+				hybridC2DFlushBase = reinterpret_cast<void *>(flushStart);
+				hybridC2DFlushSize = flushEnd - flushStart;
+			}
+		}
+		if (hybridC2DFlushBase == nullptr)
+		{
+			DeinitHybridPresenter();
+			return false;
+		}
+
+		if (!C3D_TexInitVRAM(&hybridTexture, HybridTextureWidth,
+			HybridTextureHeight, GPU_RGBA8))
+		{
+			DeinitHybridPresenter();
+			return false;
+		}
+		// One PICA200 bilinear sample performs the requested smooth upscale; the
+		// software world renderer still shades only its selected internal pixels.
+		C3D_TexSetFilter(&hybridTexture, GPU_LINEAR, GPU_LINEAR);
+		C3D_TexSetWrap(&hybridTexture, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+
+		hybridTarget = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH16);
+		if (hybridTarget == nullptr)
+		{
+			DeinitHybridPresenter();
+			return false;
+		}
+		C3D_RenderTargetSetOutput(hybridTarget, GFX_TOP, GFX_LEFT,
+			HybridOutputTransferFlags());
+		hybridPresenterReady = true;
+		return true;
+	}
+	#endif
 }
 
 void I_PolyPresentInit()
@@ -272,10 +475,22 @@ void I_PolyPresentInit()
 	assert(Priv::softpolyEnabled);
 	assert(Priv::window != nullptr);
 
+	#ifdef __3DS__
+	#ifdef LOD3DS_HYBRID_PERFORMANCE
+	I_3DSStartupLog(InitHybridPresenter()
+		? "hybrid-presenter-ready" : "hybrid-presenter-sdl-fallback");
+	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+	#endif
+	// Nintendo 3DS has no accelerated SDL_Renderer. Select the documented
+	// surface renderer explicitly. Ignore a stale desktop renderer setting:
+	// the N3DS backend only implements the software presentation path.
+	SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
+	#else
 	if (strcmp(vid_sdl_render_driver, "") != 0)
 	{
 		SDL_SetHint(SDL_HINT_RENDER_DRIVER, vid_sdl_render_driver);
 	}
+	#endif
 }
 
 uint8_t *I_PolyPresentLock(int w, int h, bool vsync, int &pitch)
@@ -389,10 +604,163 @@ void I_PolyPresentUnlock(int x, int y, int width, int height)
 	SDL_RenderCopy(polyrendertarget, polytexture, nullptr, &dstrect);
 
 	SDL_RenderPresent(polyrendertarget);
+	#if defined(__3DS__) && !defined(LOD3DS_SAFE_SOFTWARE)
+	// SDL 2.32's N3DS software renderer advertises PRESENTVSYNC but its
+	// framebuffer update only flushes and swaps. Pace after that single owner
+	// of presentation so we neither run flat-out nor duplicate a swap/flush.
+	gspWaitForVBlank();
+	#endif
 }
+
+#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+bool I_PolyPresentDirect3DS(const uint8_t *pixels, int pitch, int width,
+	int height, int x, int y, int outputWidth, int outputHeight)
+{
+	if (!hybridPresenterReady || pixels == nullptr || width < 1 ||
+		height < 1 || width > HybridMaximumCanvasWidth ||
+		height > HybridMaximumCanvasHeight || pitch < width * 4 || x != 0 ||
+		y != 0 || outputWidth != 400 || outputHeight != 240)
+	{
+		return false;
+	}
+
+	const size_t sourceRowBytes = static_cast<size_t>(width) * sizeof(uint32_t);
+	const size_t uploadRowBytes = HybridTextureWidth * sizeof(uint32_t);
+	for (int row = 0; row < height; ++row)
+	{
+		std::memcpy(reinterpret_cast<uint8_t *>(hybridUpload) + row * uploadRowBytes,
+			pixels + row * pitch, sourceRowBytes);
+	}
+	// The GX transfer uses the fixed 512-pixel stride. Clean through the last
+	// active row, including its unused padding, before the PICA reads it.
+	GSPGPU_FlushDataCache(hybridUpload,
+		static_cast<size_t>(HybridTextureWidth) * height * sizeof(uint32_t));
+
+	if (!C3D_FrameBegin(0)) return false;
+	C3D_SyncDisplayTransfer(hybridUpload,
+		GX_BUFFER_DIM(HybridTextureWidth, HybridTextureHeight),
+		static_cast<u32 *>(hybridTexture.data),
+		GX_BUFFER_DIM(HybridTextureWidth, HybridTextureHeight),
+		HybridTextureTransferFlags());
+
+	hybridSubtexture = Tex3DS_SubTexture{
+		static_cast<u16>(width), static_cast<u16>(height),
+		0.0f, 1.0f,
+		static_cast<float>(width) / HybridTextureWidth,
+		1.0f - static_cast<float>(height) / HybridTextureHeight
+	};
+	const C2D_Image image{ &hybridTexture, &hybridSubtexture };
+	const C2D_DrawParams params{
+		{ 0.0f, 0.0f, 400.0f, 240.0f },
+		{ 0.0f, 0.0f }, 0.0f, 0.0f
+	};
+	C2D_TargetClear(hybridTarget, C2D_Color32(0, 0, 0, 255));
+	C2D_SceneBegin(hybridTarget);
+	// Citro2D snapshots the active TEV state while queuing the image. Configure
+	// the BGRA swizzle before the draw, not after it.
+	ConfigureHybridBgraTexture();
+	C2D_DrawImage(image, &params, nullptr);
+	C2D_Flush();
+	GSPGPU_FlushDataCache(hybridC2DFlushBase, hybridC2DFlushSize);
+	C3D_FrameEnd(GX_CMDLIST_FLUSH);
+	return true;
+}
+#elif defined(__3DS__) && !defined(LOD3DS_SAFE_SOFTWARE)
+bool I_PolyPresentDirect3DS(const uint8_t *pixels, int pitch, int width,
+	int height, int x, int y, int outputWidth, int outputHeight)
+{
+	// This is deliberately an exact-layout fast path. The generic SDL route
+	// remains available for resolution, letterbox or colour-transform modes
+	// whose mapping has not been validated on physical hardware.
+	constexpr int SourceWidth = 320;
+	constexpr int SourceHeight = 200;
+	constexpr int ScreenWidth = 400;
+	constexpr int ScreenHeight = 240;
+	if (pixels == nullptr || width != SourceWidth || height != SourceHeight ||
+		pitch < SourceWidth * 4 || (pitch & 3) != 0 || x != 0 || y != 0 ||
+		outputWidth != ScreenWidth || outputHeight != ScreenHeight)
+	{
+		return false;
+	}
+
+	u16 physicalWidth = 0;
+	u16 physicalHeight = 0;
+	auto *framebuffer = reinterpret_cast<uint32_t *>(
+		gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &physicalWidth, &physicalHeight));
+	if (framebuffer == nullptr || physicalWidth != ScreenHeight ||
+		physicalHeight != ScreenWidth)
+	{
+		return false;
+	}
+
+	// Both scales are rational and constant for this profile. Cache the maps so
+	// the hot loop contains no division. Eight-row tiles keep the vertical
+	// source samples and each physical LCD column resident together in L1.
+	static uint16_t sourceX[ScreenWidth];
+	static uint16_t sourceY[ScreenHeight];
+	static bool mapsReady = false;
+	if (!mapsReady)
+	{
+		// Match SDL 2.32's nearest-neighbour 16.16 accumulator exactly. A
+		// rational centre formula chooses the other source texel at tie points,
+		// which would make the direct and fallback presenters visibly differ.
+		constexpr uint32_t SourceXStep =
+			(static_cast<uint32_t>(SourceWidth) << 16) / ScreenWidth;
+		constexpr uint32_t SourceYStep =
+			(static_cast<uint32_t>(SourceHeight) << 16) / ScreenHeight;
+		uint32_t sourceXPosition = SourceXStep / 2;
+		for (int outX = 0; outX < ScreenWidth; ++outX)
+		{
+			sourceX[outX] = static_cast<uint16_t>(sourceXPosition >> 16);
+			sourceXPosition += SourceXStep;
+		}
+		uint32_t sourceYPosition = SourceYStep / 2;
+		for (int outY = 0; outY < ScreenHeight; ++outY)
+		{
+			sourceY[outY] = static_cast<uint16_t>(sourceYPosition >> 16);
+			sourceYPosition += SourceYStep;
+		}
+		mapsReady = true;
+	}
+
+	const int sourcePitchWords = pitch / 4;
+	const auto *source = reinterpret_cast<const uint32_t *>(pixels);
+	constexpr int Tile = 8;
+	for (int tileY = 0; tileY < ScreenHeight; tileY += Tile)
+	{
+		for (int tileX = 0; tileX < ScreenWidth; tileX += Tile)
+		{
+			for (int outX = tileX; outX < tileX + Tile; ++outX)
+			{
+				uint32_t *destinationColumn = framebuffer + outX * ScreenHeight;
+				const int inX = sourceX[outX];
+				for (int outY = tileY; outY < tileY + Tile; ++outY)
+				{
+					const uint32_t bgra = source[sourceY[outY] * sourcePitchWords + inX];
+					// DCanvas stores B,G,R,A bytes (numeric AARRGGBB). The
+					// libctru RGBA8 scanout stores A,B,G,R (numeric RRGGBBAA).
+					destinationColumn[ScreenHeight - 1 - outY] =
+						(bgra << 8) | (bgra >> 24);
+				}
+			}
+		}
+	}
+
+	I_3DSCleanDataCache(framebuffer,
+		static_cast<u32>(physicalWidth) * physicalHeight * sizeof(uint32_t));
+	gfxScreenSwapBuffers(GFX_TOP, false);
+	// SDL's N3DS software presenter performed this same single pacing wait.
+	// Keeping it here avoids an unbounded producer and preserves HOME timing.
+	gspWaitForVBlank();
+	return true;
+}
+#endif
 
 void I_PolyPresentDeinit()
 {
+	#ifdef LOD3DS_HYBRID_PERFORMANCE
+	DeinitHybridPresenter();
+	#endif
 	if (polytexture)
 	{
 		SDL_DestroyTexture(polytexture);
@@ -425,11 +793,13 @@ SDLVideo::SDLVideo ()
 	}
 
 #ifdef HAVE_SOFTPOLY
-#ifdef __3DS__
-	Priv::softpolyEnabled = false;
-#else
+	#ifdef LOD3DS_SAFE_SOFTWARE
+	// This recovery profile must be immune to stale user CVARs and argument
+	// ordering: it is not allowed to enter NovaGL/PICA on physical hardware.
+	Priv::softpolyEnabled = true;
+	#else
 	Priv::softpolyEnabled = vid_preferbackend == 2;
-#endif
+	#endif
 #endif
 #ifdef HAVE_VULKAN
 	Priv::vulkanEnabled = vid_preferbackend == 1;
@@ -447,11 +817,20 @@ SDLVideo::SDLVideo ()
 #ifdef HAVE_SOFTPOLY
 	if (Priv::softpolyEnabled)
 	{
+		#ifdef __3DS__
+		I_3DSStartupLog("safe-software-window-enter");
+		#endif
 		Priv::CreateWindow(SDL_WINDOW_HIDDEN);
 		if (Priv::window == nullptr)
 		{
 			I_FatalError("Could not create SoftPoly window:\n%s\n",SDL_GetError());
 		}
+		#ifdef __3DS__
+		I_3DSStartupLog("safe-software-window-ready");
+		// Stop and join the early animation before SDL's software renderer starts
+		// presenting game frames to the same top-screen scanout buffers.
+		I_3DSLoadingScreenFinish();
+		#endif
 	}
 #endif
 }
@@ -493,12 +872,20 @@ DFrameBuffer *SDLVideo::CreateFrameBuffer ()
 #ifdef HAVE_SOFTPOLY
 	if (Priv::softpolyEnabled)
 	{
+		#ifdef __3DS__
+		I_3DSStartupLog("safe-software-framebuffer-enter");
+		#endif
 		fb = new PolyFrameBuffer(nullptr, vid_fullscreen);
+		#ifdef __3DS__
+		I_3DSStartupLog("safe-software-framebuffer-ready");
+		#endif
 	}
 #endif
 	if (fb == nullptr)
 	{
-#ifdef __3DS__
+#if defined(__3DS__) && defined(LOD3DS_SAFE_SOFTWARE)
+		I_FatalError("Hardware-safe build could not initialize the CPU framebuffer.");
+#elif defined(__3DS__)
 		fb = new OpenGLESRenderer::OpenGLFrameBuffer(0, vid_fullscreen);
 #else
 #ifdef HAVE_GLES2
@@ -633,6 +1020,9 @@ SystemGLFrameBuffer::SystemGLFrameBuffer(void *hMonitor, bool fullscreen)
 {
 #ifdef __3DS__
 	GLContext = nullptr;
+	#ifdef LOD3DS_SAFE_SOFTWARE
+	I_FatalError("Hardware-safe build rejected the NovaGL framebuffer path.");
+	#else
 	I_3DSStartupLog("sdl-window-enter");
 	Priv::CreateWindow(0);
 	if (Priv::window == nullptr)
@@ -648,12 +1038,13 @@ SystemGLFrameBuffer::SystemGLFrameBuffer(void *hMonitor, bool fullscreen)
 	// first real frame. Unlike tearing gfx down and starting it again, this
 	// avoids returning to a black LCD during the final renderer setup.
 	I_3DSLoadingScreenFinish();
-	// Keep Citro3D synchronized at every frame boundary. Counting submitted
-	// frames is not a GPU completion fence: on real hardware an async queue can
-	// still be consuming slot N when the CPU wraps around and reuses it. That
-	// produced a PICA hang (audio kept playing, while video, input and HOME/ APT
-	// stopped). Single buffering makes C3D_FrameBegin use SYNCDRAW and gives all
-	// NovaGL rings and deferred frees an actual completion boundary.
+	// Keep one reusable frame slot. Counting submitted frames is not a GPU
+	// completion fence: on real hardware the queue can still be consuming slot
+	// N when the CPU wraps around and reuses it. NovaGL therefore drains the
+	// pinned Citro3D render queue before reusing rings or deferred allocations,
+	// and explicitly flushes every CPU-written GPU range and command-list split.
+	// This replaces the old display-counter-only SYNCDRAW assumption that could
+	// leave PICA running while video, input and HOME/APT appeared frozen.
 	novaSetFrameBuffers(1);
 	nova_init_ex(NOVA_CMD_BUF_SIZE, 2 * 1024 * 1024, 512 * 1024, 512 * 1024);
 	novaSetSwapInterval(1);
@@ -661,6 +1052,7 @@ SystemGLFrameBuffer::SystemGLFrameBuffer(void *hMonitor, bool fullscreen)
 	Printf("[NovaGL] init synchronized cmd=3M vertex=2M index=512K staging=512K; linear %u -> %u, VRAM %u -> %u bytes\n",
 		(unsigned)linearBefore, (unsigned)linearSpaceFree(),
 		(unsigned)vramBefore, (unsigned)vramSpaceFree());
+	#endif
 #else
 	// NOTE: Core profiles were added with GL 3.2, so there's no sense trying
 	// to set core 3.1 or 3.0. We could try a forward-compatible context
@@ -724,7 +1116,9 @@ SystemGLFrameBuffer::~SystemGLFrameBuffer ()
 	if (Priv::window)
 	{
 #ifdef __3DS__
+		#ifndef LOD3DS_SAFE_SOFTWARE
 		nova_fini();
+		#endif
 #else
 		if (GLContext)
 		{
@@ -761,7 +1155,11 @@ int SystemGLFrameBuffer::GetClientHeight()
 void SystemGLFrameBuffer::SetVSync( bool vsync )
 {
 #if defined (__3DS__)
+	#ifdef LOD3DS_SAFE_SOFTWARE
+	I_FatalError("Hardware-safe build rejected NovaGL VSync.");
+	#else
 	novaSetSwapInterval(vsync ? 1 : 0);
+	#endif
 #elif defined (__APPLE__)
 	const GLint value = vsync ? 1 : 0;
 	CGLSetParameter( CGLGetCurrentContext(), kCGLCPSwapInterval, &value );
@@ -781,7 +1179,11 @@ void SystemGLFrameBuffer::SetVSync( bool vsync )
 void SystemGLFrameBuffer::SwapBuffers()
 {
 #ifdef __3DS__
+	#ifdef LOD3DS_SAFE_SOFTWARE
+	I_FatalError("Hardware-safe build rejected a NovaGL buffer swap.");
+	#else
 	novaSwapBuffers();
+	#endif
 #else
 	SDL_GL_SwapWindow(Priv::window);
 #endif

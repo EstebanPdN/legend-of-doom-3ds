@@ -35,6 +35,21 @@ void InitSWColorMaps();
 FDynamicColormap *GetSpecialLights (PalEntry lightcolor, PalEntry fadecolor, int desaturate);
 void SetDefaultColormap (const char *name);
 
+#ifdef __3DS__
+constexpr double Map01DistanceFogStart = 1536.0;
+constexpr double Map01DistanceFogEnd = 2048.0;
+constexpr uint8_t Map01DistanceFogRed = 104;
+constexpr uint8_t Map01DistanceFogGreen = 154;
+constexpr uint8_t Map01DistanceFogBlue = 178;
+
+bool Is3DSMap01ExteriorSector(const sector_t *sector);
+FDynamicColormap *Apply3DSMap01DistanceFog(const sector_t *sector,
+	FDynamicColormap *colormap);
+bool Is3DSMap01DistanceFogColormap(const FSWColormap *colormap);
+double Apply3DSMap01DistanceFogVisibility(const FSWColormap *colormap,
+	double viewDistance, double ordinaryVisibility, fixed_t shade);
+#endif
+
 
 // Give the compiler a strong hint we want these functions inlined:
 #ifndef FORCEINLINE

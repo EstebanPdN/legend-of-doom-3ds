@@ -13,6 +13,7 @@ LOD3DS_OPENAL_BUILD_DIR="${LOD3DS_OPENAL_BUILD_DIR:-${LOD3DS_BUILD_ROOT}/openal-
 LOD3DS_OPENAL_PREFIX="${LOD3DS_OPENAL_PREFIX:-${LOD3DS_BUILD_ROOT}/openal-soft-3ds-prefix}"
 LOD3DS_OPENAL_JOBS="${LOD3DS_JOBS:-4}"
 readonly LOD3DS_OPENAL_CORE_PATCH="${LOD3DS_SOURCE_ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch"
+readonly LOD3DS_OPENAL_STABILITY_PATCH="${LOD3DS_SOURCE_ROOT}/platform/3ds/patches/openal-soft-3ds-audio-stability.patch"
 readonly LOD3DS_OPENAL_CMAKE_PATCH="${LOD3DS_SOURCE_ROOT}/platform/3ds/patches/openal-soft-cmake-empty-deps.patch"
 
 export DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
@@ -27,39 +28,30 @@ lod3ds_require_program() {
 
 lod3ds_apply_checked_patch() {
   local patch_file="$1"
-  local target_file="$2"
-  local label="$3"
+  local label="$2"
 
-  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
+  if git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
       "${patch_file}" >/dev/null 2>&1; then
-    if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" diff --quiet -- "${target_file}"; then
-      printf 'OpenAL Soft checkout has unexpected changes in %s.\n' \
-        "${target_file}" >&2
-      exit 1
-    fi
-    git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${patch_file}"
-    git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${patch_file}"
+    return
   fi
 
+  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${patch_file}"
+  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${patch_file}"
   if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse --check \
       "${patch_file}" >/dev/null 2>&1; then
     printf 'OpenAL Soft checkout does not match the pinned %s patch.\n' \
       "${label}" >&2
     exit 1
   fi
-  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --reverse "${patch_file}"
-  if ! git -C "${LOD3DS_OPENAL_CHECKOUT}" diff --quiet -- "${target_file}"; then
-    printf 'Reversing the OpenAL Soft %s patch did not restore %s.\n' \
-      "${label}" "${target_file}" >&2
-    exit 1
-  fi
-  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply --check "${patch_file}"
-  git -C "${LOD3DS_OPENAL_CHECKOUT}" apply "${patch_file}"
 }
 
 lod3ds_checkout_openal() {
   local current_revision=""
   local checkout_remote=""
+  local patch_file=""
+  local patch_fingerprint=""
+  local patch_state=""
+  local recorded_fingerprint=""
   local created=0
 
   if [[ ! -d "${LOD3DS_OPENAL_CHECKOUT}/.git" ]]; then
@@ -92,10 +84,41 @@ lod3ds_checkout_openal() {
     exit 1
   fi
 
+  # fetch-dependencies.sh may already have applied the complete ordered stack.
+  # Use the same revision+patch fingerprint so a later patch that touches the
+  # same source file does not make per-patch reverse checks ambiguous.
+  patch_state="$(git -C "${LOD3DS_OPENAL_CHECKOUT}" rev-parse --absolute-git-dir)/lod3ds-patch-state"
+  patch_fingerprint="$({
+    printf '%s\n' "${LOD3DS_OPENAL_REV}"
+    for patch_file in \
+        "${LOD3DS_OPENAL_CORE_PATCH}" \
+        "${LOD3DS_OPENAL_STABILITY_PATCH}" \
+        "${LOD3DS_OPENAL_CMAKE_PATCH}"; do
+      git hash-object "${patch_file}"
+    done
+  } | git hash-object --stdin)"
+  if [[ -f "${patch_state}" ]]; then
+    recorded_fingerprint="$(tr -d '\r\n' < "${patch_state}")"
+  fi
+  if [[ "${recorded_fingerprint}" == "${patch_fingerprint}" ]]; then
+    return
+  fi
+
+  if [[ -n "$(git -C "${LOD3DS_OPENAL_CHECKOUT}" status --porcelain 2>/dev/null || true)" ]]; then
+    printf 'OpenAL Soft checkout has local changes but no matching patch-state: %s\n' \
+      "${LOD3DS_OPENAL_CHECKOUT}" >&2
+    printf 'Restore the generated checkout before retrying.\n' >&2
+    exit 1
+  fi
+
   lod3ds_apply_checked_patch "${LOD3DS_OPENAL_CORE_PATCH}" \
-    alc/backends/ndsp_driver.cpp 'Nintendo 3DS audio'
+    'Nintendo 3DS audio'
+  lod3ds_apply_checked_patch "${LOD3DS_OPENAL_STABILITY_PATCH}" \
+    'Nintendo 3DS audio stability'
   lod3ds_apply_checked_patch "${LOD3DS_OPENAL_CMAKE_PATCH}" \
-    CMakeLists.txt 'CMake compatibility'
+    'CMake compatibility'
+  git -C "${LOD3DS_OPENAL_CHECKOUT}" diff --check
+  printf '%s\n' "${patch_fingerprint}" > "${patch_state}"
 }
 
 for lod3ds_program in cmake git; do

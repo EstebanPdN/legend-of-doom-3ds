@@ -56,6 +56,8 @@ struct SavegameManager native ui
 	native int RemoveSaveSlot(int index);
 	native void LoadSavegame(int Selected);
 	native void DoSave(int Selected, String savegamestring);
+	native bool UsesNativeKeyboard();
+	native String OpenNativeKeyboard(String initialText);
 	native int ExtractSaveData(int index);
 	native void ClearSaveStuff();
 	native bool DrawSavePic(int x, int y, int w, int h);
@@ -523,9 +525,17 @@ class SaveMenu : LoadSaveMenu
 		if (mkey == MKEY_Enter)
 		{
 			String SavegameString = (Selected != 0)? manager.GetSavegame(Selected).SaveTitle : "";
-			mInput = TextEnterMenu.OpenTextEnter(self, Menu.OptionFont(), SavegameString, -1, fromcontroller);
-			mInput.ActivateMenu();
-			mEntering = true;
+			if (manager.UsesNativeKeyboard())
+			{
+				mSaveName = manager.OpenNativeKeyboard(SavegameString);
+				mEntering = false;
+			}
+			else
+			{
+				mInput = TextEnterMenu.OpenTextEnter(self, Menu.OptionFont(), SavegameString, -1, fromcontroller);
+				mInput.ActivateMenu();
+				mEntering = true;
+			}
 		}
 		else if (mkey == MKEY_Input)
 		{

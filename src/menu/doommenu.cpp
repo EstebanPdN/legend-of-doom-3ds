@@ -89,6 +89,15 @@ bool M_SetSpecialMenu(FName& menu, int param)
 	switch (menu.GetIndex())
 	{
 	case NAME_Mainmenu:
+		#ifdef __3DS__
+		// The title keeps the mod's original MainMenu, while Start/Escape during
+		// play opens the dedicated handheld pause menu with Resume first.
+		if (gamestate == GS_LEVEL && MenuDescriptors.CheckKey("LegendPauseMenu") != nullptr)
+		{
+			menu = FName("LegendPauseMenu");
+			break;
+		}
+		#endif
 		if (gameinfo.gametype & GAME_DoomStrifeChex)	// Raven's games always used text based menus
 		{
 			if (gameinfo.forcetextinmenus)	// If text is forced, this overrides any check.

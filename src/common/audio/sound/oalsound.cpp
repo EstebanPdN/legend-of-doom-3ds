@@ -52,6 +52,16 @@ FModule OpenALModule{"OpenAL"};
 
 #include "oalload.h"
 
+static constexpr ALfloat PlatformOutputGain = 1.0f;
+#ifdef __3DS__
+// The bundled mono MP3 tracks peak between roughly -16 and -12 dBFS. A 3x
+// music-only gain is a true +200% increase (+9.54 dB) and still leaves peak
+// headroom, while listener/SFX gain remains neutral.
+static constexpr ALfloat PlatformMusicGain = 3.0f;
+#else
+static constexpr ALfloat PlatformMusicGain = 1.0f;
+#endif
+
 #ifdef __3DS__
 CUSTOM_CVAR(Int, snd_channels, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)	// number of channels available
 {
@@ -187,7 +197,14 @@ class OpenALSoundStream : public SoundStream
 	ALenum Format;
 	ALsizei FrameSize;
 
+	#ifdef __3DS__
+	// A streamed track is fed by a decoder thread rather than by OpenAL's
+	// real-time mixer. Keep several seconds of decoded PCM queued so a short
+	// gameplay spike cannot empty this one source while ordinary SFX continue.
+	static const int BufferCount = 8;
+	#else
 	static const int BufferCount = 4;
+	#endif
 	ALuint Buffers[BufferCount];
 	ALuint Source;
 
@@ -212,7 +229,7 @@ class OpenALSoundStream : public SoundStream
 		alSource3f(Source, AL_DIRECTION, 0.f, 0.f, 0.f);
 		alSource3f(Source, AL_VELOCITY, 0.f, 0.f, 0.f);
 		alSource3f(Source, AL_POSITION, 0.f, 0.f, 0.f);
-		alSourcef(Source, AL_MAX_GAIN, 1.f);
+		alSourcef(Source, AL_MAX_GAIN, PlatformMusicGain);
 		alSourcef(Source, AL_GAIN, 1.f);
 		alSourcef(Source, AL_PITCH, 1.f);
 		alSourcef(Source, AL_DOPPLER_FACTOR, 0.f);
@@ -319,7 +336,8 @@ public:
 
 	void UpdateVolume()
 	{
-		alSourcef(Source, AL_GAIN, Renderer->MusicVolume*Volume);
+		alSourcef(Source, AL_GAIN,
+			Renderer->MusicVolume*Volume*PlatformMusicGain);
 		getALError();
 	}
 
@@ -618,6 +636,7 @@ OpenALSoundRenderer::OpenALSoundRenderer()
 		return;
 	}
 	attribs.Clear();
+	alListenerf(AL_GAIN, PlatformOutputGain);
 
 	const ALchar *const version = alGetString(AL_VERSION);
 
@@ -844,13 +863,23 @@ OpenALSoundRenderer::~OpenALSoundRenderer()
 	if(!Device)
 		return;
 
+	#ifdef __3DS__
+	if(StreamThread != nullptr)
+	#else
 	if(StreamThread.joinable())
+	#endif
 	{
 		std::unique_lock<std::mutex> lock(StreamLock);
 		QuitThread.store(true);
 		lock.unlock();
 		StreamWake.notify_all();
+		#ifdef __3DS__
+		threadJoin(StreamThread, U64_MAX);
+		threadFree(StreamThread);
+		StreamThread = nullptr;
+		#else
 		StreamThread.join();
+		#endif
 	}
 
 	while(Streams.Size() > 0)
@@ -899,13 +928,26 @@ void OpenALSoundRenderer::BackgroundProc()
 		}
 		else
 		{
-			// Else, process all active streams and sleep for 100ms
+			// Else, process all active streams and sleep until more buffers may
+			// have completed. The 3DS uses a shorter interval because its music
+			// decoder and renderer share a tightly bounded CPU budget.
 			for(size_t i = 0;i < Streams.Size();i++)
 				Streams[i]->Process();
+			#ifdef __3DS__
+			StreamWake.wait_for(lock, std::chrono::milliseconds(20));
+			#else
 			StreamWake.wait_for(lock, std::chrono::milliseconds(100));
+			#endif
 		}
 	}
 }
+
+#ifdef __3DS__
+void OpenALSoundRenderer::BackgroundProc3DS(void *userdata)
+{
+	static_cast<OpenALSoundRenderer *>(userdata)->BackgroundProc();
+}
+#endif
 
 void OpenALSoundRenderer::AddStream(OpenALSoundStream *stream)
 {
@@ -1181,8 +1223,39 @@ void OpenALSoundRenderer::UnloadSound(SoundHandle sfx)
 
 SoundStream *OpenALSoundRenderer::CreateStream(SoundStreamCallback callback, int buffbytes, int flags, int samplerate, void *userdata)
 {
+	#ifdef __3DS__
+	if(StreamThread == nullptr)
+	{
+		// devkitARM's default pthread path creates std::thread workers on core 0
+		// at priority 0x3f (the lowest possible priority). That lets gameplay and
+		// software rendering starve the music refiller while OpenAL's SFX keep
+		// working. Run it beside the NDSP mixer on the app's reserved core 1; the
+		// mixer remains one priority level higher and therefore keeps its deadline.
+		constexpr size_t StreamThreadStackBytes = 64 * 1024;
+		s32 priority = 0x30;
+		if(R_FAILED(svcGetThreadPriority(&priority, CUR_THREAD_HANDLE)))
+			priority = 0x30;
+		priority = clamp<s32>(priority, 0x18, 0x3e);
+
+		StreamThread = threadCreate(BackgroundProc3DS, this,
+			StreamThreadStackBytes, priority, 1, false);
+		if(StreamThread == nullptr)
+		{
+			// A restrictive launcher may deny core 1. Keep the corrected priority
+			// on core 0 rather than falling back to the starvation-prone pthread.
+			StreamThread = threadCreate(BackgroundProc3DS, this,
+				StreamThreadStackBytes, priority, 0, false);
+		}
+		if(StreamThread == nullptr)
+		{
+			Printf(TEXTCOLOR_RED"Unable to create the 3DS music stream thread.\n");
+			return NULL;
+		}
+	}
+	#else
 	if(StreamThread.get_id() == std::thread::id())
 		StreamThread = std::thread(std::mem_fn(&OpenALSoundRenderer::BackgroundProc), this);
+	#endif
 	OpenALSoundStream *stream = new OpenALSoundStream(this);
 	if (!stream->Init(callback, buffbytes, flags, samplerate, userdata))
 	{
@@ -1558,7 +1631,7 @@ void OpenALSoundRenderer::SetInactive(SoundRenderer::EInactiveState state)
 	switch(state)
 	{
 		case SoundRenderer::INACTIVE_Active:
-			alListenerf(AL_GAIN, 1.0f);
+			alListenerf(AL_GAIN, PlatformOutputGain);
 			if(ALC.SOFT_pause_device)
 			{
 				alcDeviceResumeSOFT(Device);

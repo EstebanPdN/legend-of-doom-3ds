@@ -52,6 +52,7 @@ void S_StopMusic (bool force);
 // Stop and resume music, during game PAUSE.
 void S_PauseMusic ();
 void S_ResumeMusic ();
+bool S_IsMusicPaused ();
 
 //
 // Updates music & sounds

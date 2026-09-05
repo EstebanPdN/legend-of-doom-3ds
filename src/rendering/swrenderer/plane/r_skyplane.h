@@ -27,12 +27,19 @@
 
 namespace swrenderer
 {
+	#ifdef __3DS__
+	bool IsMap01ExteriorSkyLevel(RenderThread *thread);
+	#endif
+
 	class RenderSkyPlane
 	{
 	public:
 		RenderSkyPlane(RenderThread *thread);
 
 		void Render(VisiblePlane *pl);
+		#ifdef __3DS__
+		void FillPrimarySkyBackground();
+		#endif
 
 		RenderThread *Thread = nullptr;
 
@@ -40,6 +47,11 @@ namespace swrenderer
 		void DrawSky(VisiblePlane *pl);
 		void DrawSkyColumnStripe(int start_x, int y1, int y2, double scale, double texturemid, double yrepeat);
 		void DrawSkyColumn(int start_x, int y1, int y2);
+		#ifdef __3DS__
+		void FillTransparentSkyBackground();
+		unsigned int FillMap01DistanceFogColumn(int x, int y1, int y2);
+		void RepairIsolatedTopSkyColumns();
+		#endif
 
 		double		skytexturemid;
 		double		skyscale;

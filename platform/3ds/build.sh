@@ -9,7 +9,21 @@ BUILD_ROOT="${LOD3DS_BUILD_ROOT:-${ROOT}/build-3ds}"
 mkdir -p "${BUILD_ROOT}"
 BUILD_ROOT="$(cd "${BUILD_ROOT}" && pwd)"
 JOBS="${LOD3DS_JOBS:-4}"
-BUILD_PROFILE="${LOD3DS_BUILD_PROFILE:-release}"
+# Physical hardware is the public default. The legacy GPU path remains
+# available only through an explicit LOD3DS_BUILD_PROFILE=release request.
+BUILD_PROFILE="${LOD3DS_BUILD_PROFILE:-hardware-safe}"
+if (( $# > 1 )); then
+  printf 'Usage: %s [build-profile]\n' "$0" >&2
+  exit 2
+fi
+if (( $# == 1 )); then
+  BUILD_PROFILE="$1"
+fi
+SAFE_SOFTWARE=OFF
+SAFE_SOFTWARE_SILENT=OFF
+HYBRID_PERFORMANCE=OFF
+GAME_NO_OPENAL=OFF
+SDL_AUDIO=ON
 DEPS_ROOT="${BUILD_ROOT}/_deps"
 HOST_ZMUSIC_BUILD="${BUILD_ROOT}/host-zmusic"
 HOST_GZDOOM_BUILD="${BUILD_ROOT}/host-gzdoom"
@@ -160,9 +174,39 @@ case "${BUILD_PROFILE}" in
     NOVAGL_DRAW_DIAGNOSTICS="${NOVAGL_DRAW_DIAGNOSTICS:-0}"
     NOVAGL_TEXTURE_DIAGNOSTICS="${NOVAGL_TEXTURE_DIAGNOSTICS:-0}"
     ;;
+  hardware-safe)
+    # Physical-hardware baseline: GZDoom renders at 320x200 on the CPU and
+    # SDL/libctru presents it to the 400x240 LCD. Audio uses the single pinned
+    # OpenAL Soft/NDSP path; SDL audio stays out to avoid duplicate DSP owners.
+    HARDWARE_DIAGNOSTIC=OFF
+    HARDWARE_DIAGNOSTIC_SILENT=OFF
+    SAFE_SOFTWARE=ON
+    SAFE_SOFTWARE_SILENT=OFF
+    GAME_NO_OPENAL=OFF
+    SDL_AUDIO=OFF
+    NOVAGL_NO_DEBUG=ON
+    NOVAGL_DRAW_DIAGNOSTICS=0
+    NOVAGL_TEXTURE_DIAGNOSTICS=0
+    ;;
+  hardware-hybrid)
+    # Stable GZDoom software scene renderer, split across CPU0/core2. Gameplay
+    # defaults to 320x192 and can select 200x120 or 400x240; one bilinear
+    # textured quad presents it while menus use 400x240. NovaGL never receives
+    # world geometry.
+    HARDWARE_DIAGNOSTIC=OFF
+    HARDWARE_DIAGNOSTIC_SILENT=OFF
+    SAFE_SOFTWARE=ON
+    SAFE_SOFTWARE_SILENT=OFF
+    HYBRID_PERFORMANCE=ON
+    GAME_NO_OPENAL=OFF
+    SDL_AUDIO=OFF
+    NOVAGL_NO_DEBUG=ON
+    NOVAGL_DRAW_DIAGNOSTICS=0
+    NOVAGL_TEXTURE_DIAGNOSTICS=0
+    ;;
   *)
     printf 'Unknown LOD3DS_BUILD_PROFILE: %s\n' "${BUILD_PROFILE}" >&2
-    printf 'Expected release, hardware-candidate or hardware-diagnostic.\n' >&2
+    printf 'Expected release, hardware-candidate, hardware-diagnostic, hardware-safe or hardware-hybrid.\n' >&2
     exit 1
     ;;
 esac
@@ -182,8 +226,10 @@ test -x "${DEVKITARM}/bin/arm-none-eabi-gcc"
 mkdir -p "${BUILD_ROOT}" "${DIST}"
 
 LOD3DS_BUILD_ROOT="${BUILD_ROOT}" "${ROOT}/platform/3ds/fetch-dependencies.sh"
-LOD3DS_BUILD_ROOT="${BUILD_ROOT}" LOD3DS_JOBS="${JOBS}" \
-  "${ROOT}/platform/3ds/build-openal-soft.sh"
+if [[ "${GAME_NO_OPENAL}" != "ON" ]]; then
+  LOD3DS_BUILD_ROOT="${BUILD_ROOT}" LOD3DS_JOBS="${JOBS}" \
+    "${ROOT}/platform/3ds/build-openal-soft.sh"
+fi
 
 SDL2_SOURCE="${DEPS_ROOT}/SDL2"
 ZMUSIC_SOURCE="${DEPS_ROOT}/ZMusic"
@@ -249,6 +295,7 @@ cmake -S "${SDL2_SOURCE}" -B "${SDL2_BUILD}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DSDL_SHARED=OFF \
   -DSDL_STATIC=ON \
+  -DSDL_AUDIO="${SDL_AUDIO}" \
   -DSDL_TEST=OFF
 cmake --build "${SDL2_BUILD}" --parallel "${JOBS}"
 cmake --install "${SDL2_BUILD}"
@@ -274,6 +321,9 @@ cmake -S "${NOVAGL_SOURCE}" -B "${NOVAGL_BUILD}" \
   -DNOVAGL_DIAG_DRAW_LIMIT="${NOVAGL_DRAW_DIAGNOSTICS}" \
   -DNOVAGL_DIAG_DRAW_START="${NOVAGL_DRAW_DIAGNOSTICS_START:-0}" \
   -DNOVAGL_DIAG_DRAW_CUTOFF="${NOVAGL_DRAW_CUTOFF:--1}" \
+  -DNOVAGL_DIAG_SEGMENT_START="${NOVAGL_DIAG_SEGMENT_START:-0}" \
+  -DNOVAGL_DIAG_SEGMENT_END="${NOVAGL_DIAG_SEGMENT_END:-0}" \
+  -DNOVAGL_DIAG_SEGMENT_STRIDE="${NOVAGL_DIAG_SEGMENT_STRIDE:-0}" \
   -DNOVAGL_DIAG_TEX_LIMIT="${NOVAGL_TEXTURE_DIAGNOSTICS}" \
   -DNOVAGL_DIAG_TEX_DUMP_RAW=OFF \
   -DNOVAGL_HARDWARE_STAGE_LOG="$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf ON || printf OFF)" \
@@ -290,7 +340,7 @@ cmake -S "${ROOT}" -B "${GAME_BUILD}" \
   -DIMPORT_EXECUTABLES="${HOST_IMPORTS}" \
   -DHAVE_VULKAN=OFF \
   -DNO_GTK=ON \
-  -DNO_OPENAL=OFF \
+  -DNO_OPENAL="${GAME_NO_OPENAL}" \
   -DDYN_OPENAL=OFF \
   -DOPENAL_INCLUDE_DIR="${OPENAL_PREFIX}/include/AL" \
   -DOPENAL_LIBRARY="${OPENAL_PREFIX}/lib/libopenal.a" \
@@ -298,8 +348,12 @@ cmake -S "${ROOT}" -B "${GAME_BUILD}" \
   -DNO_STRIP=ON \
   -DLOD3DS_BUILD_PROFILE="${BUILD_PROFILE}" \
   -DLOD3DS_BUILD_ID="${BUILD_ID}" \
+  -DLOD3DS_PORT_VERSION="${VERSION}" \
   -DLOD3DS_HARDWARE_DIAGNOSTIC="${HARDWARE_DIAGNOSTIC}" \
   -DLOD3DS_HARDWARE_DIAGNOSTIC_SILENT="${HARDWARE_DIAGNOSTIC_SILENT}" \
+  -DLOD3DS_SAFE_SOFTWARE="${SAFE_SOFTWARE}" \
+  -DLOD3DS_SAFE_SOFTWARE_SILENT="${SAFE_SOFTWARE_SILENT}" \
+  -DLOD3DS_HYBRID_PERFORMANCE="${HYBRID_PERFORMANCE}" \
   -DNOVAGL_INCLUDE_DIR="${NOVAGL_PREFIX}/include" \
   -DNOVAGL_LIBRARY="${NOVAGL_PREFIX}/lib/libNovaGL.a" \
   -DZMUSIC_INCLUDE_DIR="${ZMUSIC_SOURCE}/include" \
@@ -308,6 +362,59 @@ cmake -S "${ROOT}" -B "${GAME_BUILD}" \
   "-DSDL2_LIBRARY=${SDL2_PREFIX}/lib/libSDL2main.a;${SDL2_PREFIX}/lib/libSDL2.a;ctru;m"
 cmake --build "${GAME_BUILD}" \
   --target zdoom gzdoom_pk3 game_support_pk3 --parallel "${JOBS}"
+
+if [[ "${BUILD_PROFILE}" == "hardware-safe" ]]; then
+  SAFE_SYMBOLS="$("${DEVKITARM}/bin/arm-none-eabi-nm" -C "${GAME_BUILD}/gzdoom.elf")"
+  if grep -Eq ' N3DSAUDIO_Init$' <<<"${SAFE_SYMBOLS}"; then
+    printf 'Hardware-safe ELF unexpectedly contains the SDL N3DS audio backend.\n' >&2
+    exit 1
+  fi
+  for required_symbol in alcOpenDevice ndspInit __system_allocateHeaps; do
+    if ! grep -Eq " [TW] ${required_symbol}$" <<<"${SAFE_SYMBOLS}"; then
+      printf 'Hardware-safe ELF is missing required strong symbol: %s\n' "${required_symbol}" >&2
+      exit 1
+    fi
+  done
+  for forbidden_symbol in I_PolyPresentDirect3DS nova_init_ex novaSwapBuffers novaSetSwapInterval; do
+    if grep -q "${forbidden_symbol}" <<<"${SAFE_SYMBOLS}"; then
+      printf 'Hardware-safe ELF contains forbidden experimental entry point: %s\n' \
+        "${forbidden_symbol}" >&2
+      exit 1
+    fi
+  done
+  OPENAL_SYMBOLS="$("${DEVKITARM}/bin/arm-none-eabi-nm" -A "${OPENAL_PREFIX}/lib/libopenal.a")"
+  if ! grep -q 'svcStoreProcessDataCache' <<<"${OPENAL_SYMBOLS}"; then
+    printf 'Hardware-safe OpenAL archive is missing the low-jitter cache clean.\n' >&2
+    exit 1
+  fi
+  if ! grep -q 'DSP_FlushDataCache' <<<"${OPENAL_SYMBOLS}"; then
+    printf 'Hardware-safe OpenAL archive is missing the compatibility cache-clean fallback.\n' >&2
+    exit 1
+  fi
+elif [[ "${BUILD_PROFILE}" == "hardware-hybrid" ]]; then
+  HYBRID_SYMBOLS="$("${DEVKITARM}/bin/arm-none-eabi-nm" -C "${GAME_BUILD}/gzdoom.elf")"
+  for required_symbol in I_PolyPresentDirect3DS C3D_SyncDisplayTransfer C2D_DrawImage threadCreate alcOpenDevice ndspInit; do
+    if ! grep -q "${required_symbol}" <<<"${HYBRID_SYMBOLS}"; then
+      printf 'Hardware-hybrid ELF is missing required symbol: %s\n' "${required_symbol}" >&2
+      exit 1
+    fi
+  done
+  for forbidden_symbol in nova_init_ex novaSwapBuffers novaSetSwapInterval; do
+    if grep -q "${forbidden_symbol}" <<<"${HYBRID_SYMBOLS}"; then
+      printf 'Hardware-hybrid ELF unexpectedly contains NovaGL world entry point: %s\n' \
+        "${forbidden_symbol}" >&2
+      exit 1
+    fi
+  done
+  OPENAL_SYMBOLS="$("${DEVKITARM}/bin/arm-none-eabi-nm" -A "${OPENAL_PREFIX}/lib/libopenal.a")"
+  for required_symbol in svcStoreProcessDataCache DSP_FlushDataCache; do
+    if ! grep -q "${required_symbol}" <<<"${OPENAL_SYMBOLS}"; then
+      printf 'Hardware-hybrid OpenAL archive is missing audio-stability symbol: %s\n' \
+        "${required_symbol}" >&2
+      exit 1
+    fi
+  done
+fi
 
 THREEDSXTOOL="${DEVKITPRO}/tools/bin/3dsxtool"
 SMDHTOOL="${DEVKITPRO}/tools/bin/smdhtool"
@@ -324,7 +431,14 @@ THREEDSX="${DIST}/${ARTIFACT_STEM}.3dsx"
 
 MOD_PK3="${BUILD_ROOT}/LegendOfDoom.pk3"
 cmake -E rm -f "${MOD_PK3}"
-"${HOST_GZDOOM_BUILD}/tools/zipdir/zipdir" -df "${MOD_PK3}" "${MOD_SOURCE}"
+MOD_PACKAGE_SOURCE="${BUILD_ROOT}/legend-of-doom-package"
+cmake -E remove_directory "${MOD_PACKAGE_SOURCE}"
+cmake -E copy_directory "${MOD_SOURCE}" "${MOD_PACKAGE_SOURCE}"
+cmake -E copy "${ROOT}/platform/3ds/assets/menu-top.png" \
+  "${MOD_PACKAGE_SOURCE}/graphics/TITLEPIC.png"
+cmake -E copy "${ROOT}/platform/3ds/assets/menu-story.png" \
+  "${MOD_PACKAGE_SOURCE}/graphics/ZSTORY.png"
+"${HOST_GZDOOM_BUILD}/tools/zipdir/zipdir" -df "${MOD_PK3}" "${MOD_PACKAGE_SOURCE}"
 
 cmake -E remove_directory "${STAGE}"
 SD_APP="${STAGE}/3ds/legend-of-doom"
@@ -356,6 +470,7 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
   printf 'Legend of Doom 3DS build manifest\n'
   printf 'format_version=2\n'
   printf 'build_id=%s\n' "${BUILD_ID}"
+  printf 'port_version=%s\n' "${VERSION}"
   printf 'profile=%s\n' "${BUILD_PROFILE}"
   printf 'artifact_stem=%s\n' "${ARTIFACT_STEM}"
   printf 'hardware_target=New Nintendo 3DS\n'
@@ -377,18 +492,53 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'freedoom2_wad_sha256=%s\n' "$(sha256_file "${FREEDOOM_SOURCE}/freedoom2.wad")"
   printf 'compiler=%s\n' "$("${DEVKITARM}/bin/arm-none-eabi-g++" --version | head -n 1)"
   printf 'cmake=%s\n' "$(cmake --version | head -n 1)"
-  printf '3dsx_conventional_heap_bytes=%u\n' "$((64 * 1024 * 1024))"
-	printf '3dsx_linear_heap_bytes=%u\n' "$((32 * 1024 * 1024))"
-	printf 'cia_conventional_heap=automatic\n'
+	printf 'runtime_renderer=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf softpoly-core0-core2-pica200-presenter || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf softpoly-sdl-linear-framebuffer || printf novagl-citro3d-pica200))"
+	printf 'internal_resolution=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf 200x120-320x192-400x240-touch-selectable-gameplay-plus-400x240-native-menus || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf 320x200-game-400x240-special-ui || printf 400x240))"
+	printf 'lcd_resolution=400x240\n'
+	printf '3dsx_conventional_heap_bytes=%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf %u "$((92 * 1024 * 1024))" || printf %u "$((64 * 1024 * 1024))")"
+	printf '3dsx_linear_heap_bytes=%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf %u "$((4 * 1024 * 1024))" || printf %u "$((32 * 1024 * 1024))")"
+	printf 'cia_conventional_heap=runtime-capped-to-92MiB-with-4MiB-address-guard\n'
+	printf 'cia_system_mode_fallback=64MB\n'
 	printf 'cia_system_mode_ext=124MB\n'
-	printf 'cia_linear_heap_bytes=%u\n' "$((32 * 1024 * 1024))"
+	printf 'cia_linear_heap=runtime-remainder-min-%u-max-%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf %u "$((4 * 1024 * 1024))" || printf %u "$((32 * 1024 * 1024))")" "$((32 * 1024 * 1024))"
+	printf 'softpoly_startup_reserve_bytes=%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf %u "$((2 * 1024 * 1024))" || printf 0)"
+	printf 'softpoly_flat_vertex_capacity=%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf 65536 || printf 100000)"
+	printf 'apt_exit_supervisor=home-or-close-after-8000ms\n'
+	printf 'sdl_scanout_buffers=linear-cpu-writable-rgba8\n'
+	printf 'novagl_runtime=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf linked-but-not-initialized || printf active)"
 	printf 'novagl_frame_slots=1\n'
+	printf 'compiler_optimization=O2-release-toolchain-default\n'
+	printf 'render_cap_fps=always-uncapped-display-synchronized-at-60hz\n'
+	printf 'drawer_threads=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf 2-explicit-libctru-core0-core2 || printf 1)"
+	printf 'scene_threads=1\n'
+	printf 'game_tick_hz=35\n'
+	printf 'texture_sort=enabled\n'
+	printf 'dynamic_lights=disabled\n'
+	printf 'actor_sprite_shadows=disabled\n'
+	printf 'particles_max=1024\n'
+	printf 'particle_style=0\n'
+	printf 'portal_recursions=1\n'
+	printf 'mirror_recursions=1\n'
 	printf 'gles_world_vbo_pipeline=1\n'
-	printf 'gpu_completion_boundary=c3d-queue-wait\n'
+	printf 'gpu_completion_boundary=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf citro3d-frame-retirement || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf not-applicable || printf pinned-citro3d-render-queue-wait))"
+	printf 'novagl_frame_end=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf citro3d-full-linear-fallback)"
+	printf 'novagl_cpu_gpu_cache=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf explicit-ranges-plus-full-frame-fallback)"
+	printf 'cpu_to_device_cache_clean=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf gsp-service-v0.6-contract || printf svc-store-with-service-fallback)"
+	printf 'audio_core1_policy=v0.6-preserve-existing-or-raise-minimum-to-30-percent\n'
+	printf 'audio_core1_minimum_app_share_percent=30\n'
+	printf 'novagl_sync_helpers=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf preflush-hidden-splits)"
+	printf 'novagl_transfer_staging=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf unique-until-queue-fence)"
+	printf 'novagl_mvp=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf combined-cache-on-dirty-transform)"
 	printf 'gles_world_vbo_upload=shadowed-ranges\n'
-	printf 'gzdoom_bsp_worker=same-core-disabled\n'
-	printf 'early_loading_screen=disabled-hardware-vram-safety\n'
-	printf 'initial_scanout=owned-exclusively-by-citro3d\n'
+	printf 'gzdoom_bsp_worker=disabled-on-3ds-race-audited\n'
+	printf 'software_presenter=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf citro2d-bounded-single-quad-with-sdl-init-fallback || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf sdl-software-v0.6-contract || printf inactive))"
+	printf 'software_presenter_sampling=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf pica200-bilinear || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf sdl-16.16-nearest || printf inactive))"
+	printf 'software_presenter_color=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf bgra-to-rgb-tev-g-b-alpha-before-draw || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf sdl-owned || printf inactive))"
+	printf 'software_presenter_cache_cleans=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf gsp-active-upload-rows-plus-bounded-citro2d-vertex-range || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf owned-by-sdl-libctru || printf inactive))"
+	printf 'hardware_safe_gpu_entrypoints=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf not-applicable-hybrid-presenter-only || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf link-time-rejected || printf not-applicable))"
+	printf 'hardware_safe_first_present_breadcrumbs=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf first-three-frames || printf inactive)"
+	printf 'early_loading_screen=sdl-owned-rgba8-triforce-animation-96x96-33frames\n'
+	printf 'initial_scanout=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf owned-by-sdl-libctru || printf owned-exclusively-by-citro3d)"
 	printf 'novagl_near_clip=selective-fflatvertex-cpu\n'
 	printf 'novagl_near_clip_layouts=20-byte,24-byte\n'
 	printf 'novagl_eye_clip_topologies=triangles,indexed-triangles,fans,strips,quads\n'
@@ -410,17 +560,81 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'novagl_index_diagnostics=resolved-ebo-indices\n'
 	printf 'novagl_command_buffer_bytes=%u\n' "$((3 * 1024 * 1024))"
 	printf 'novagl_command_segment_limit_bytes=%u\n' "$((0x40000 * 3 / 4))"
+	printf 'novagl_first_frame_segment_limit_bytes=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf %u "$((0x40000 * 3 / 4))" || printf inactive)"
+	printf 'novagl_float_safety=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf ieee754-bitwise-fast-math-safe)"
+	printf 'novagl_immediate_float_safety=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf drop-nonfinite-batch)"
+	printf 'novagl_tev_color_safety=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf validate-clamp-before-u32)"
+	printf 'novagl_vertex_range_safety=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf mandatory-vbo-ebo-max-index)"
+	printf 'novagl_raster_state_safety=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf empty-viewport-scissor-discard)"
+	printf 'novagl_internal_draw_success=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf bufinfo-confirmed)"
+	printf 'novagl_scanout_transfer=%s\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf inactive || printf rgba8-to-rgba8)"
 	printf 'novagl_vertex_ring_bytes_per_slot=%u\n' "$((2 * 1024 * 1024))"
 	printf 'novagl_index_ring_bytes_per_slot=%u\n' "$((512 * 1024))"
 	printf 'novagl_texture_staging_bytes=%u\n' "$((512 * 1024))"
 	printf 'novagl_per_draw_validation=%s\n' "$([[ "${NOVAGL_NO_DEBUG}" == "ON" ]] && printf compiled-out || printf enabled)"
 	printf 'novagl_draw_trace_limit=%s\n' "${NOVAGL_DRAW_DIAGNOSTICS}"
+	printf 'novagl_draw_cutoff=%s\n' "${NOVAGL_DRAW_CUTOFF:--1}"
+	printf 'novagl_segment_probe=%s-%s/stride-%s\n' "${NOVAGL_DIAG_SEGMENT_START:-0}" "${NOVAGL_DIAG_SEGMENT_END:-0}" "${NOVAGL_DIAG_SEGMENT_STRIDE:-0}"
 	printf 'novagl_texture_trace_limit=%s\n' "${NOVAGL_TEXTURE_DIAGNOSTICS}"
 	printf 'novagl_hardware_stage_log=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf first-three-swaps || printf disabled)"
-	printf 'novagl_hardware_watchdog=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf first-frame-boundary-2s-timeout || printf disabled)"
+	printf 'novagl_hardware_watchdog=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf first-frame-progress-5s-stall-timeout || printf disabled)"
+	printf 'novagl_stall_command_dump=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf gpu-command-segment.bin || printf disabled)"
 	printf 'gzdoom_render_traces=compiled-out\n'
 	printf 'frame_telemetry=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC}" == "ON" ]] && printf ram-buffered-csv-720 || printf compiled-out)"
-	printf 'audio=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC_SILENT}" == "ON" ]] && printf disabled || printf enabled)"
+	printf 'audio=%s\n' "$([[ "${HARDWARE_DIAGNOSTIC_SILENT}" == "ON" || "${SAFE_SOFTWARE_SILENT}" == "ON" ]] && printf disabled || printf enabled)"
+	printf 'audio_backend=%s\n' "$([[ "${GAME_NO_OPENAL}" == "ON" && "${SDL_AUDIO}" == "OFF" ]] && printf compiled-out-no-ndsp || printf openal-ndsp)"
+	printf 'audio_cache_clean=process-svc-clean-with-dsp-service-fallback\n'
+	printf 'audio_ndsp_queue=8-wave-buffers\n'
+	printf 'audio_music_stream=core1-priority-inherited-20ms-refill-8-pcm-buffers\n'
+	printf 'audio_gain=sfx-listener-neutral-1x-music-only-3x-plus-200-percent\n'
+	printf 'dump_audio=entire-openal-device-paused-with-music-state-restored\n'
+	printf 'diagnostic_dump_default=quick-no-memory-payload\n'
+	printf 'diagnostic_dump_full=L+R+X-with-memory-payload\n'
+	printf 'diagnostic_full_memory=single-atomic-memory-bin-512KiB-no-device-hash\n'
+	printf 'diagnostic_dump_clean=L+R+Y-delete-all-dump-files\n'
+	printf 'diagnostic_space_guard=measured-payload-plus-8MiB-reserve\n'
+	printf 'bottom_interface=gameplay-map-items-native-320x240\n'
+	printf 'bottom_interface_default=map-left-items-right-compact-pixel-labels-blue-frame-and-selection-underline\n'
+	printf 'bottom_automap=touch-toggle-12-or-32-world-units-per-pixel-explored-floor-textures-plus-toggleable-semantic-collision-lines-plus-exterior-only-player-arrow\n'
+	printf 'bottom_items=live-4x4-icons-no-empty-cells-plus-white-rounded-square-selection-and-direct-touch\n'
+	printf 'bottom_status=adaptive-three-to-four-row-hearts-46x55-live-mugshot-lower-132-percent-item-counters\n'
+	printf 'bottom_developer_overlay=v0.14-select-toggle-performance-memory-status-plus-quick-full-clean-controls\n'
+	printf 'menu_top=custom-native-400x240-titlepic-byte-exact-source\n'
+	printf 'menu_top_filter=source-native-400x240-no-resample\n'
+	printf 'menu_top_source_sha256=%s\n' "$(sha256_file "${ROOT}/platform/3ds/assets/menu-top.png")"
+	printf 'menu_runtime_canvas=title-lore-intermission-all-menus-and-console-native-400x240-live-gameplay-and-hud-%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf touch-selectable-200x120-320x192-400x240 || printf fixed-320x200)"
+	printf 'menu_story=custom-native-400x240-credit-page-byte-exact-source\n'
+	printf 'menu_story_source_sha256=%s\n' "$(sha256_file "${ROOT}/platform/3ds/assets/menu-story.png")"
+	printf 'menu_bottom=custom-native-320x240-before-level\n'
+	printf 'menu_bottom_story=black-on-credit-page\n'
+	printf 'menu_bottom_dim=match-title-menu-72-percent-black\n'
+	printf 'menu_story_filter=source-native-400x240-no-resample\n'
+	printf 'pause_menu=stable-uppercase-engine-actions-shifted-right-10px-with-selector-lowered-5px-and-touch\n'
+	printf 'pause_menu_logo=removed-live-scene-only\n'
+	printf 'pause_menu_dim=engine-matched-translucent-gameplay-background\n'
+	printf 'options_menu=volume-plus-display-plus-controller-cstick-touch-sprint-controls-reference-plus-developer\n'
+	printf 'controls=R-attack-L-altattack-dpad-weapons-ZL-ZR-inventory-X-full-health-sprint\n'
+	printf 'fps_counter=final-canvas-top-right-resolution-aware-compact-glyphs-fps-plus-smoothed-frame-milliseconds\n'
+	printf 'aim_crosshair=final-canvas-provided-png-70-percent-size-plus-6px-lower-opt-in-all-render-scales\n'
+	printf 'upper_automap=full-canvas-64-world-units-per-pixel-textured-overview-distinct-from-bottom-map\n'
+	printf 'option_alignment=split-labels-left-values-right-plus-compact-sliders-without-numeric-readouts\n'
+	printf 'controls_reference=no-caption-two-column-input-action-newsmallfont-layout-raised-10px\n'
+	printf 'save_load=top-only-title-readable-pixel-text-independent-black-bottom-white-section-frame-blue-row-selection-touch-list-top-preview-raised-8px-transparent-matched-width-info\n'
+	printf 'save_keyboard=native-3ds-qwerty-confirm-to-save-with-preserved-double-buffered-top-image\n'
+	printf 'hud_messages=acs-dialogue-preserved-when-top-hud-disabled-plus-black-shadowed-pickup-notices\n'
+	printf 'bottom_automap_level_reset=map-name-aware-dungeon-and-interior-recenter\n'
+	printf 'player_name=Link-forced-on-3ds-launch\n'
+	printf 'wipe_default=Burn-forced-on-3ds-launch\n'
+	printf 'bottom_diagnostics=button-chords-retained-fullscreen-progress-only\n'
+	printf 'dump_progress=quick-full-clean-fullscreen\n'
+	printf 'dump_screen_capture=one-second-delay-ram-snapshot-before-immediate-progress-ui\n'
+	printf 'softpoly_sky=map01-skyww-cloud-texture-no-remote-skyviewpoint-geometry\n'
+	printf 'map01_draw_distance=2048-units-line-sprite-cull-with-full-bsp-plane-traversal\n'
+	printf 'map01_distance_fog=explicit-smoothstep-1536-to-2048-units-black-cave-sectors-excluded\n'
+	printf 'death_filter=transparent-dark-red-alpha-0.16\n'
+	printf 'ndsp_lifetime=backend-owned-worker-joined-before-device-destruction\n'
+	printf 'software_frame_clear=full-bgra-canvas-four-bytes-per-pixel-each-frame\n'
+	printf 'top_scanout=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf 320x192-game-pica-bilinear-plus-400x240-native-menus || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf 320x200-game-sdl-nearest-plus-400x240-menu-sdl || printf novagl-citro3d-400x240))"
   printf '3dsx_sha256=%s\n' "$(sha256_file "${THREEDSX}")"
   printf 'elf_sha256=%s\n' "$(sha256_file "${GAME_BUILD}/gzdoom.elf")"
   printf 'map_sha256=%s\n' "$(sha256_file "${GAME_BUILD}/gzdoom.map")"

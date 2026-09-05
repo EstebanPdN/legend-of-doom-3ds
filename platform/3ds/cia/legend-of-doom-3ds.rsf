@@ -28,6 +28,9 @@ AccessControlInfo:
     - DirectSdmc
     - DirectSdmcWrite
   MemoryType: Application
+  # Keep a bootable legacy fallback. On New 3DS, SystemModeExt below takes
+  # precedence; the runtime heap allocator handles either resource limit and
+  # never requests more than libctru's 96 MiB virtual heap window.
   SystemMode: 64MB
   IdealProcessor: 0
   AffinityMask: 1
@@ -43,9 +46,8 @@ AccessControlInfo:
   CanShareDeviceMemory: true
   RunnableOnSleep: false
   SpecialMemoryArrange: true
-  # This port is intentionally New 3DS-only. The former Legacy setting kept
-  # the CIA inside the Old 3DS application-memory ceiling even on New 3DS,
-  # starving GZDoom and NovaGL during renderer initialization.
+  # This port is intentionally New 3DS-only. Prefer the full New 3DS arena;
+  # SystemMode above remains a bootable fallback if a launcher ignores this.
   SystemModeExt: 124MB
   CpuSpeed: 804MHz
   EnableL2Cache: true
@@ -100,6 +102,7 @@ AccessControlInfo:
     GetResourceLimitCurrentValues: 58
     Break: 60
     OutputDebugString: 61
+    StoreProcessDataCache: 83
     FlushProcessDataCache: 84
   ServiceAccessControl:
     - APT:U

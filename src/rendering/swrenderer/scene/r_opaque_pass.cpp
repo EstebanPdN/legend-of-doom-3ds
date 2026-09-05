@@ -54,6 +54,7 @@
 #include "swrenderer/scene/r_light.h"
 #include "swrenderer/viewport/r_viewport.h"
 #include "swrenderer/r_renderthread.h"
+#include "swrenderer/r_swcolormaps.h"
 #include "r_3dfloors.h"
 #include "r_portal.h"
 #include "a_sharedglobal.h"
@@ -71,6 +72,10 @@
 #include "po_man.h"
 #include "r_data/colormaps.h"
 #include "g_levellocals.h"
+
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 EXTERN_CVAR(Bool, r_fullbrightignoresectorcolor);
 EXTERN_CVAR(Bool, r_drawvoxels);
@@ -121,6 +126,47 @@ CUSTOM_CVAR(Float, r_model_distance_cull, 1024, 0/*CVAR_ARCHIVE | CVAR_GLOBALCON
 	{
 		model_distance_cull = 1e16;
 	}
+}
+
+namespace
+{
+	bool LineIsOutsideDistance(const DVector2 &viewpoint, const DVector2 &start,
+		const DVector2 &end, double distanceSquared)
+	{
+		const DVector2 delta = end - start;
+		const double lengthSquared = delta.LengthSquared();
+		double fraction = lengthSquared > 0.0 ?
+			((viewpoint - start) | delta) / lengthSquared : 0.0;
+		fraction = clamp(fraction, 0.0, 1.0);
+		return (start + delta * fraction - viewpoint).LengthSquared() >
+			distanceSquared;
+	}
+
+	#ifdef __3DS__
+	bool Map01RootDistanceCullActive(swrenderer::RenderThread *thread)
+	{
+		auto viewport = thread != nullptr ? thread->Viewport.get() : nullptr;
+		auto level = viewport != nullptr ? viewport->Level() : nullptr;
+		auto sector = viewport != nullptr ? viewport->viewpoint.sector : nullptr;
+		return level != nullptr && level->MapName.CompareNoCase("MAP01") == 0 &&
+			sector != nullptr &&
+			(sector->GetTexture(sector_t::ceiling) == skyflatnum ||
+				sector->ValidatePortal(sector_t::ceiling) != nullptr) &&
+			line_distance_cull < 1e15 && thread->Portal->CurrentPortalUniq == 0 &&
+			thread->Clip3D->CurrentSkybox == 0;
+	}
+
+	bool Map01ExteriorDistanceCullCandidate(const sector_t *sector)
+	{
+		return Is3DSMap01ExteriorSector(sector);
+	}
+
+	#else
+	bool Map01ExteriorDistanceCullCandidate(const sector_t *)
+	{
+		return false;
+	}
+	#endif
 }
 
 namespace swrenderer
@@ -519,7 +565,12 @@ namespace swrenderer
 		sector_t *frontsector = FakeFlat(sub->sector, &tempsec, &floorlightlevel, &ceilinglightlevel, nullptr, 0, 0, 0, 0);
 
 		// [RH] set foggy flag
-		bool foggy = Level->fadeto || frontsector->Colormap.FadeColor || (Level->flags & LEVEL_HASFADETABLE);
+		bool foggy = Level->fadeto || frontsector->Colormap.FadeColor ||
+			(Level->flags & LEVEL_HASFADETABLE)
+			#ifdef __3DS__
+			|| Is3DSMap01ExteriorSector(frontsector)
+			#endif
+			;
 
 		// kg3D - fake lights
 		CameraLight *cameraLight = CameraLight::Instance();
@@ -540,6 +591,9 @@ namespace swrenderer
 		{
 			basecolormap = (r_fullbrightignoresectorcolor && cameraLight->FixedLightLevel() >= 0) ? &FullNormalLight : GetColorTable(frontsector->Colormap, frontsector->SpecialColors[sector_t::ceiling]);
 		}
+		#ifdef __3DS__
+		basecolormap = Apply3DSMap01DistanceFog(frontsector, basecolormap);
+		#endif
 
 		FSectorPortal *portal = frontsector->ValidatePortal(sector_t::ceiling);
 
@@ -581,6 +635,9 @@ namespace swrenderer
 		{
 			basecolormap = (r_fullbrightignoresectorcolor && cameraLight->FixedLightLevel() >= 0) ? &FullNormalLight : GetColorTable(frontsector->Colormap, frontsector->SpecialColors[sector_t::floor]);
 		}
+		#ifdef __3DS__
+		basecolormap = Apply3DSMap01DistanceFog(frontsector, basecolormap);
+		#endif
 
 		portal = frontsector->ValidatePortal(sector_t::floor);
 
@@ -613,7 +670,13 @@ namespace swrenderer
 		// [RH] Handle sprite lighting like Duke 3D: If the ceiling is a sky, sprites are lit by
 		// it, otherwise they are lit by the floor.
 		auto nc = !!(frontsector->Level->flags3 & LEVEL3_NOCOLOREDSPRITELIGHTING);
-		AddSprites(sub->sector, frontsector->GetTexture(sector_t::ceiling) == skyflatnum ? ceilinglightlevel : floorlightlevel, FakeSide, foggy, GetSpriteColorTable(frontsector->Colormap, frontsector->SpecialColors[sector_t::sprites], nc));
+		auto spriteColormap = GetSpriteColorTable(frontsector->Colormap,
+			frontsector->SpecialColors[sector_t::sprites], nc);
+		#ifdef __3DS__
+		spriteColormap = Apply3DSMap01DistanceFog(frontsector, spriteColormap);
+		#endif
+		AddSprites(sub->sector, frontsector->GetTexture(sector_t::ceiling) == skyflatnum ?
+			ceilinglightlevel : floorlightlevel, FakeSide, foggy, spriteColormap);
 
 		// [RH] Add particles
 		if ((unsigned int)(sub->Index()) < Level->subsectors.Size())
@@ -631,10 +694,18 @@ namespace swrenderer
 		int count = sub->numlines;
 		while (count--)
 		{
-			double dist1 = (line->v1->fPos() - viewpointPos).LengthSquared();
-			double dist2 = (line->v2->fPos() - viewpointPos).LengthSquared();
-			if (dist1 > line_distance_cull && dist2 > line_distance_cull)
+			// Keep every subsector in the normal BSP traversal so its planes and
+			// occluders remain topologically complete. FarClipLine preserves the
+			// projected clip/visplane contribution of a distant segment without
+			// paying for its textured wall draw.
+			if (Map01RootDistanceCullActive(Thread) &&
+				Map01ExteriorDistanceCullCandidate(frontsector) &&
+				LineIsOutsideDistance(viewpointPos, line->v1->fPos(),
+				line->v2->fPos(), line_distance_cull))
 			{
+				#ifdef __3DS__
+				I_3DSRecordDrawDistanceLineCull();
+				#endif
 				FarClipLine farclip(Thread);
 				farclip.Render(line, InSubsector, floorplane, ceilingplane, Fake3DOpaque::Normal);
 			}
@@ -862,7 +933,9 @@ namespace swrenderer
 			// Decide which side the view point is on.
 			int side = R_PointOnSide(Thread->Viewport->viewpoint.Pos, bsp);
 
-			// Recursively divide front space (toward the viewer).
+			// Recursively divide front space (toward the viewer). A distance-only
+			// subtree rejection is not safe here: a child that looks remote in map
+			// space can still own the visplane or occluder covering near pixels.
 			RenderBSPNode(bsp->children[side]);
 
 			// Possibly divide back space (away from the viewer).
@@ -954,6 +1027,10 @@ namespace swrenderer
 						thinglightlevel = thing->Sector->GetTexture(sector_t::ceiling) == skyflatnum ? thing->Sector->GetCeilingLight() : thing->Sector->GetFloorLight();
 						auto nc = !!(thing->Level->flags3 & LEVEL3_NOCOLOREDSPRITELIGHTING);
 						thingColormap = GetSpriteColorTable(thing->Sector->Colormap, thing->Sector->SpecialColors[sector_t::sprites], nc);					
+						#ifdef __3DS__
+						thingColormap = Apply3DSMap01DistanceFog(thing->Sector,
+							thingColormap);
+						#endif
 					}
 
 					if ((sprite.renderflags & RF_SPRITETYPEMASK) == RF_WALLSPRITE)
@@ -1017,8 +1094,15 @@ namespace swrenderer
 			return false;
 
 		double distanceSquared = (thing->Pos() - Thread->Viewport->viewpoint.Pos).LengthSquared();
-		if (distanceSquared > sprite_distance_cull)
+		if (Map01RootDistanceCullActive(Thread) &&
+			Map01ExteriorDistanceCullCandidate(thing->Sector) &&
+			distanceSquared > sprite_distance_cull)
+		{
+			#ifdef __3DS__
+			I_3DSRecordDrawDistanceSpriteCull();
+			#endif
 			return false;
+		}
 
 		return true;
 	}

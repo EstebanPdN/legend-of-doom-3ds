@@ -698,14 +698,23 @@ void FGameConfigFile::DoKeySetup(const char *gamename)
 	}
 
 #ifdef __3DS__
-	// Early 3DS builds bound START to the raw `pause` command. That bypasses
-	// the menu system and leaves the renderer in the gameplay + pause-sign
-	// path. Migrate only that exact legacy default, preserving any deliberate
-	// custom binding while making START open the normal pause-capable menu.
-	if (Bindings.GetBinding(KEY_PAD_START).CompareNoCase("pause") == 0)
-	{
-		Bindings.SetBind(KEY_PAD_START, "menu_main");
-	}
+	// Legend of Doom uses one documented, non-remappable handheld layout.
+	// Apply it after loading old INI bindings so upgrades receive the new
+	// shoulder attacks, D-pad weapons and trigger inventory controls too.
+	Bindings.SetBind(KEY_PAD_A, "+use");
+	Bindings.SetBind(KEY_PAD_B, "");
+	Bindings.SetBind(KEY_PAD_X, "+speed");
+	Bindings.SetBind(KEY_PAD_Y, "+jump");
+	Bindings.SetBind(KEY_PAD_LSHOULDER, "+altattack");
+	Bindings.SetBind(KEY_PAD_RSHOULDER, "+attack");
+	Bindings.SetBind(KEY_PAD_DPAD_LEFT, "weapprev");
+	Bindings.SetBind(KEY_PAD_DPAD_RIGHT, "weapnext");
+	Bindings.SetBind(KEY_PAD_DPAD_DOWN, "invuse");
+	Bindings.SetBind(KEY_PAD_DPAD_UP, "togglemap");
+	Bindings.SetBind(KEY_PAD_LTRIGGER, "invprev");
+	Bindings.SetBind(KEY_PAD_RTRIGGER, "invnext");
+	Bindings.SetBind(KEY_PAD_START, "menu_main");
+	Bindings.SetBind(KEY_PAD_BACK, "menu_main");
 #endif
 	OkayToWrite = true;
 }

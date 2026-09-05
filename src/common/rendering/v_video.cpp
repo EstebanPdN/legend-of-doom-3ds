@@ -81,14 +81,22 @@ CUSTOM_CVAR(Int, gl_pipeline_depth, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_N
 
 CUSTOM_CVAR(Int, vid_maxfps, 200, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	if (self < GameTicRate && self != 0)
+	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+	// The hybrid New 3DS build always measures the renderer's real throughput.
+	// Do not let an archived desktop value or a console/menu change silently
+	// reintroduce a 30 FPS cap.
+	if (self != 0) self = 0;
+	#else
+	const int MinimumRenderFPS = GameTicRate;
+	if (self < MinimumRenderFPS && self != 0)
 	{
-		self = GameTicRate;
+		self = MinimumRenderFPS;
 	}
 	else if (self > 1000)
 	{
 		self = 1000;
 	}
+	#endif
 }
 
 CUSTOM_CVAR(Int, vid_preferbackend, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
