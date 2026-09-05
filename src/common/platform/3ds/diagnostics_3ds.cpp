@@ -1052,10 +1052,12 @@ FBottomMapTexture *BottomMapTexture(FTextureID texture)
 {
 	static std::array<FBottomMapTexture, 24> cache;
 	static unsigned replacement;
+	static FBottomMapTexture *last = nullptr;
 	if (!texture.isValid()) return nullptr;
+	if (last != nullptr && last->Texture == texture.GetIndex()) return last;
 	for (auto &entry : cache)
 	{
-		if (entry.Texture == texture.GetIndex()) return &entry;
+		if (entry.Texture == texture.GetIndex()) return last = &entry;
 	}
 	FGameTexture *gameTexture = TexMan.GetGameTexture(texture, true);
 	if (gameTexture == nullptr || gameTexture->GetTexture() == nullptr) return nullptr;
@@ -1073,7 +1075,7 @@ FBottomMapTexture *BottomMapTexture(FTextureID texture)
 		std::memcpy(entry.Pixels.data() + static_cast<size_t>(row) * entry.Pitch,
 			bitmap.GetPixels() + static_cast<size_t>(row) * bitmap.GetPitch(), entry.Pitch);
 	}
-	return &entry;
+	return last = &entry;
 }
 
 bool BottomPointInsideSubsector(const subsector_t *subsector, double x, double y)
@@ -1198,17 +1200,15 @@ void DrawBottomAutomap(unsigned char *framebuffer, int mapX = 31, int mapY = 38,
 			(worldY - centerY) / worldUnitsPerPixel + 0.5);
 	};
 
-	// The lower LCD map is a deliberately low-resolution terrain view. Sampling
-	// in 2x2 blocks preserves the original floor art while keeping BSP queries
-	// bounded on the New 3DS CPU.
+	// Sample terrain in 2x2 blocks to bound BSP queries.
 	for (int mapY = 0; mapY < MapHeight; mapY += 2)
 	{
+		const double worldY = centerY -
+			(mapY + 1 - MapHeight * 0.5) * worldUnitsPerPixel;
 		for (int mapX = 0; mapX < MapWidth; mapX += 2)
 		{
 			const double worldX = centerX +
 				(mapX + 1 - MapWidth * 0.5) * worldUnitsPerPixel;
-			const double worldY = centerY -
-				(mapY + 1 - MapHeight * 0.5) * worldUnitsPerPixel;
 			subsector_t *subsector = primaryLevel->PointInRenderSubsector(
 				DVector2(worldX, worldY));
 			if (subsector == nullptr || (subsector->flags & SSECMF_DRAWN) == 0 ||
@@ -2613,8 +2613,7 @@ void DrawBottomOverlay(bool force)
 	}
 	if (desired == EBottomPresentation::NativeMenu)
 	{
-		// PolyFrameBuffer routes the real engine menu after its 2D commands have
-		// completed. Do not overwrite that lower framebuffer from this refresher.
+		// PolyFrameBuffer owns native-menu presentation after worker completion.
 		BottomPresentation = EBottomPresentation::NativeMenu;
 		return;
 	}
@@ -4217,9 +4216,7 @@ void I_3DSComposeGameplayFrame(unsigned char *pixels, int pitchBytes,
 
 	if (automapactive)
 	{
-		// The upper automap is a distinct overview, not a duplicate of the lower
-		// minimap. It owns the complete 16:9 canvas and uses a much wider world
-		// scale so D-pad Up is useful for route planning.
+		// Use a wider terrain overview for the upper automap.
 		static std::array<unsigned char,
 			BottomScreenWidth * BottomScreenHeight * 4u> mapPixels{};
 		mapPixels.fill(0u);

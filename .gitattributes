@@ -26,4 +26,4 @@ language.*	text
 *.flac		binary
 *.dat		binary
 *.ico		binary
-*.patch		whitespace=-blank-at-eol
+*.patch		whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

@@ -20,9 +20,7 @@ bool I_3DSCleanDataCache(const void *address, size_t size)
 
 	const auto bytes = static_cast<u32>(size);
 #ifdef LOD3DS_SAFE_SOFTWARE
-	// The last physically verified CPU build (v0.6) used libctru's GSP service
-	// for every CPU-written scanout range. Keep the stable profile on that exact
-	// cache-maintenance contract; the direct SVC remains GPU-experimental only.
+	// Keep the hardware-safe GSP cache-maintenance path.
 	return R_SUCCEEDED(GSPGPU_FlushDataCache(address, bytes));
 #else
 	const auto addr = static_cast<u32>(reinterpret_cast<uintptr_t>(address));

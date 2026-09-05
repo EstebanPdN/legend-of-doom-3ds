@@ -104,9 +104,7 @@ void PolyFrameBuffer::InitializeState()
 	mRenderState.reset(new PolyRenderState());
 	#ifdef __3DS__
 	I_3DSStartupLog("softpoly-render-state-ready");
-	// Return the early 2 MiB reservation only after the small framebuffer and
-	// render-state objects exist. The next allocation is the reduced 1.25 MiB
-	// flat-vertex store, so allocator fragmentation cannot consume its hole.
+	// Release the contiguous reserve immediately before vertex allocation.
 	I_3DSReleaseRendererMemory();
 	I_3DSStartupLog("softpoly-reserve-released");
 	#endif
@@ -212,9 +210,7 @@ void PolyFrameBuffer::Update()
 		int h = mCanvas->GetHeight();
 		int pixelsize = 4;
 		#ifdef __3DS__
-		// All drawer workers must retire before native HUD pixels overwrite the
-		// final CPU canvas. This path works identically at 200x120, 320x192 and
-		// 400x240 instead of relying on resolution-sensitive 2D commands.
+		// Retire workers before composing the native HUD.
 		DrawerThreads::WaitForWorkers();
 		I_3DSComposeGameplayFrame(
 			static_cast<unsigned char *>(mCanvas->GetPixels()),
@@ -223,9 +219,6 @@ void PolyFrameBuffer::Update()
 			mNativeMenuBaseWidth == w && mNativeMenuBaseHeight == h &&
 			mNativeMenuBasePitch == mCanvas->GetPitch() * pixelsize)
 		{
-			// The final menu commands may have run on core 2. Do not sample or
-			// restore the canvas until every tile has retired.
-			DrawerThreads::WaitForWorkers();
 			I_3DSRouteNativeMenuFrame(
 				static_cast<unsigned char *>(mCanvas->GetPixels()),
 				mNativeMenuBase.data(), mNativeMenuBasePitch, w, h);
@@ -243,9 +236,6 @@ void PolyFrameBuffer::Update()
 		#if defined(__3DS__) && (!defined(LOD3DS_SAFE_SOFTWARE) || defined(LOD3DS_HYBRID_PERFORMANCE))
 		if (neutralColorTransform)
 		{
-			// Present the normal 320x200 profile without the old canvas->SDL
-			// texture copy, SDL software scale and second LCD-rotation copy.
-			DrawerThreads::WaitForWorkers();
 			presented = I_PolyPresentDirect3DS(src, mCanvas->GetPitch() * pixelsize,
 				w, h, mOutputLetterbox.left, mOutputLetterbox.top,
 				mOutputLetterbox.width, mOutputLetterbox.height);
@@ -260,10 +250,6 @@ void PolyFrameBuffer::Update()
 				#if defined(__3DS__) && !defined(LOD3DS_SAFE_SOFTWARE)
 				if (neutralColorTransform)
 				{
-				// FlushDrawCommands may have queued 2D work on DrawerThreads. Wait for
-				// it before reading the canvas, then copy inline instead of paying a
-				// second same-core queue/mutex/condition-variable hand-off for 200 rows.
-				DrawerThreads::WaitForWorkers();
 				const size_t rowBytes = static_cast<size_t>(w) * pixelsize;
 				const size_t sourcePitchBytes =
 					static_cast<size_t>(mCanvas->GetPitch()) * pixelsize;

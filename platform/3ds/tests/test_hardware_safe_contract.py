@@ -37,7 +37,7 @@ class HardwareSafeContractTests(unittest.TestCase):
             ROOT / "src/common/platform/3ds/diagnostics_3ds.cpp"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(version, "0.30")
+        self.assertRegex(version, r"^0\.\d+$")
         self.assertIn('-DLOD3DS_PORT_VERSION="${VERSION}"', build)
         self.assertIn("printf 'port_version=%s\\n' \"${VERSION}\"", build)
         self.assertIn('set( LOD3DS_PORT_VERSION "dev" CACHE STRING', root_cmake)

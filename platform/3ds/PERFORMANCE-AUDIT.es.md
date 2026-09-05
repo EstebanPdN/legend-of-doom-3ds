@@ -1,5 +1,9 @@
 # Auditoría de rendimiento para New Nintendo 3DS
 
+> Documento histórico (v0.11/v0.12). Para el árbol actual, consultar
+> [la revisión v0.31](CODE-REVIEW-v031.es.md). Las cifras y los defaults
+> siguientes no describen la versión actual.
+
 Fecha de revisión del árbol: 30 de agosto de 2026.
 
 Actualización de estabilidad, 31 de agosto de 2026: el dump físico de v0.11

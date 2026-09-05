@@ -9,8 +9,7 @@ BUILD_ROOT="${LOD3DS_BUILD_ROOT:-${ROOT}/build-3ds}"
 mkdir -p "${BUILD_ROOT}"
 BUILD_ROOT="$(cd "${BUILD_ROOT}" && pwd)"
 JOBS="${LOD3DS_JOBS:-4}"
-# Physical hardware is the public default. The legacy GPU path remains
-# available only through an explicit LOD3DS_BUILD_PROFILE=release request.
+# Default to the hardware-safe profile.
 BUILD_PROFILE="${LOD3DS_BUILD_PROFILE:-hardware-safe}"
 if (( $# > 1 )); then
   printf 'Usage: %s [build-profile]\n' "$0" >&2
@@ -38,10 +37,7 @@ DIST="${BUILD_ROOT}/dist"
 TOOLS_CACHE="${BUILD_ROOT}/packaging-tools"
 TOOLS_ROOT="${LOD3DS_TOOLS_ROOT:-${ROOT}/../Tools/bin}"
 
-# iCloud Drive may resurrect deleted staging files as "name 2.ext" while a
-# package is being assembled, which once duplicated every WAD/PK3 in RomFS and
-# inflated the CIA from ~45 MiB to ~85 MiB. Keep all ephemeral package trees
-# outside the synced workspace and remove them automatically on exit.
+# Stage outside synced folders to prevent resurrected duplicate assets.
 PACKAGE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/lod3ds-package.XXXXXX")"
 STAGE="${PACKAGE_TMP}/stage"
 trap 'cmake -E remove_directory "${PACKAGE_TMP}"' EXIT
@@ -155,12 +151,7 @@ case "${BUILD_PROFILE}" in
   hardware-diagnostic)
     HARDWARE_DIAGNOSTIC=ON
     HARDWARE_DIAGNOSTIC_SILENT=ON
-    # L+R+A, screenshots, telemetry, engine state and the full memory map stay
-    # enabled, but per-draw validation/probe logging does not. The latter was
-    # executing inside thousands of draw calls and made a diagnostic build a
-    # poor performance test in its own right. Explicit environment overrides
-    # can still re-enable a bounded NovaGL capture when a renderer probe is
-    # specifically needed.
+    # Keep telemetry; enable costly draw probes only by explicit override.
     NOVAGL_NO_DEBUG="${NOVAGL_NO_DEBUG:-ON}"
     NOVAGL_DRAW_DIAGNOSTICS="${NOVAGL_DRAW_DIAGNOSTICS:-0}"
     NOVAGL_TEXTURE_DIAGNOSTICS="${NOVAGL_TEXTURE_DIAGNOSTICS:-0}"
@@ -168,16 +159,13 @@ case "${BUILD_PROFILE}" in
   hardware-candidate)
     HARDWARE_DIAGNOSTIC=ON
     HARDWARE_DIAGNOSTIC_SILENT=OFF
-    # Exercise the actual NDSP/ZMusic path while retaining the bounded
-    # physical-console telemetry and first-frame watchdog.
+    # Keep audio and bounded telemetry in hardware candidates.
     NOVAGL_NO_DEBUG="${NOVAGL_NO_DEBUG:-ON}"
     NOVAGL_DRAW_DIAGNOSTICS="${NOVAGL_DRAW_DIAGNOSTICS:-0}"
     NOVAGL_TEXTURE_DIAGNOSTICS="${NOVAGL_TEXTURE_DIAGNOSTICS:-0}"
     ;;
   hardware-safe)
-    # Physical-hardware baseline: GZDoom renders at 320x200 on the CPU and
-    # SDL/libctru presents it to the 400x240 LCD. Audio uses the single pinned
-    # OpenAL Soft/NDSP path; SDL audio stays out to avoid duplicate DSP owners.
+    # CPU renderer, SDL scanout, and a single OpenAL/NDSP owner.
     HARDWARE_DIAGNOSTIC=OFF
     HARDWARE_DIAGNOSTIC_SILENT=OFF
     SAFE_SOFTWARE=ON
@@ -189,10 +177,7 @@ case "${BUILD_PROFILE}" in
     NOVAGL_TEXTURE_DIAGNOSTICS=0
     ;;
   hardware-hybrid)
-    # Stable GZDoom software scene renderer, split across CPU0/core2. Gameplay
-    # defaults to 320x192 and can select 200x120 or 400x240; one bilinear
-    # textured quad presents it while menus use 400x240. NovaGL never receives
-    # world geometry.
+    # CPU0/CPU2 render the scene; PICA scales one texture.
     HARDWARE_DIAGNOSTIC=OFF
     HARDWARE_DIAGNOSTIC_SILENT=OFF
     SAFE_SOFTWARE=ON
@@ -663,9 +648,7 @@ if [[ "${LOD3DS_SKIP_CIA:-0}" != "1" && -n "${MAKEROM_PATH}" && -n "${BANNERTOOL
   CIA_ROMFS="${PACKAGE_TMP}/cia-romfs"
   CIA_ROMFS_DATA="${CIA_ROMFS}/data"
   mkdir -p "${CIA_ROMFS_DATA}"
-  # A CIA installed from QR must be complete on its own. Keeping these files
-  # in RomFS also guarantees that the executable and its engine/mod data are
-  # from the same source-state ID; configs, saves, logs and dumps remain on SD.
+  # Embed matching game data for self-contained CIA installation.
   cmake -E copy "${GAME_BUILD}/gzdoom.pk3" "${CIA_ROMFS_DATA}/gzdoom.pk3"
   cmake -E copy "${GAME_BUILD}/game_support.pk3" "${CIA_ROMFS_DATA}/game_support.pk3"
   cmake -E copy "${MOD_PK3}" "${CIA_ROMFS_DATA}/LegendOfDoom.pk3"

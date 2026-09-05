@@ -305,20 +305,12 @@ class PerformanceContractTests(unittest.TestCase):
             update[direct_guard:direct],
         )
 
-        inline_comment = update.index(
-            "FlushDrawCommands may have queued 2D work"
-        )
-        neutral_start = update.rfind(
-            "if (neutralColorTransform)", 0, inline_comment
-        )
-        neutral = update[neutral_start : update.index(
-            "I_PolyPresentUnlock", inline_comment
-        )]
-        self.assertIn("if (neutralColorTransform)", neutral)
-        self.assertLess(
-            neutral.index("DrawerThreads::WaitForWorkers();"),
-            neutral.index("std::memcpy(dst, src"),
-        )
+        neutral_start = update.index("if (neutralColorTransform)", lock)
+        neutral = update[neutral_start : update.index("I_PolyPresentUnlock", lock)]
+        self.assertGreater(worker_wait, 0)
+        self.assertLess(worker_wait, update.index("I_3DSComposeGameplayFrame"))
+        self.assertNotIn("DrawerThreads::Execute", update[worker_wait:lock])
+        self.assertLess(worker_wait, update.index("std::memcpy(dst, src"))
         self.assertIn("sourcePitchBytes == rowBytes", neutral)
         self.assertIn("for (int row = 0; row < h; ++row)", neutral)
 
