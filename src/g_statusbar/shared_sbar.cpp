@@ -139,7 +139,11 @@ CUSTOM_CVAR(Bool, hud_aspectscale, false, CVAR_ARCHIVE)
 	}
 }
 
+#ifdef __3DS__
+CVAR (Bool, crosshairon, false, CVAR_ARCHIVE);
+#else
 CVAR (Bool, crosshairon, true, CVAR_ARCHIVE);
+#endif
 CVAR (Int, crosshair, 0, CVAR_ARCHIVE)
 CVAR (Bool, crosshairforce, false, CVAR_ARCHIVE)
 CUSTOM_CVAR(Int, am_showmaplabel, 2, CVAR_ARCHIVE)
@@ -251,6 +255,15 @@ void ST_LoadCrosshair(bool alwaysload)
 	{
 		num = crosshair;
 	}
+	#ifdef __3DS__
+	// Existing 3DS configuration files commonly retain crosshair=0. The Display
+	// toggle must still produce a visible aiming mark, so use the built-in first
+	// crosshair whenever AIM CROSS is enabled and no weapon-specific one exists.
+	if (num == 0 && crosshairon)
+	{
+		num = 1;
+	}
+	#endif
 	ST_LoadCrosshair(num, alwaysload);
 }
 
@@ -1096,7 +1109,9 @@ void DBaseStatusBar::Draw (EHudState state, double ticFrac)
 	{
 		if (CPlayer && CPlayer->camera && CPlayer->camera->player)
 		{
+			#ifndef __3DS__
 			DrawCrosshair ();
+			#endif
 		}
 	}
 	else if (automapactive)
@@ -1202,6 +1217,17 @@ void DBaseStatusBar::DrawBottomStuff (EHudState state)
 {
 	primaryLevel->localEventManager->RenderUnderlay(state);
 	DrawMessages (HUDMSGLayer_UnderHUD, (state == HUD_StatusBar) ? GetTopOfStatusbar() : twod->GetHeight());
+}
+
+void DBaseStatusBar::DrawMessagesOnly (EHudState state)
+{
+	const int bottom = (state == HUD_StatusBar) ? GetTopOfStatusbar() : twod->GetHeight();
+	DrawMessages(HUDMSGLayer_UnderHUD, bottom);
+	if (automapactive && !viewactive)
+	{
+		DrawMessages(HUDMSGLayer_OverMap, bottom);
+	}
+	DrawMessages(HUDMSGLayer_OverHUD, bottom);
 }
 
 //---------------------------------------------------------------------------
@@ -1500,4 +1526,3 @@ int GetInventoryIcon(AActor *item, uint32_t flags, int *applyscale)
 	}
 	return picnum.GetIndex();
 }
-

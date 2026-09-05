@@ -55,12 +55,31 @@
 #include "swrenderer/r_renderthread.h"
 #include "g_levellocals.h"
 
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
+
 CVAR(Bool, r_linearsky, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 EXTERN_CVAR(Int, r_skymode)
 EXTERN_CVAR(Bool, cl_oldfreelooklimit)
 
 namespace swrenderer
 {
+	#ifdef __3DS__
+	bool IsMap01ExteriorSkyLevel(RenderThread *thread)
+	{
+		auto viewport = thread != nullptr ? thread->Viewport.get() : nullptr;
+		auto level = viewport != nullptr ? viewport->Level() : nullptr;
+		auto sector = viewport != nullptr ? viewport->viewpoint.sector : nullptr;
+		return level != nullptr && level->MapName.CompareNoCase("MAP01") == 0 &&
+			sector != nullptr &&
+			(sector->GetTexture(sector_t::ceiling) == skyflatnum ||
+				sector->ValidatePortal(sector_t::ceiling) != nullptr) &&
+			!viewport->RenderingToCanvas && viewport->RenderTarget != nullptr &&
+			viewport->RenderTarget->IsBgra();
+	}
+	#endif
+
 	static FSoftwareTexture *GetSWTex(FTextureID texid, bool allownull = true)
 	{
 		return GetPalettedSWTexture(texid, true, false, true);
@@ -309,4 +328,235 @@ namespace swrenderer
 			DrawSkyColumn(x, y1, y2);
 		}
 	}
+
+	#ifdef __3DS__
+	void RenderSkyPlane::FillPrimarySkyBackground()
+	{
+		// Do not hang this repair off an individual sky visplane. MAP01's portal
+		// arrangement can produce only the small visible wedge and consequently
+		// never satisfied the v0.2 visplane guard (confirmed by calls=0 in the
+		// hardware dump). Install the level's primary sky explicitly after the
+		// ordinary plane pass; later portal and translucent passes still overwrite
+		// their own windows.
+		auto viewport = Thread->Viewport.get();
+		if (viewport == nullptr || viewport->Level() == nullptr) return;
+		auto Level = viewport->Level();
+		const FTextureID sky1tex =
+			((Level->flags & LEVEL_SWAPSKIES) && !(Level->flags & LEVEL_DOUBLESKY)) ?
+			Level->skytexture2 : Level->skytexture1;
+
+		frontskytex = GetSWTex(sky1tex);
+		if (frontskytex == nullptr) return;
+		backskytex = (Level->flags & LEVEL_DOUBLESKY) ?
+			GetSWTex(Level->skytexture2) : nullptr;
+		skymid = skytexturemid;
+		skyangle = viewport->viewpoint.Angles.Yaw.BAMs();
+		skyflip = 0;
+		frontcyl = MAX(frontskytex->GetWidth(),
+			fixed_t(frontskytex->GetScale().X * 1024));
+		backcyl = backskytex != nullptr ? MAX(backskytex->GetWidth(),
+			fixed_t(backskytex->GetScale().X * 1024)) : frontcyl;
+		if (frontcyl <= 0 || (backskytex != nullptr && backcyl <= 0)) return;
+		frontpos = int(fmod(Level->sky1pos, frontcyl * 65536.0));
+		backpos = backskytex != nullptr ?
+			int(fmod(Level->sky2pos, backcyl * 65536.0)) : 0;
+		drawerargs.SetStyle();
+		FillTransparentSkyBackground();
+	}
+
+	void RenderSkyPlane::FillTransparentSkyBackground()
+	{
+		// The hardware dumps prove that Legend of Doom's hardware-oriented sky
+		// layout can leave disjoint sky-visplane gaps in the classic software
+		// renderer. Those pixels retain the canvas clear value (including alpha
+		// 0), while walls, flats and deliberately black textures are opaque.
+		// Project the active sky into only untouched runs.
+		// This acts as the background a sky scene expects without painting over
+		// any world geometry, HUD pixel, or legitimate opaque black surface.
+		auto viewport = Thread->Viewport.get();
+		if (Thread->SkyBackgroundFilled ||
+			Thread->Portal->CurrentPortalUniq != 0 ||
+			Thread->Clip3D->CurrentSkybox != 0 || viewport == nullptr ||
+			viewport->RenderingToCanvas || viewport->RenderTarget == nullptr ||
+			!viewport->RenderTarget->IsBgra())
+		{
+			return;
+		}
+		Thread->SkyBackgroundFilled = true;
+
+		const int pitch = viewport->RenderTarget->GetPitch();
+		const int sliceWidth = Thread->X2 - Thread->X1;
+		unsigned int filledPixels = 0;
+		if (sliceWidth <= 0 || viewheight <= 0)
+		{
+			I_3DSRecordSkyFallback(filledPixels);
+			return;
+		}
+
+		// The canvas is row-major. The old x/y traversal jumped one full pitch for
+		// every alpha test, turning the 320x200 sentinel scan into almost pure cache
+		// misses on ARM11. Track each column's open transparent run while walking
+		// contiguous BGRA pixels; emitting a run still uses the original sky-column
+		// routine, so texture projection and the alpha==0 contract stay unchanged.
+		int *transparentStarts =
+			Thread->FrameMemory->AllocMemory<int>(sliceWidth);
+		for (int column = 0; column < sliceWidth; ++column)
+		{
+			transparentStarts[column] = -1;
+		}
+
+		uint8_t *rowAlpha = viewport->GetDest(Thread->X1, 0) + 3;
+		const size_t rowStride = static_cast<size_t>(pitch) * 4;
+		const bool map01Fog = IsMap01ExteriorSkyLevel(Thread);
+		const int fogHorizon = map01Fog ?
+			clamp(xs_RoundToInt(viewport->CenterY), 0, viewheight) : viewheight;
+		unsigned int foggedPixels = 0;
+		for (int y = 0; y < viewheight; ++y, rowAlpha += rowStride)
+		{
+			uint8_t *alpha = rowAlpha;
+			for (int column = 0; column < sliceWidth; ++column, alpha += 4)
+			{
+				int &first = transparentStarts[column];
+				if (*alpha == 0)
+				{
+					if (first < 0) first = y;
+				}
+				else if (first >= 0)
+				{
+					filledPixels += static_cast<unsigned int>(y - first);
+					const int skyEnd = MIN(y, MAX(first, fogHorizon));
+					if (first < skyEnd)
+						DrawSkyColumn(Thread->X1 + column, first, skyEnd);
+					if (skyEnd < y)
+						foggedPixels += FillMap01DistanceFogColumn(
+							Thread->X1 + column, skyEnd, y);
+					first = -1;
+				}
+			}
+		}
+
+		for (int column = 0; column < sliceWidth; ++column)
+		{
+			const int first = transparentStarts[column];
+			if (first >= 0)
+			{
+				filledPixels += static_cast<unsigned int>(viewheight - first);
+				const int skyEnd = MIN(viewheight, MAX(first, fogHorizon));
+				if (first < skyEnd)
+					DrawSkyColumn(Thread->X1 + column, first, skyEnd);
+				if (skyEnd < viewheight)
+					foggedPixels += FillMap01DistanceFogColumn(
+						Thread->X1 + column, skyEnd, viewheight);
+			}
+		}
+		RepairIsolatedTopSkyColumns();
+		I_3DSRecordSkyFallback(filledPixels);
+		I_3DSRecordDrawDistanceFog(foggedPixels);
+	}
+
+	unsigned int RenderSkyPlane::FillMap01DistanceFogColumn(int x, int y1, int y2)
+	{
+		if (!IsMap01ExteriorSkyLevel(Thread) || y2 <= y1) return 0;
+		auto viewport = Thread->Viewport.get();
+		const int pitch = viewport->RenderTarget->GetPitch();
+		uint32_t *dest = reinterpret_cast<uint32_t *>(viewport->GetDest(x, y1));
+		for (int y = y1; y < y2; ++y, dest += pitch)
+		{
+			// Match the exact terminal colour used by the explicit 1536..2048 world
+			// fog. v0.17's unrelated vertical gradient exposed water, floor and door
+			// cutoffs as flat blue rectangles even after the geometry was rejected.
+			*dest = MAKEARGB(255, Map01DistanceFogRed,
+				Map01DistanceFogGreen, Map01DistanceFogBlue);
+		}
+		return static_cast<unsigned int>(y2 - y1);
+	}
+
+	static unsigned int BgraRgbDistance(const uint8_t *a, const uint8_t *b)
+	{
+		const unsigned int blue = a[0] > b[0] ? a[0] - b[0] : b[0] - a[0];
+		const unsigned int green = a[1] > b[1] ? a[1] - b[1] : b[1] - a[1];
+		const unsigned int red = a[2] > b[2] ? a[2] - b[2] : b[2] - a[2];
+		return blue + green + red;
+	}
+
+	static unsigned int BgraRgbMaxChannelDistance(const uint8_t *a,
+		const uint8_t *b)
+	{
+		const unsigned int blue = a[0] > b[0] ? a[0] - b[0] : b[0] - a[0];
+		const unsigned int green = a[1] > b[1] ? a[1] - b[1] : b[1] - a[1];
+		const unsigned int red = a[2] > b[2] ? a[2] - b[2] : b[2] - a[2];
+		return MAX(blue, MAX(green, red));
+	}
+
+	void RenderSkyPlane::RepairIsolatedTopSkyColumns()
+	{
+		// full-02's raw DCanvas proves the intermittent bar is already present
+		// before PICA presentation: one opaque OBRKB wall column crosses otherwise
+		// continuous sky. At 240x150 a far wall can collapse to a single sample.
+		// Repair only a top-connected, one-column discontinuity whose two opaque
+		// neighbours agree throughout a bounded probe. Legitimate wider geometry,
+		// translucent objects, portal views and ordinary sky variation are left
+		// untouched.
+		auto viewport = Thread->Viewport.get();
+		constexpr int ProbeRows = 8;
+		constexpr unsigned int NeighbourMaxDistance = 16;
+		constexpr unsigned int IntrusionMinDistance = 96;
+		unsigned int repairedColumns = 0;
+		unsigned int repairedPixels = 0;
+		if (viewport == nullptr || viewheight < ProbeRows || viewwidth < 3)
+		{
+			I_3DSRecordSkyColumnRepair(repairedColumns, repairedPixels);
+			return;
+		}
+
+		const int pitch = viewport->RenderTarget->GetPitch();
+		const size_t rowStride = static_cast<size_t>(pitch) * 4;
+		const int firstColumn = MAX(Thread->X1, 1);
+		const int lastColumn = MIN(Thread->X2, viewwidth - 1);
+		const int skyRepairBottom = IsMap01ExteriorSkyLevel(Thread) ?
+			clamp(xs_RoundToInt(viewport->CenterY), 0, viewheight) : viewheight;
+		for (int x = firstColumn; x < lastColumn; ++x)
+		{
+			uint8_t *center = viewport->GetDest(x, 0);
+			uint8_t *left = center - 4;
+			uint8_t *right = center + 4;
+			bool isolated = true;
+			for (int y = 0; y < ProbeRows; ++y)
+			{
+				if (center[3] == 0 || left[3] == 0 || right[3] == 0 ||
+					BgraRgbMaxChannelDistance(left, right) > NeighbourMaxDistance ||
+					BgraRgbDistance(center, left) < IntrusionMinDistance ||
+					BgraRgbDistance(center, right) < IntrusionMinDistance)
+				{
+					isolated = false;
+					break;
+				}
+				center += rowStride;
+				left += rowStride;
+				right += rowStride;
+			}
+			if (!isolated) continue;
+
+			int end = ProbeRows;
+			center = viewport->GetDest(x, end);
+			left = center - 4;
+			right = center + 4;
+			while (end < skyRepairBottom && center[3] != 0 && left[3] != 0 &&
+				right[3] != 0 &&
+				BgraRgbDistance(center, left) >= IntrusionMinDistance &&
+				BgraRgbDistance(center, right) >= IntrusionMinDistance)
+			{
+				++end;
+				center += rowStride;
+				left += rowStride;
+				right += rowStride;
+			}
+
+			DrawSkyColumn(x, 0, end);
+			++repairedColumns;
+			repairedPixels += static_cast<unsigned int>(end);
+		}
+		I_3DSRecordSkyColumnRepair(repairedColumns, repairedPixels);
+	}
+	#endif
 }

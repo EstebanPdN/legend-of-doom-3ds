@@ -474,8 +474,10 @@ if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
 	list( REMOVE_ITEM PLAT_SDL_SOURCES common/platform/posix/sdl/crashcatcher.c )
 	list( REMOVE_ITEM PLAT_SDL_SOURCES common/platform/posix/sdl/st_start.cpp )
 	list( APPEND PLAT_SDL_SOURCES
+		common/platform/3ds/cache_3ds.cpp
 		common/platform/3ds/diagnostics_3ds.cpp
 		common/platform/3ds/i_input_3ds.cpp
+		common/platform/3ds/lifecycle_3ds.cpp
 		common/platform/3ds/memory.cpp
 		common/platform/3ds/st_start.cpp )
 endif()
@@ -1298,26 +1300,45 @@ if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
 		NOVAGL_GZDOOM_COMPAT=1
 		NO_RENDER_BUFFER=1
 		LOD3DS_BUILD_PROFILE_NAME="${LOD3DS_BUILD_PROFILE}"
-		LOD3DS_BUILD_ID="${LOD3DS_BUILD_ID}" )
+		LOD3DS_BUILD_ID="${LOD3DS_BUILD_ID}"
+		LOD3DS_PORT_VERSION="${LOD3DS_PORT_VERSION}" )
 	if( LOD3DS_HARDWARE_DIAGNOSTIC )
 		target_compile_definitions( zdoom PRIVATE LOD3DS_HARDWARE_DIAGNOSTIC=1 )
 	endif()
 	if( LOD3DS_HARDWARE_DIAGNOSTIC_SILENT )
 		target_compile_definitions( zdoom PRIVATE LOD3DS_HARDWARE_DIAGNOSTIC_SILENT=1 )
 	endif()
-	target_link_libraries( zdoom "${NOVAGL_LIBRARY}" citro3d )
+	if( LOD3DS_SAFE_SOFTWARE )
+		target_compile_definitions( zdoom PRIVATE LOD3DS_SAFE_SOFTWARE=1 )
+	endif()
+	if( LOD3DS_SAFE_SOFTWARE_SILENT )
+		target_compile_definitions( zdoom PRIVATE LOD3DS_SAFE_SOFTWARE_SILENT=1 )
+	endif()
+	if( LOD3DS_HYBRID_PERFORMANCE )
+		target_compile_definitions( zdoom PRIVATE LOD3DS_HYBRID_PERFORMANCE=1 )
+	endif()
+	target_link_libraries( zdoom "${NOVAGL_LIBRARY}" citro2d citro3d )
 	target_link_directories( zdoom PRIVATE "$ENV{DEVKITPRO}/libctru/lib" )
 	target_link_options( zdoom PRIVATE "-Wl,-Map,${CMAKE_BINARY_DIR}/gzdoom.map" )
-	set( N3DS_CRT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/legend-3ds-crt" )
 	# GCC resolves start files inside the active armv6k/fpu multilib folder.
+	set( N3DS_CRT_VARIANT "pica" )
+	set( N3DS_CRT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/common/platform/3ds/3dsx_crt0.s" )
+	if( LOD3DS_SAFE_SOFTWARE )
+		set( N3DS_CRT_VARIANT "safe-software" )
+		set( N3DS_CRT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/common/platform/3ds/3dsx_crt0_safe.s" )
+	endif()
+	# Keep the two start objects in separate paths. Otherwise switching profiles
+	# in one build tree can reuse the newer object and silently link the wrong
+	# application/linear heap split.
+	set( N3DS_CRT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/legend-3ds-crt-${N3DS_CRT_VARIANT}" )
 	set( N3DS_CRT_OBJECT "${N3DS_CRT_DIRECTORY}/armv6k/fpu/3dsx_crt0.o" )
 	add_custom_command(
 		OUTPUT "${N3DS_CRT_OBJECT}"
 		COMMAND "${CMAKE_COMMAND}" -E make_directory "${N3DS_CRT_DIRECTORY}/armv6k/fpu"
 		COMMAND "${CMAKE_C_COMPILER}" -march=armv6k -mfloat-abi=hard -c
-			"${CMAKE_CURRENT_SOURCE_DIR}/common/platform/3ds/3dsx_crt0.s"
+			"${N3DS_CRT_SOURCE}"
 			-o "${N3DS_CRT_OBJECT}"
-		DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/common/platform/3ds/3dsx_crt0.s"
+		DEPENDS "${N3DS_CRT_SOURCE}"
 		VERBATIM )
 	add_custom_target( legend_3ds_crt DEPENDS "${N3DS_CRT_OBJECT}" )
 	add_dependencies( zdoom legend_3ds_crt )

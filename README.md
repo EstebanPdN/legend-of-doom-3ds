@@ -13,7 +13,7 @@ The port is based on GZDoom 4.7.1 and uses the freely redistributable Freedoom: 
 > [!WARNING]
 > This port is under active development and it is not a playable release yet.
 
-The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL. The native render target is 400×240 on the top screen. A stable 30 FPS is the initial performance goal
+The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL. The recovery profile renders at 320×200 on the CPU and presents it to the 400×240 top screen without using PICA200 command lists. The accelerated NovaGL path remains experimental.
 
 ## Features
 
@@ -21,7 +21,7 @@ The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Ninte
 * Dual-screen support
 * CIA and 3DSX support (planned feature)
 * Circle Pad, C-Stick and touch controls
-* Native 400×240 rendering
+* Full-width 400×240 presentation from a 320×200 game canvas
 
 ## Community
 
@@ -58,18 +58,21 @@ Audio on real hardware requires the console's own DSP firmware at `sdmc:/3ds/dsp
 |---|---|
 | Circle Pad | Move / strafe |
 | C-Stick | Look |
-| Touch screen | Look |
+| Touch screen | Look (when camera input is Touch or Both) |
 | A | Use / interact |
-| B | Attack |
-| X | Alternate attack |
+| B | Unassigned |
+| X | Sprint at full health (optional) |
 | Y | Jump |
-| L / R | Previous / next weapon |
-| ZL / ZR | Alternate attack / attack |
-| D-Pad left / right | Previous / next inventory item |
+| L / R | Alternate attack / attack |
+| ZL / ZR | Previous / next inventory item |
+| D-Pad left / right | Previous / next weapon |
 | D-Pad down | Use inventory item |
 | D-Pad up | Automap |
 | START | Pause |
 | SELECT | Main menu |
+
+Controller options expose C-Stick sensitivity, C-Stick/Touch/Both camera input,
+the full-health X sprint toggle and a read-only control reference.
 
 ## Building
 
@@ -80,10 +83,23 @@ Requirements:
 - SDL2 development files for native host tools on Linux
 - `makerom` and `bannertool` for CIA packaging; pinned Linux x86_64 binaries are downloaded automatically, while native `makerom-macos` and `bannertool-macos` are detected on macOS
 
-Build all packages with:
+Build all packages with the physical-console-safe profile (the default):
 
 ```sh
 ./platform/3ds/build.sh
+```
+
+The equivalent explicit command is shown below. This version starts at the
+normal title/menu, uses the CPU renderer and the pinned OpenAL/NDSP audio path:
+
+```sh
+LOD3DS_BUILD_PROFILE=hardware-safe ./platform/3ds/build.sh
+```
+
+The legacy NovaGL/PICA path is retained only for explicit GPU investigation:
+
+```sh
+LOD3DS_BUILD_PROFILE=release ./platform/3ds/build.sh
 ```
 
 Build the silent first-frame hardware diagnostic with:
@@ -97,6 +113,13 @@ Build the physical-console candidate with audio and the same watchdog with:
 ```sh
 LOD3DS_BUILD_PROFILE=hardware-candidate ./platform/3ds/build.sh
 ```
+
+Version 0.19 keeps the physically proven SoftPoly world renderer with the
+hybrid PICA200 presentation layer. MAP01 distance fog now excludes intentional
+BLACK cave interiors, and OpenAL uses a deeper NDSP queue plus a low-jitter
+CPU-to-DSP cache clean with a compatibility fallback. NovaGL world rendering
+remains an explicit developer experiment. A physical New 3DS remains the final
+validation target; no Azahar result is used as proof of performance or timing.
 
 The scripts download pinned SDL2, ZMusic, minimp3, OpenAL Soft/NDSP, Legend of Doom and Freedoom inputs; apply the documented 3DS patches; build the executable; and write packages below `build-3ds/dist/`.
 

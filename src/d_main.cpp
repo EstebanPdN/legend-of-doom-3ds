@@ -41,6 +41,7 @@
 
 #include <math.h>
 #include <assert.h>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -48,6 +49,8 @@
 #include "m_alloc.h"
 #ifdef __3DS__
 #include "common/platform/3ds/diagnostics_3ds.h"
+#include "common/platform/3ds/memory_3ds.h"
+#include "common/platform/3ds/aim_crosshair.inc"
 #endif
 
 #include "i_time.h"
@@ -297,8 +300,18 @@ CVAR (Bool, autoloadbrightmaps, false, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLO
 CVAR (Bool, autoloadlights, false, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG)
 CVAR (Bool, autoloadwidescreen, true, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG)
 CVAR (Bool, r_debug_disable_vis_filter, false, 0)
+#ifdef __3DS__
+CVAR(Bool, vid_fps, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, lod3ds_top_hud, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#else
 CVAR(Bool, vid_fps, false, 0)
+static constexpr bool lod3ds_top_hud = true;
+#endif
 CVAR(Int, vid_showpalette, 0, 0)
+
+#ifdef __3DS__
+EXTERN_CVAR(Bool, crosshairon)
+#endif
 
 bool hud_toggled = false;
 bool wantToRestart;
@@ -436,6 +449,16 @@ bool I_3DSWriteEngineDiagnosticSnapshot(const char *path)
 CCMD(lod3ds_dump)
 {
 	I_3DSRequestDiagnosticDump();
+}
+
+CCMD(lod3ds_fulldump)
+{
+	I_3DSRequestFullDiagnosticDump();
+}
+
+CCMD(lod3ds_cleardumps)
+{
+	I_3DSRequestCleanDiagnosticDumps();
 }
 #endif
 
@@ -861,18 +884,123 @@ static void DrawPaletteTester(int paletteno)
 //
 //==========================================================================
 uint64_t LastCount;
+double LastFrameMilliseconds;
+
+#ifdef __3DS__
+static const uint8_t *FpsGlyphRows(char character)
+{
+	static constexpr uint8_t Digits[10][7] = {
+		{ 0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e },
+		{ 0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e },
+		{ 0x0e, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1f },
+		{ 0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e },
+		{ 0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02 },
+		{ 0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e },
+		{ 0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e },
+		{ 0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 },
+		{ 0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e },
+		{ 0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c },
+	};
+	static constexpr uint8_t LetterF[7] = { 0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10 };
+	static constexpr uint8_t LetterM[7] = { 0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11 };
+	static constexpr uint8_t LetterP[7] = { 0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10 };
+	static constexpr uint8_t LetterS[7] = { 0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e };
+	static constexpr uint8_t Period[7] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c };
+	if (character >= '0' && character <= '9') return Digits[character - '0'];
+	if (character == 'F') return LetterF;
+	if (character == 'M') return LetterM;
+	if (character == 'P') return LetterP;
+	if (character == 'S') return LetterS;
+	if (character == '.') return Period;
+	return nullptr;
+}
+
+static void Draw3DSFpsCounter(uint64_t framesPerSecond, double frameMilliseconds)
+{
+	char label[32] = {};
+	mysnprintf(label, countof(label), "FPS %llu  %.1fMS",
+		(unsigned long long)std::min<uint64_t>(framesPerSecond, 999),
+		std::clamp(frameMilliseconds, 0.0, 999.9));
+	constexpr int scale = 1;
+	const int boxWidth = static_cast<int>(std::strlen(label)) * 6 + 7;
+	const int boxX = std::max(2, screen->GetWidth() - boxWidth - 4);
+	constexpr int boxY = 4;
+	// Compact Minish Cap-style readout, permanently anchored to the upper
+	// screen's top-right corner without changing the lower-menu layout.
+	twod->AddColorOnlyQuad(boxX, boxY, boxWidth, 13, 0xd2000000, nullptr);
+	int textX = boxX + 4;
+	for (const char *cursor = label; *cursor != '\0'; ++cursor, textX += 6 * scale)
+	{
+		const uint8_t *rows = FpsGlyphRows(*cursor);
+		if (rows == nullptr) continue;
+		for (int row = 0; row < 7; ++row)
+		{
+			for (int column = 0; column < 5; ++column)
+			{
+				if ((rows[row] & (1u << (4 - column))) == 0) continue;
+				twod->AddColorOnlyQuad(textX + column * scale,
+					boxY + 3 + row * scale, scale, scale, 0xffffffff, nullptr);
+			}
+		}
+	}
+}
+
+static void Draw3DSAimCrosshair()
+{
+	if (!crosshairon || gamestate == GS_TITLELEVEL || r_viewpoint.camera == nullptr ||
+		r_viewpoint.camera->health <= 0 || (players[consoleplayer].cheats & CF_CHASECAM))
+	{
+		return;
+	}
+	const int targetSize = std::clamp((AimCrosshairWidth * screen->GetWidth() + 200) / 400,
+		9, AimCrosshairWidth);
+	const int left = screen->GetWidth() / 2 - targetSize / 2;
+	const int top = screen->GetHeight() / 2 - targetSize / 2;
+	for (int y = 0; y < targetSize; ++y)
+	{
+		const int sourceY = y * AimCrosshairHeight / targetSize;
+		for (int x = 0; x < targetSize; ++x)
+		{
+			const int sourceX = x * AimCrosshairWidth / targetSize;
+			const unsigned alpha = AimCrosshairAlpha[sourceY * AimCrosshairWidth + sourceX];
+			if (alpha < 8u) continue;
+			const uint32_t shadow = (alpha * 3u / 5u) << 24u;
+			twod->AddColorOnlyQuad(left + x + 1, top + y + 1, 1, 1, shadow, nullptr);
+			twod->AddColorOnlyQuad(left + x, top + y, 1, 1,
+				(alpha << 24u) | 0x00ffffffu, nullptr);
+		}
+	}
+}
+#endif
 
 static void DrawRateStuff()
 {
 	static uint64_t LastMS = 0, LastSec = 0, FrameCount = 0, LastTic = 0;
 
-	// Draws frame time and cumulative fps
-	if (vid_fps)
+	// Keep the live count available to the lower-screen developer overlay even
+	// when the optional top-screen counter is hidden.
+	uint64_t ms = screen->FrameTime;
+	uint64_t howlong = ms - LastMS;
+	if ((signed)howlong >= 0)
 	{
-		uint64_t ms = screen->FrameTime;
-		uint64_t howlong = ms - LastMS;
-		if ((signed)howlong >= 0)
+		if (howlong > 0 && howlong < 1000)
 		{
+			LastFrameMilliseconds = LastFrameMilliseconds <= 0.0 ? howlong :
+				LastFrameMilliseconds * 0.80 + static_cast<double>(howlong) * 0.20;
+		}
+		uint32_t thisSec = (uint32_t)(ms / 1000);
+		if (LastSec < thisSec)
+		{
+			LastCount = FrameCount / (thisSec - LastSec);
+			LastSec = thisSec;
+			FrameCount = 0;
+		}
+		FrameCount++;
+
+		// Draws frame time and cumulative fps.
+		if (vid_fps)
+		{
+			#ifndef __3DS__
 			char fpsbuff[40];
 			int chars;
 			int rate_x;
@@ -886,18 +1014,10 @@ static void DrawRateStuff()
 				DTA_VirtualWidth, screen->GetWidth() / textScale,
 				DTA_VirtualHeight, screen->GetHeight() / textScale,
 				DTA_KeepRatio, true, TAG_DONE);
-
-			uint32_t thisSec = (uint32_t)(ms / 1000);
-			if (LastSec < thisSec)
-			{
-				LastCount = FrameCount / (thisSec - LastSec);
-				LastSec = thisSec;
-				FrameCount = 0;
-			}
-			FrameCount++;
+			#endif
 		}
-		LastMS = ms;
 	}
+	LastMS = ms;
 
 	int Height = screen->GetHeight();
 
@@ -960,6 +1080,11 @@ void D_Display ()
 
 	r_UseVanillaTransparency = UseVanillaTransparency(); // [SP] Cache UseVanillaTransparency() call
 	r_renderercaps = GetCaps(); // [SP] Get the current capabilities of the renderer
+	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+	// Resolve title/game and lower-screen scale changes before the existing
+	// setsizeneeded block computes the 3D viewport for this same frame.
+	screen->ApplyPendingVirtualSize();
+	#endif
 
 	if (players[consoleplayer].camera == NULL)
 	{
@@ -1078,29 +1203,40 @@ void D_Display ()
 			{
 				StatusBar->RefreshViewBorder ();
 			}
-			if (hud_althud && viewheight == SCREENHEIGHT && screenblocks > 10)
+			if (lod3ds_top_hud && hud_althud && viewheight == SCREENHEIGHT && screenblocks > 10)
 			{
 				StatusBar->DrawBottomStuff (HUD_AltHud);
 				if (DrawFSHUD || automapactive) StatusBar->DrawAltHUD();
-				if (players[consoleplayer].camera && players[consoleplayer].camera->player && !automapactive)
-				{
-					StatusBar->DrawCrosshair();
-				}
 				StatusBar->CallDraw (HUD_AltHud, vp.TicFrac);
 				StatusBar->DrawTopStuff (HUD_AltHud);
 			}
-			else if (viewheight == SCREENHEIGHT && viewactive && screenblocks > 10)
+			else if (lod3ds_top_hud && viewheight == SCREENHEIGHT && viewactive && screenblocks > 10)
 			{
 				EHudState state = DrawFSHUD ? HUD_Fullscreen : HUD_None;
 				StatusBar->DrawBottomStuff (state);
 				StatusBar->CallDraw (state, vp.TicFrac);
 				StatusBar->DrawTopStuff (state);
 			}
-			else
+			else if (lod3ds_top_hud)
 			{
 				StatusBar->DrawBottomStuff (HUD_StatusBar);
 				StatusBar->CallDraw (HUD_StatusBar, vp.TicFrac);
 				StatusBar->DrawTopStuff (HUD_StatusBar);
+			}
+			else
+			{
+				// Hiding the authored black HUD must not hide ACS dialogue from
+				// shopkeepers, cave NPCs or other map-script messages.
+				StatusBar->DrawMessagesOnly(HUD_None);
+			}
+			// Crosshair is deliberately independent from the authored black HUD.
+			// This makes the two Display toggles truthful in every combination.
+			if (players[consoleplayer].camera && players[consoleplayer].camera->player &&
+				!automapactive)
+			{
+				#ifndef __3DS__
+				StatusBar->DrawCrosshair();
+				#endif
 			}
 			//stb.Unclock();
 			//Printf("Stbar = %f\n", stb.TimeMS());
@@ -1114,6 +1250,9 @@ void D_Display ()
 			case GS_FULLCONSOLE:
 				D_PageDrawer();
 				C_DrawConsole ();
+				#ifdef __3DS__
+				if (I_3DSNativeMenuVisible()) screen->CaptureNativeMenuBase();
+				#endif
 				M_Drawer ();
 				End2DAndUpdate ();
 				return;
@@ -1198,6 +1337,9 @@ void D_Display ()
 		// normal update
 		// draw ZScript UI stuff
 		C_DrawConsole ();	// draw console
+		#ifdef __3DS__
+		if (I_3DSNativeMenuVisible()) screen->CaptureNativeMenuBase();
+		#endif
 		M_Drawer ();			// menu is drawn even on top of everything
 		if (!hud_toggled)
 			FStat::PrintStat (twod);
@@ -1231,6 +1373,9 @@ void D_Display ()
 			twod->Begin(screen->GetWidth(), screen->GetHeight());
 			done = wiper->Run(1);
 			C_DrawConsole ();	// console and
+			#ifdef __3DS__
+			if (I_3DSNativeMenuVisible()) screen->CaptureNativeMenuBase();
+			#endif
 			M_Drawer ();			// menu are drawn even on top of wipes
 			End2DAndUpdate ();
 			NetUpdate ();			// [RH] not sure this is needed anymore
@@ -1378,7 +1523,20 @@ void D_PageDrawer (void)
 	ClearRect(twod, 0, 0, SCREENWIDTH, SCREENHEIGHT, 0, 0);
 	if (Page.Exists())
 	{
-		DrawTexture(twod, TexMan.GetGameTexture(Page, true), 0, 0,
+		FGameTexture *pageTexture = TexMan.GetGameTexture(Page, true);
+		#ifdef __3DS__
+		// Keep the authored waterfall/title composition behind an open menu.
+		// The lore page remains untouched when no menu is active, and the lower
+		// LCD can then be guaranteed solid black for the whole lore sequence.
+		if (gamestate == GS_DEMOSCREEN && I_3DSNativeMenuVisible())
+		{
+			FGameTexture *titleTexture = TexMan.GetGameTextureByName("TITLEPIC", true);
+			if (titleTexture != nullptr) pageTexture = titleTexture;
+		}
+		I_3DSSetMenuStoryPage(pageTexture != nullptr &&
+			FName(pageTexture->GetName()) == FName("ZSTORY"));
+		#endif
+		DrawTexture(twod, pageTexture, 0, 0,
 			DTA_Fullscreen, true,
 			DTA_Masked, false,
 			DTA_BilinearFilter, true,
@@ -1547,6 +1705,7 @@ void D_DoAdvanceDemo (void)
 	static int democount = 0;
 	static int pagecount;
 	FString pagename;
+	bool creditPage = false;
 
 	advancedemo = false;
 
@@ -1628,11 +1787,16 @@ void D_DoAdvanceDemo (void)
 		{
 			pagename = gameinfo.creditPages[pagecount].GetChars();
 			pagecount = (pagecount+1) % gameinfo.creditPages.Size();
+			creditPage = true;
 		}
 		demosequence = 1;
 		break;
 	}
 
+
+#ifdef __3DS__
+	I_3DSSetMenuStoryPage(creditPage);
+#endif
 
 	if (pagename.IsNotEmpty())
 	{
@@ -2321,13 +2485,15 @@ static void CheckCmdLine()
 static void NewFailure ()
 {
 #ifdef __3DS__
-    extern size_t I_3DSLastFailedNewRequest();
-    extern uintptr_t I_3DSLastFailedNewCaller();
     M_3DSLogHeap("operator new failure");
     Printf("[3DS memory] failed C++ allocation: %zu bytes from %p\n",
         I_3DSLastFailedNewRequest(), (void *)I_3DSLastFailedNewCaller());
-#endif
+    I_FatalError("Failed to allocate %zu bytes from system heap (caller 0x%08lx)",
+        I_3DSLastFailedNewRequest(),
+        static_cast<unsigned long>(I_3DSLastFailedNewCaller()));
+#else
     I_FatalError ("Failed to allocate memory from system heap");
+#endif
 }
 
 
@@ -2853,9 +3019,16 @@ static void System_PlayStartupSound(const char* sndname)
 
 static bool System_IsSpecialUI()
 {
+	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+	// Only the live, unpaused world uses the 320x192 (80%) performance canvas.
+	// Title art, lore pages, intermissions and every menu are authored for the
+	// physical 400x240 LCD and must never inherit gameplay's reduced surface.
+	return gamestate != GS_LEVEL || generic_ui || !!log_vgafont || !!dlg_vgafont ||
+		ConsoleState != c_up || multiplayer || menuactive != MENU_Off;
+	#else
 	return (generic_ui || !!log_vgafont || !!dlg_vgafont || ConsoleState != c_up || multiplayer ||
 		(menuactive == MENU_On && CurrentMenu && !CurrentMenu->IsKindOf("ConversationMenu")));
-
+	#endif
 }
 
 static bool System_DisableTextureFilter()

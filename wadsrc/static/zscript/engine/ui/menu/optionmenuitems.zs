@@ -55,7 +55,10 @@ class OptionMenuItem : MenuItemBase
 		
 		int x;
 		int w = Menu.OptionWidth(label) * CleanXfac_1;
-		if (!mCentered) x = indent - w;
+		let current = OptionMenu(Menu.GetCurrentMenu());
+		if (!mCentered && current != null && current.UseSplitOptionLayout())
+			x = current.GetSplitLabelLeft();
+		else if (!mCentered) x = indent - w;
 		else x = (screen.GetWidth() - w) / 2;
 		Menu.DrawOptionText(x, y, color, label, grayed);
 		return x;
@@ -63,7 +66,17 @@ class OptionMenuItem : MenuItemBase
 
 	protected void drawValue(int indent, int y, int color, String text, bool grayed = false)
 	{
-		Menu.DrawOptionText(indent + CursorSpace(), y, color, text, grayed);
+		let current = OptionMenu(Menu.GetCurrentMenu());
+		if (current != null && current.UseSplitOptionLayout())
+		{
+			int width = Menu.OptionWidth(Stringtable.Localize(text)) * CleanXfac_1;
+			Menu.DrawOptionText(current.GetSplitValueRight() - width, y,
+				color, text, grayed);
+		}
+		else
+		{
+			Menu.DrawOptionText(indent + CursorSpace(), y, color, text, grayed);
+		}
 	}
 
 	
@@ -762,7 +775,9 @@ class OptionMenuSliderBase : OptionMenuItem
 			maxlen = Menu.OptionWidth(textbuf) * CleanXfac_1;
 		}
 
-		mSliderShort = right + maxlen > screen.GetWidth();
+		let current = OptionMenu(Menu.GetCurrentMenu());
+		mSliderShort = (current != null && current.UseCompactSplitSliders()) ||
+			right + maxlen > screen.GetWidth();
 
 		if (!mSliderShort)
 		{
@@ -789,7 +804,9 @@ class OptionMenuSliderBase : OptionMenuItem
 	override int Draw(OptionMenuDescriptor desc, int y, int indent, bool selected)
 	{
 		drawLabel(indent, y, selected? OptionMenuSettings.mFontColorSelection : OptionMenuSettings.mFontColor, IsGrayed());
-		mDrawX = indent + CursorSpace();
+		let current = OptionMenu(Menu.GetCurrentMenu());
+		mDrawX = current != null && current.UseSplitOptionLayout()
+			? current.GetSplitValueLeft() : indent + CursorSpace();
 		DrawSlider (mDrawX, y, mMin, mMax, GetSliderValue(), mShowValue, indent, IsGrayed());
 		return indent;
 	}

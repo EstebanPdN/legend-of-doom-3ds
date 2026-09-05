@@ -58,6 +58,9 @@
 #include "sbar.h"
 #include "m_png.h"
 #include "a_keys.h"
+#ifdef __3DS__
+#include "common/platform/3ds/i_input_3ds.h"
+#endif
 #include "cmdlib.h"
 #include "d_net.h"
 #include "d_event.h"
@@ -602,7 +605,16 @@ void G_BuildTiccmd (ticcmd_t *cmd)
 	cmd->consistancy = consistancy[consoleplayer][(maketic/ticdup)%BACKUPTICS];
 
 	strafe = buttonMap.ButtonDown(Button_Strafe);
-	speed = buttonMap.ButtonDown(Button_Speed) ^ (int)cl_run;
+	bool speedButton = buttonMap.ButtonDown(Button_Speed);
+	#ifdef __3DS__
+	// X is a Zelda-style sprint: it is useful only when enabled and Link is at
+	// full health. Losing even a quarter-heart immediately returns to walking.
+	AActor *sprintActor = players[consoleplayer].mo;
+	const bool fullHealth = sprintActor != nullptr && sprintActor->health > 0 &&
+		sprintActor->health >= sprintActor->GetMaxHealth(true);
+	if (!I_3DSSprintWithXEnabled() || !fullHealth) speedButton = false;
+	#endif
+	speed = static_cast<int>(speedButton) ^ (int)cl_run;
 
 	forward = side = fly = 0;
 
@@ -687,7 +699,7 @@ void G_BuildTiccmd (ticcmd_t *cmd)
 	if (buttonMap.ButtonDown(Button_User3))			cmd->ucmd.buttons |= BT_USER3;
 	if (buttonMap.ButtonDown(Button_User4))			cmd->ucmd.buttons |= BT_USER4;
 
-	if (buttonMap.ButtonDown(Button_Speed))			cmd->ucmd.buttons |= BT_SPEED;
+	if (speedButton)							cmd->ucmd.buttons |= BT_SPEED;
 	if (buttonMap.ButtonDown(Button_Strafe))		cmd->ucmd.buttons |= BT_STRAFE;
 	if (buttonMap.ButtonDown(Button_MoveRight))		cmd->ucmd.buttons |= BT_MOVERIGHT;
 	if (buttonMap.ButtonDown(Button_MoveLeft))		cmd->ucmd.buttons |= BT_MOVELEFT;
@@ -706,6 +718,19 @@ void G_BuildTiccmd (ticcmd_t *cmd)
 	float joyaxes[NUM_JOYAXIS];
 
 	I_GetAxes(joyaxes);
+	#ifdef __3DS__
+	if (!I_3DSCStickLookEnabled())
+	{
+		joyaxes[JOYAXIS_Yaw] = 0.0f;
+		joyaxes[JOYAXIS_Pitch] = 0.0f;
+	}
+	else
+	{
+		const float sensitivity = I_3DSCStickSensitivity();
+		joyaxes[JOYAXIS_Yaw] *= sensitivity;
+		joyaxes[JOYAXIS_Pitch] *= sensitivity;
+	}
+	#endif
 
 	// Remap some axes depending on button state.
 	if (buttonMap.ButtonDown(Button_Strafe) || (buttonMap.ButtonDown(Button_Mlook) && lookstrafe))

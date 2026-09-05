@@ -41,8 +41,8 @@ jobs:
           git -C "$GITHUB_WORKSPACE" diff --check
           ./platform/3ds/test-patches.sh
 
-      - name: Build release packages
-        run: ./platform/3ds/build.sh
+      - name: Build physical-hardware-safe packages
+        run: LOD3DS_BUILD_PROFILE=hardware-safe ./platform/3ds/build.sh
 
       - name: Read build metadata
         id: metadata
@@ -62,6 +62,7 @@ jobs:
           set -euo pipefail
           MANIFEST="build-3ds/dist/BUILD-MANIFEST.txt"
           ARTIFACT_STEM="$(sed -n 's/^artifact_stem=//p' "$MANIFEST")"
+          VERSION="$(tr -d '\r\n' < platform/3ds/version.txt)"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" diff --check
           test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain --untracked-files=all)"
@@ -69,7 +70,9 @@ jobs:
             grep -Ei '(^|/)[^/]*\.(nes|rom|wad|pk3|dmp|dump|sav|cia|3dsx|elf|3ds|cci|cxi|gb|gbc|gba|z64|n64|v64|7z|rar)$'
           ! git -C "$GITHUB_WORKSPACE" ls-files | \
             grep -E '(^|/)(AGENTS\.md|PROTOCOL\.md|WORKFLOW\.md|GITHUB_RELEASE_WORKFLOW\.md)$'
-          grep -qx 'profile=release' "$MANIFEST"
+          grep -qx 'profile=hardware-safe' "$MANIFEST"
+          grep -qx "port_version=$VERSION" "$MANIFEST"
+          test "$ARTIFACT_STEM" = "legend-of-doom-3ds-v${VERSION}-hardware-safe-$(sed -n 's/^build_id=//p' "$MANIFEST")"
           grep -qx 'git_status=clean' "$MANIFEST"
           test -f "build-3ds/dist/${ARTIFACT_STEM}.3dsx"
           test -f "build-3ds/dist/${ARTIFACT_STEM}.cia"

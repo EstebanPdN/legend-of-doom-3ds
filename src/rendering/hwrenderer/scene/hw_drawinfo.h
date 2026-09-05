@@ -273,7 +273,7 @@ public:
 	void PrepareUnhandledMissingTextures();
 	void PrepareUpperGap(seg_t * seg);
 	void PrepareLowerGap(seg_t * seg);
-	void CreateFloodPoly(wallseg * ws, FFlatVertex *vertices, float planez, sector_t * sec, bool ceiling);
+	bool CreateFloodPoly(wallseg * ws, FFlatVertex *vertices, float planez, sector_t * sec, bool ceiling);
 	void CreateFloodStencilPoly(wallseg * ws, FFlatVertex *vertices);
 
 	void AddHackedSubsector(subsector_t * sub);
@@ -343,5 +343,4 @@ void CleanSWDrawer();
 sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bounds, float fov, float ratio, float fovratio, bool mainview, bool toscreen);
 void WriteSavePic(player_t* player, FileWriter* file, int width, int height);
 sector_t* RenderView(player_t* player);
-
 

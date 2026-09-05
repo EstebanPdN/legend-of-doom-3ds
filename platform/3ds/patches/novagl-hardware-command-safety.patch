@@ -1,0 +1,2712 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -143,6 +143,8 @@
+ # world render onto NovaGL's matrix stacks, TEV colour, alpha test and VBO path.
+ option(NOVAGL_GZDOOM_COMPAT "Enable the GZDoom GLES fixed-function bridge" OFF)
+ set(NOVAGL_DIAG_DRAW_LIMIT "0" CACHE STRING "Number of initial GL draws to log")
++set(NOVAGL_DIAG_DRAW_START "0" CACHE STRING "First GL draw selected for diagnostic logging")
++set(NOVAGL_DIAG_DRAW_CUTOFF "-1" CACHE STRING "First-frame PICA draw prefix (-1 keeps all draws)")
+ set(NOVAGL_DIAG_TEX_LIMIT "0" CACHE STRING "Number of initial texture uploads to log")
+ option(NOVAGL_DIAG_TEX_DUMP_RAW "Write raw/swizzled texture diagnostics to SD" OFF)
+ option(NOVAGL_HARDWARE_STAGE_LOG "Write first-frame Citro3D swap breadcrumbs to SD" OFF)
+@@ -156,6 +158,7 @@
+         NOVAGL_TOP_ONLY=1)
+ endif ()
+ target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_DRAW_LIMIT=${NOVAGL_DIAG_DRAW_LIMIT})
++target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_DRAW_CUTOFF=${NOVAGL_DIAG_DRAW_CUTOFF})
+ target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_TEX_LIMIT=${NOVAGL_DIAG_TEX_LIMIT})
+ if (NOVAGL_DIAG_TEX_DUMP_RAW)
+     target_compile_definitions(NovaGL PRIVATE NOVA_DIAG_TEX_DUMP_RAW=1)
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -77,12 +77,13 @@
+ 
+ /* Moved out of NovaGL.h: depends on GX_TRANSFER_* from <3ds.h>, which we now keep
+  * confined to the .c side so the public header doesn't leak libctru's `Thread`
+- * typedef into C++ callers. */
++ * typedef into C++ callers. SDL already owns TOP as RGBA8_OES, so the transfer
++ * must retain that four-byte scanout layout as well. */
+ #define DISPLAY_TRANSFER_FLAGS \
+     (GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | \
+      GX_TRANSFER_RAW_COPY(0) | \
+      GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | \
+-     GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
++     GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGBA8) | \
+      GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
+ 
+ /* Frame buffering depth (1 = single, 2 = double, 3 = triple). NovaGL splits
+@@ -640,6 +641,10 @@
+     g.vp_y = 0;
+     g.vp_w = NOVA_SCREEN_W;
+     g.vp_h = NOVA_SCREEN_H;
++    g.viewport_empty = 0;
++    g.scissor_empty = 0;
++    g.transform_invalid = 0;
++    g.vertex_stream_invalid = 0;
+ 
+     g.color_mask_r = g.color_mask_g = g.color_mask_b = g.color_mask_a = GL_TRUE;
+ 
+@@ -1227,6 +1232,7 @@
+  * draw path runs. Disable: -DNOVAGL_NO_CLIPSPACE_NEAR_CLIP=1 / -DNOVAGL_NO_NEAR_CLIP=1. */
+ #ifndef NOVAGL_NO_CLIPSPACE_NEAR_CLIP
+ typedef struct { float x, y, z, w, u, v; uint8_t r, g, b, a; } NovaClipV; /* 28 B */
++_Static_assert(sizeof(NovaClipV) == 28, "NovaClipV must match the PICA loader stride");
+ 
+ static inline NovaClipV nova_clipv_lerp(const NovaClipV *a, const NovaClipV *b, float t) {
+     NovaClipV o;
+@@ -1250,12 +1256,23 @@
+         const NovaClipV *nxt = &tri[(i + 1) % 3];
+         float dc = cur->z + cur->w;
+         float dn = nxt->z + nxt->w;
++        if (!nova_float_is_finite(dc) || !nova_float_is_finite(dn)) return 0;
+         int ci = dc >= 0.0f, ni = dn >= 0.0f;
+         if (ci) poly[n++] = *cur;
+         if (ci != ni && n < 4) {
+             float denom = dc - dn;
+-            float t = (denom != 0.0f) ? (dc / denom) : 0.0f;
+-            poly[n++] = nova_clipv_lerp(cur, nxt, t);
++            if (!nova_float_is_finite(denom) || denom == 0.0f) return 0;
++            float t = dc / denom;
++            if (!nova_float_is_finite(t)) return 0;
++            NovaClipV clipped = nova_clipv_lerp(cur, nxt, t);
++            if (!nova_float_is_finite(clipped.x) ||
++                !nova_float_is_finite(clipped.y) ||
++                !nova_float_is_finite(clipped.z) ||
++                !nova_float_is_finite(clipped.w) ||
++                !nova_float_is_finite(clipped.u) ||
++                !nova_float_is_finite(clipped.v))
++                return 0;
++            poly[n++] = clipped;
+         }
+     }
+     if (n < 3) return 0;
+@@ -1306,16 +1323,23 @@
+         int j = (i + 1) % in_count;
+         float dc = nova_modelv_plane_distance(&in[i], plane, ax, ay, az, aw);
+         float dn = nova_modelv_plane_distance(&in[j], plane, ax, ay, az, aw);
+-        if (!isfinite(dc) || !isfinite(dn)) return 0;
++        if (!nova_float_is_finite(dc) || !nova_float_is_finite(dn)) return 0;
+         int ci = dc >= 0.0f, ni = dn >= 0.0f;
+         if (ci) out[n++] = in[i];
+         if (ci != ni && n < out_cap) {
+             float denom = dc - dn;
+-            if (!isfinite(denom) || denom == 0.0f) return 0;
++            if (!nova_float_is_finite(denom) || denom == 0.0f) return 0;
+             float t = dc / denom;
+-            if (!isfinite(t)) return 0;
++            if (!nova_float_is_finite(t)) return 0;
+             t = clampf(t, 0.0f, 1.0f);
+-            out[n++] = nova_modelv_lerp(&in[i], &in[j], t);
++            NovaModelV clipped = nova_modelv_lerp(&in[i], &in[j], t);
++            if (!nova_float_is_finite(clipped.x) ||
++                !nova_float_is_finite(clipped.y) ||
++                !nova_float_is_finite(clipped.z) ||
++                !nova_float_is_finite(clipped.u) ||
++                !nova_float_is_finite(clipped.v))
++                return 0;
++            out[n++] = clipped;
+         }
+     }
+     return n;
+@@ -1397,11 +1421,8 @@
+     /* apply_gpu_state already rebuilt this exact matrix when either stack
+      * changed. Reusing it removes a 4x4 multiply from each clip candidate. */
+     C3D_Mtx mvp = g.mvp_combined;
+-    for (int row = 0; row < 4; ++row) {
+-        if (!isfinite(mvp.r[row].x) || !isfinite(mvp.r[row].y) ||
+-            !isfinite(mvp.r[row].z) || !isfinite(mvp.r[row].w))
+-            return 3; /* invalid matrix: skip instead of wedging PICA */
+-    }
++    if (!nova_mtx_is_finite(&mvp))
++        return 3; /* invalid matrix: skip instead of wedging PICA */
+     const C3D_FVec rz = mvp.r[2], rw = mvp.r[3];
+     float ax = rz.x + rw.x, ay = rz.y + rw.y, az = rz.z + rw.z, aw = rz.w + rw.w;
+     /* PICA's perspective interpolator loses useful UV precision when a
+@@ -1425,12 +1446,25 @@
+ 
+     /* Pass 1 — skip all CPU work unless a referenced vertex actually lies
+      * outside either active plane. */
+-    int crosses = 0;
++    /* A side-plane crossing is classified by the caller and encoded in the
++     * same staged value as an eye crossing.  In that case clipping is required
++     * even if every vertex is already in front of the eye plane. */
++    int crosses = force_eye_clip ? 1 : 0;
+     for (int i = 0; i < count; i++) {
+         const NovaModelV *p = &vin[i];
+-        if ((near_clip && ax * p->x + ay * p->y + az * p->z + aw < 0.0f) ||
+-            (user_clip && nova_modelv_plane_distance(p, 0, ax, ay, az, aw) < 0.0f) ||
+-            (force_eye_clip && nova_modelv_plane_distance(p, 2, ex, ey, ez, ew) < 0.0f)) {
++        float near_distance = near_clip ?
++            ax * p->x + ay * p->y + az * p->z + aw : 1.0f;
++        float user_distance = user_clip ?
++            nova_modelv_plane_distance(p, 0, ax, ay, az, aw) : 1.0f;
++        float eye_distance = force_eye_clip ?
++            nova_modelv_plane_distance(p, 2, ex, ey, ez, ew) : 1.0f;
++        if (!nova_float_is_finite(near_distance) ||
++            !nova_float_is_finite(user_distance) ||
++            !nova_float_is_finite(eye_distance))
++            return 1; /* handled by dropping this unsafe batch */
++        if ((near_clip && near_distance < 0.0f) ||
++            (user_clip && user_distance < 0.0f) ||
++            (force_eye_clip && eye_distance < 0.0f)) {
+             crosses = 1;
+             break;
+         }
+@@ -1485,20 +1519,20 @@
+                                                   planes, plane_count);
+         if (poly_count >= 3) {
+             int added = (poly_count - 2) * 3;
+-            if (out_count > INT_MAX - added) return 0;
++            if (out_count > INT_MAX - added) return 1;
+             out_count += added;
+         }
+     }
+     if (out_count == 0) return 1; /* whole batch behind near — nothing to draw */
+ 
+-    if (out_count > g.client_array_buf_size / (int)sizeof(NovaModelV)) return 0;
++    if (out_count > g.client_array_buf_size / (int)sizeof(NovaModelV)) return 1;
+     int out_bytes = out_count * (int)sizeof(NovaModelV);
+     NovaModelV *out = (NovaModelV *) linear_alloc_ring(
+         g.client_array_buf, &g.client_array_buf_offset, out_bytes, g.client_array_buf_size);
+-    /* Ring couldn't fit the clipped output. Returning 0 makes the caller fall
+-     * through to its own (unclipped) draw path — which will also hit the ring
+-     * and skip if it can't fit. Either way, no NULL deref. */
+-    if (!out) return 0;
++    /* A batch that required eye/side/near clipping must never fall back to its
++     * original unsafe geometry. If staging cannot fit, handle it by dropping
++     * this batch for the frame. */
++    if (!out) return 1;
+ 
+     int written = 0;
+     for (int t = 0; t < in_tris; ++t) {
+@@ -1561,7 +1595,8 @@
+     if (va->vbo_id <= 0 || va->vbo_id >= NOVA_MAX_VBOS)
+         return -1;
+     VBOSlot *slot = &g.vbos[va->vbo_id];
+-    if (!slot->allocated || !slot->data || vbo_is_packed_ptc(slot) ||
++    if (!slot->allocated || !slot->data || slot->size < 0 ||
++        vbo_is_packed_ptc(slot) ||
+         !vbo_gpu_readable(slot)) /* heap fallback: PICA can't fetch it */
+         return -1;
+ 
+@@ -1581,10 +1616,11 @@
+         return -1;
+     const uintptr_t attr_offset = (uintptr_t)va->pointer;
+     const size_t elem_bytes = (size_t)va->size * (size_t)esize;
++    const size_t available = (size_t)slot->size;
+     if (firstVertex < 0 || lastVertex < firstVertex ||
+-        attr_offset > (uintptr_t)slot->size ||
+-        (size_t)lastVertex > (SIZE_MAX - (size_t)attr_offset - elem_bytes) / (size_t)stride ||
+-        (size_t)attr_offset + (size_t)lastVertex * (size_t)stride + elem_bytes > (size_t)slot->size)
++        attr_offset > available || elem_bytes > available - attr_offset ||
++        (size_t)lastVertex >
++            (available - (size_t)attr_offset - elem_bytes) / (size_t)stride)
+         return -2; /* referenced vertex lies outside this VBO: skip, never GPU-fetch it */
+     const uint8_t *p = (const uint8_t *)slot->data + attr_offset +
+                        (size_t)firstVertex * (size_t)stride;
+@@ -1598,6 +1634,36 @@
+     return 1;
+ }
+ 
++static int ms_float_attr_is_finite(const MsAttr *attr, GLsizei count,
++                                   int is_elements, GLenum type,
++                                   const uint8_t *idx_src, int firstVertex)
++{
++    if (attr->fmt != GPU_FLOAT) return 1;
++    for (GLsizei i = 0; i < count; ++i) {
++        uint32_t local_index;
++        if (!is_elements) {
++            local_index = (uint32_t)i;
++        } else {
++            uint32_t source_index = type == GL_UNSIGNED_INT
++                ? ((const uint32_t *)idx_src)[i]
++                : type == GL_UNSIGNED_SHORT
++                    ? ((const uint16_t *)idx_src)[i]
++                    : ((const uint8_t *)idx_src)[i];
++            if (source_index < (uint32_t)firstVertex)
++                return 0;
++            local_index = source_index - (uint32_t)firstVertex;
++        }
++        float value[4] = {0.0f, 0.0f, 0.0f, 1.0f};
++        memcpy(value, attr->ptr + (size_t)local_index * (size_t)attr->stride,
++               (size_t)attr->comps * sizeof(float));
++        for (int c = 0; c < attr->comps; ++c) {
++            if (!nova_float_is_finite(value[c]))
++                return 0;
++        }
++    }
++    return 1;
++}
++
+ static int try_draw_multistream(GLenum mode, GPU_Primitive_t prim, GLint first, GLsizei count,
+                                 int is_elements, GLenum type, const uint8_t *idx_src) {
+     if (mode != GL_TRIANGLES && mode != GL_TRIANGLE_STRIP && mode != GL_TRIANGLE_FAN)
+@@ -1607,6 +1673,9 @@
+     if (g.active_shader == NOVA_SHADER_CLIPSPACE)
+         return 0;
+     int firstVertex = is_elements ? 0 : first;
++    if (!is_elements &&
++        (first < 0 || count <= 0 || count - 1 > INT_MAX - first))
++        return 1; /* handled by dropping; never enter a signed-wrap fallback */
+     int lastVertex = is_elements ? 0 : first + count - 1;
+     const void *converted_u16 = NULL;
+ 
+@@ -1625,8 +1694,12 @@
+             if (value < min_index) min_index = value;
+             if (value > max_index) max_index = value;
+         }
+-        if (min_index > 0x7fffffffu || max_index - min_index > 0xffffu)
++        if (min_index > (uint32_t)INT_MAX || max_index > (uint32_t)INT_MAX)
++            return 1;
++        if (max_index - min_index > 0xffffu)
+             return 0;
++        if (count > INT_MAX / (int)sizeof(uint16_t))
++            return 1;
+         const int bytes = count * (int)sizeof(uint16_t);
+         if (bytes > g.index_buf_size)
+             return 0;
+@@ -1668,6 +1741,13 @@
+     if (uvr == -2 || colr == -2 || nrmr == -2) return 1;
+     if (uvr < 0 || colr < 0 || nrmr < 0)
+         return 0;
++    if (!ms_float_attr_is_finite(&pos, count, is_elements, type,
++                                 idx_src, firstVertex) ||
++        (uvr == 1 && !ms_float_attr_is_finite(&uv, count, is_elements, type,
++                                              idx_src, firstVertex)) ||
++        (nrmr == 1 && !ms_float_attr_is_finite(&nrm, count, is_elements, type,
++                                               idx_src, firstVertex)))
++        return 1; /* handled by dropping; never fall through and re-read */
+     /* Every NovaGL vertex shader normalizes v2 as an unsigned-byte colour.
+      * A direct float colour stream would therefore be divided by 255 twice;
+      * let the packed staging path convert it instead. */
+@@ -1691,6 +1771,8 @@
+             gpuIdx = idx_src; /* EBO storage: linear + flushed on upload */
+         } else {
+             /* Client indices or heap-backed EBO — stage through the ring. */
++            if (count > INT_MAX / esz)
++                return 1;
+             const int ibytes = count * esz;
+             if (ibytes > g.index_buf_size)
+                 return 0;
+@@ -1736,6 +1818,7 @@
+      * path's cached single-buffer layout. */
+     nova_invalidate_attr_cache();
+     nova_invalidate_buf_cache();
++    g.vertex_stream_invalid = !ok;
+     if (!ok)
+         return 0; /* staged fallback reprograms everything */
+ 
+@@ -1747,8 +1830,15 @@
+          * values so glColor(1,1,1,1) remains white instead of near-black. */
+         nova_setup_fixed_color();
+     }
+-    if (lit && nrmr != 1)
+-        C3D_FixedAttribSet(3, g.cur_normal[0], g.cur_normal[1], g.cur_normal[2], 0.0f);
++    if (lit && nrmr != 1) {
++        if (!nova_float_is_finite(g.cur_normal[0]) ||
++            !nova_float_is_finite(g.cur_normal[1]) ||
++            !nova_float_is_finite(g.cur_normal[2]))
++            g.vertex_stream_invalid = 1;
++        else
++            C3D_FixedAttribSet(3, g.cur_normal[0], g.cur_normal[1],
++                               g.cur_normal[2], 0.0f);
++    }
+ 
+     if (!is_elements &&
+         (mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) &&
+@@ -1870,23 +1960,20 @@
+     size_t available = (size_t)-1;
+     if (g.va_vertex.vbo_id > 0 && g.va_vertex.vbo_id < NOVA_MAX_VBOS) {
+         const VBOSlot *slot = &g.vbos[g.va_vertex.vbo_id];
+-        if (!slot->allocated || !slot->data) return 0;
++        if (!slot->allocated || !slot->data) return 3;
+         const uintptr_t offset = (uintptr_t)g.va_vertex.pointer;
+-        if (offset >= (uintptr_t)slot->size) return 0;
++        if (offset >= (uintptr_t)slot->size) return 3;
+         base = (const uint8_t *)slot->data + offset;
+         available = (size_t)slot->size - (size_t)offset;
+     } else {
+         base = (const uint8_t *)g.va_vertex.pointer;
+-        if (!base || !NOVA_PTR_OK(base)) return 0;
++        if (!base || !NOVA_PTR_OK(base)) return 3;
+     }
+ 
+     /* apply_gpu_state keeps this current for all shader variants. */
+     C3D_Mtx mvp = g.mvp_combined;
+-    for (int row = 0; row < 4; ++row) {
+-        if (!isfinite(mvp.r[row].x) || !isfinite(mvp.r[row].y) ||
+-            !isfinite(mvp.r[row].z) || !isfinite(mvp.r[row].w))
+-            return 3; /* skip invalid geometry before it reaches PICA */
+-    }
++    if (!nova_mtx_is_finite(&mvp))
++        return 3; /* skip invalid geometry before it reaches PICA */
+     const C3D_FVec rz = mvp.r[2], rw = mvp.r[3];
+     const float ax = rz.x + rw.x, ay = rz.y + rw.y;
+     const float az = rz.z + rw.z, aw = rz.w + rw.w;
+@@ -1918,11 +2005,16 @@
+     int needs_other_clip = 0;
+     int eye_inside = 0;
+     int eye_outside = 0;
++    int side_inside[4] = {0, 0, 0, 0};
++    int side_outside[4] = {0, 0, 0, 0};
+     uint32_t first_eye_bad = 0;
+     for (GLsizei i = 0; i < count; ++i) {
+         uint32_t vertex_index;
+         if (!is_elements) {
+-            vertex_index = (uint32_t)(first + i);
++            const uint64_t linear_index = (uint64_t)(uint32_t)first + (uint64_t)(uint32_t)i;
++            if (first < 0 || linear_index > UINT32_MAX)
++                return 3;
++            vertex_index = (uint32_t)linear_index;
+         } else if (type == GL_UNSIGNED_INT) {
+             vertex_index = ((const uint32_t *)idx_src)[i];
+         } else if (type == GL_UNSIGNED_SHORT) {
+@@ -1930,23 +2022,44 @@
+         } else {
+             vertex_index = ((const uint8_t *)idx_src)[i];
+         }
++        if ((size_t)vertex_index > SIZE_MAX / (size_t)stride) {
++#if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
++            if (geom_probe) s_geom_probe.oob_vertices++;
++#endif
++            return 3;
++        }
+         const size_t byte_offset = (size_t)vertex_index * (size_t)stride;
+-        if (available != (size_t)-1 && byte_offset + 3 * sizeof(float) > available) {
++        if (available != (size_t)-1 &&
++            (byte_offset > available || (size_t)stride > available - byte_offset)) {
+ #if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
+             if (geom_probe) s_geom_probe.oob_vertices++;
+ #endif
+-            return 1; /* malformed range: keep it out of the zero-copy path */
++            return 3; /* malformed range: never re-read it in the gather path */
+         }
+-        float p[3];
++        float p[5];
+         memcpy(p, base + byte_offset, sizeof(p));
+-        if (!isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2]))
+-            return 3; /* never submit NaN/Inf coordinates to the real PICA */
++        if (!nova_float_is_finite(p[0]) || !nova_float_is_finite(p[1]) ||
++            !nova_float_is_finite(p[2]) || !nova_float_is_finite(p[3]) ||
++            !nova_float_is_finite(p[4]))
++            return 3; /* never submit NaN/Inf vertex data to the real PICA */
++
++        const float cx = mvp.r[0].x*p[0] + mvp.r[0].y*p[1] + mvp.r[0].z*p[2] + mvp.r[0].w;
++        const float cy = mvp.r[1].x*p[0] + mvp.r[1].y*p[1] + mvp.r[1].z*p[2] + mvp.r[1].w;
++        const float cz = mvp.r[2].x*p[0] + mvp.r[2].y*p[1] + mvp.r[2].z*p[2] + mvp.r[2].w;
++        const float cw = mvp.r[3].x*p[0] + mvp.r[3].y*p[1] + mvp.r[3].z*p[2] + mvp.r[3].w;
++        if (!nova_float_is_finite(cx) || !nova_float_is_finite(cy) ||
++            !nova_float_is_finite(cz) || !nova_float_is_finite(cw))
++            return 3;
++
++        const float side_distance[4] = { cx + cw, cw - cx, cy + cw, cw - cy };
++        for (int plane = 0; plane < 4; ++plane) {
++            if (!nova_float_is_finite(side_distance[plane]))
++                return 3;
++            if (side_distance[plane] < 0.0f) side_outside[plane] = 1;
++            else side_inside[plane] = 1;
++        }
+ #if !(defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG)
+         if (geom_probe) {
+-            const float cx = mvp.r[0].x*p[0] + mvp.r[0].y*p[1] + mvp.r[0].z*p[2] + mvp.r[0].w;
+-            const float cy = mvp.r[1].x*p[0] + mvp.r[1].y*p[1] + mvp.r[1].z*p[2] + mvp.r[1].w;
+-            const float cz = mvp.r[2].x*p[0] + mvp.r[2].y*p[1] + mvp.r[2].z*p[2] + mvp.r[2].w;
+-            const float cw = mvp.r[3].x*p[0] + mvp.r[3].y*p[1] + mvp.r[3].z*p[2] + mvp.r[3].w;
+             s_geom_probe.vertices++;
+             if (!(cx == cx && cy == cy && cz == cz && cw == cw)) {
+                 s_geom_probe.nonfinite++;
+@@ -1961,13 +2074,17 @@
+             if (vertex_index > draw_max_index) draw_max_index = vertex_index;
+         }
+ #endif
+-        int outside_near = near_clip &&
+-            ax * p[0] + ay * p[1] + az * p[2] + aw < 0.0f;
+-        int outside_user = user_clip &&
+-            nova_gzdoom_user_clip_distance(p[0], p[1], p[2]) < 0.0f;
++        const float near_distance = ax * p[0] + ay * p[1] + az * p[2] + aw;
++        const float user_distance = user_clip
++            ? nova_gzdoom_user_clip_distance(p[0], p[1], p[2]) : 1.0f;
++        if (!nova_float_is_finite(near_distance) || !nova_float_is_finite(user_distance))
++            return 3;
++        int outside_near = near_clip && near_distance < 0.0f;
++        int outside_user = user_clip && user_distance < 0.0f;
+         const float eye_epsilon = 1.0f / 16.0f;
+-        const float eye_distance =
+-            rw.x * p[0] + rw.y * p[1] + rw.z * p[2] + rw.w - eye_epsilon;
++        const float eye_distance = cw - eye_epsilon;
++        if (!nova_float_is_finite(eye_distance))
++            return 3;
+         int outside_eye = eye_clip && eye_distance < 0.0f;
+         if (eye_clip) {
+             if (outside_eye) {
+@@ -2009,6 +2126,13 @@
+         }
+     }
+ #endif
++    int side_crossing = 0;
++    for (int plane = 0; plane < 4; ++plane) {
++        if (side_outside[plane] && !side_inside[plane])
++            return 3; /* the complete batch is invisible beyond one side plane */
++        if (side_outside[plane] && side_inside[plane])
++            side_crossing = 1;
++    }
+     if (eye_outside) {
+         /* Every referenced vertex is behind the eye: no triangle can produce
+          * visible pixels, and gathering/clipping it would only burn CPU. */
+@@ -2016,9 +2140,35 @@
+         (void)first_eye_bad;
+         return 2;
+     }
++    if (side_crossing)
++        return 2;
+     return needs_other_clip;
+ }
+ #endif
++
++static int nova_vbo_array_range_valid(const NovaVertArray *va, uint32_t max_index) {
++    if (!va->enabled || va->vbo_id == 0)
++        return 1;
++    if (va->vbo_id >= NOVA_MAX_VBOS)
++        return 0;
++    const VBOSlot *slot = &g.vbos[va->vbo_id];
++    if (!slot->allocated || !slot->data || slot->size < 0)
++        return 0;
++    if (vbo_is_packed_ptc(slot))
++        return max_index < (uint32_t)((size_t)slot->size / 24u);
++
++    const int type_bytes = gl_type_size(va->type);
++    const int stride = calc_stride(va->stride, va->size, va->type);
++    if (type_bytes <= 0 || va->size <= 0 || stride <= 0)
++        return 0;
++    const size_t attr_offset = (size_t)(uintptr_t)va->pointer;
++    const size_t elem_bytes = (size_t)va->size * (size_t)type_bytes;
++    const size_t available = (size_t)slot->size;
++    if (attr_offset > available || elem_bytes > available - attr_offset)
++        return 0;
++    return (size_t)max_index <=
++        (available - attr_offset - elem_bytes) / (size_t)stride;
++}
+ 
+ 
+ void nova_draw_internal(GLenum mode, GLint first, GLsizei count, int is_elements, GLenum type, const GLvoid *indices) {
+@@ -2034,7 +2184,7 @@
+      * (a negative count would blow the interleave loop) but drop the error
+      * bookkeeping and the per-call enum scans. */
+ #if defined(NOVAGL_NO_DEBUG) && NOVAGL_NO_DEBUG
+-    if (count <= 0) return;
++    if (count <= 0 || first < 0) return;
+ #else
+     switch (mode) {
+         case GL_POINTS: case GL_LINES: case GL_LINE_LOOP: case GL_LINE_STRIP:
+@@ -2072,18 +2222,23 @@
+ #endif
+ 
+     if (g.va_vertex.enabled && g.va_vertex.vbo_id > 0 && g.va_vertex.vbo_id < NOVA_MAX_VBOS) {
+-        if (!g.vbos[g.va_vertex.vbo_id].allocated || g.vbos[g.va_vertex.vbo_id].data == NULL) return;
++        if (!g.vbos[g.va_vertex.vbo_id].allocated ||
++            g.vbos[g.va_vertex.vbo_id].data == NULL ||
++            g.vbos[g.va_vertex.vbo_id].size < 0)
++            return;
+     }
+ 
+     const uint8_t *idx_src = NULL;
+     if (is_elements) {
+         if (g.bound_element_array_buffer > 0 && g.bound_element_array_buffer < NOVA_MAX_VBOS) {
+             const VBOSlot *ebo = &g.vbos[g.bound_element_array_buffer];
+-            if (!ebo->allocated || ebo->data == NULL)
++            if (!ebo->allocated || ebo->data == NULL || ebo->size < 0)
+                 return;
+             const uintptr_t index_offset = (uintptr_t)indices;
+             const size_t index_size = type == GL_UNSIGNED_INT ? 4u :
+                                       type == GL_UNSIGNED_SHORT ? 2u : 1u;
++            if ((size_t)count > SIZE_MAX / index_size)
++                return;
+             const size_t index_bytes = (size_t)count * index_size;
+             if (index_offset > (uintptr_t)ebo->size ||
+                 index_bytes > (size_t)ebo->size - (size_t)index_offset)
+@@ -2093,9 +2248,14 @@
+             idx_src = (const uint8_t *) indices;
+         }
+         if (!idx_src) return;
++        if ((type == GL_UNSIGNED_SHORT && ((uintptr_t)idx_src & 1u)) ||
++            (type == GL_UNSIGNED_INT && ((uintptr_t)idx_src & 3u)))
++            return;
+     }
+ 
+     apply_gpu_state();
++    if (nova_draw_region_discarded())
++        return;
+     GPU_Primitive_t prim = gl_to_gpu_primitive(mode);
+     if (mode == GL_LINES || mode == GL_LINE_STRIP) prim = GPU_TRIANGLES;
+ 
+@@ -2131,8 +2291,14 @@
+         !g.va_color.enabled) {
+         VBOSlot *vbo = &g.vbos[g.va_vertex.vbo_id];
+         const uintptr_t attr_offset = (uintptr_t)g.va_vertex.pointer;
+-        const size_t end = attr_offset + (size_t)(first + count) * 20u;
+-        if (first >= 0 && end <= (size_t)vbo->size) {
++        const int first_count_ok = (size_t)count <= SIZE_MAX - (size_t)first;
++        const size_t first_count = first_count_ok ?
++            (size_t)first + (size_t)count : SIZE_MAX;
++        const int range_ok = first_count_ok &&
++            attr_offset <= (uintptr_t)vbo->size &&
++            first_count <= (SIZE_MAX - (size_t)attr_offset) / 20u &&
++            (size_t)attr_offset + first_count * 20u <= (size_t)vbo->size;
++        if (range_ok) {
+             uint8_t *base = (uint8_t *)vbo->data + attr_offset;
+             if ((mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) &&
+                 count == 4 && g.static_sequential_quad_indices) {
+@@ -2166,11 +2332,14 @@
+         g.va_color.enabled && g.va_color.vbo_id == g.va_vertex.vbo_id && g.va_color.size == 4 && g.va_color.type ==
+         GL_UNSIGNED_BYTE && g.va_color.stride == 24 && (uintptr_t) g.va_color.pointer == 20) {
+         VBOSlot *vbo = &g.vbos[g.va_vertex.vbo_id];
+-        int available = vbo->size - first * 24;
+-        if (available < count * 24) {
+-            count = available / 24;
++        if ((size_t)first > (size_t)vbo->size / 24u)
++            return;
++        size_t available = (size_t)vbo->size - (size_t)first * 24u;
++        if ((size_t)count > available / 24u) {
++            count = (GLsizei)(available / 24u);
+             if (count <= 0) return;
+         }
++        if (count > INT_MAX / 24) return;
+         int req_size = count * 24;
+ 
+         if (vbo_is_packed_ptc(vbo)) {
+@@ -2245,6 +2414,10 @@
+         } else {
+             /* Client indices OR a heap-backed EBO (idx_src already points at
+              * its store) — stage through the GPU-visible index ring. */
++            if (count > INT_MAX / elem_size) {
++                cleanup_vbo_stream();
++                return;
++            }
+             int ibytes = count * elem_size;
+             if (ibytes <= g.index_buf_size) {
+                 void *staged = linear_alloc_ring(g.index_buf, &g.index_buf_offset,
+@@ -2300,6 +2473,39 @@
+         }
+     }
+ 
++    uint32_t max_gather_index = 0;
++    if (is_elements) {
++        for (GLsizei i = 0; i < count; ++i) {
++            uint32_t value = type == GL_UNSIGNED_INT
++                ? ((const uint32_t *)idx_src)[i]
++                : type == GL_UNSIGNED_SHORT
++                    ? ((const uint16_t *)idx_src)[i]
++                    : ((const uint8_t *)idx_src)[i];
++            if (value > max_gather_index) max_gather_index = value;
++        }
++    } else {
++        const uint64_t last = (uint64_t)(uint32_t)first + (uint64_t)(uint32_t)count - 1u;
++        if (first < 0 || last > (uint64_t)INT_MAX) {
++            cleanup_vbo_stream();
++            return;
++        }
++        max_gather_index = (uint32_t)last;
++    }
++    if (max_gather_index > (uint32_t)INT_MAX) {
++        cleanup_vbo_stream();
++        return;
++    }
++    {
++        const NovaVertArray *arrs[4] = { &g.va_vertex, &g.va_texcoord,
++                                         &g.va_color, &g.va_normal };
++        for (int a = 0; a < 4; ++a) {
++            if (!nova_vbo_array_range_valid(arrs[a], max_gather_index)) {
++                cleanup_vbo_stream();
++                return;
++            }
++        }
++    }
++
+     // Position-element selection.
+     //
+     // Default: 3. For the full/basic/texmtx shaders we MUST stay on 3 even
+@@ -2327,6 +2533,11 @@
+     int col_offset = pos_bytes + 8;
+     int normal_offset = pos_bytes + 12;
+ 
++    if (internal_stride <= 0 || count > INT_MAX / internal_stride) {
++        gl_set_error(GL_OUT_OF_MEMORY);
++        cleanup_vbo_stream();
++        return;
++    }
+     int req_size = count * internal_stride;
+     if (req_size > g.client_array_buf_size) {
+         gl_set_error(GL_OUT_OF_MEMORY);
+@@ -2369,6 +2580,17 @@
+     int t_str = calc_stride(g.va_texcoord.stride, g.va_texcoord.size, g.va_texcoord.type);
+     int c_str = calc_stride(g.va_color.stride, g.va_color.size, g.va_color.type);
+     int n_str = calc_stride(g.va_normal.stride, g.va_normal.size, g.va_normal.type);
++    if ((g.va_vertex.enabled &&
++         (p_str <= 0 || max_gather_index > SIZE_MAX / (size_t)p_str)) ||
++        (g.va_texcoord.enabled &&
++         (t_str <= 0 || max_gather_index > SIZE_MAX / (size_t)t_str)) ||
++        (g.va_color.enabled &&
++         (c_str <= 0 || max_gather_index > SIZE_MAX / (size_t)c_str)) ||
++        (g.va_normal.enabled &&
++         (n_str <= 0 || max_gather_index > SIZE_MAX / (size_t)n_str))) {
++        cleanup_vbo_stream();
++        return;
++    }
+ 
+     const uint8_t *src_n = (g.va_normal.vbo_id > 0 && g.va_normal.vbo_id < NOVA_MAX_VBOS &&
+                             g.vbos[g.va_normal.vbo_id].allocated)
+@@ -2389,37 +2611,41 @@
+                                : (const uint8_t *) g.va_color.pointer;
+ 
+     for (int i = 0; i < count; i++) {
+-        int src_index = is_elements
++        uint32_t src_index = is_elements
+                             ? (type == GL_UNSIGNED_INT
+-                                   ? (int) ((const uint32_t *) idx_src)[i]
++                                   ? ((const uint32_t *) idx_src)[i]
+                                    : type == GL_UNSIGNED_SHORT
+                                          ? ((const uint16_t *) idx_src)[i]
+                                          : ((const uint8_t *) idx_src)[i])
+-                            : (first + i);
++                            : (uint32_t)first + (uint32_t)i;
+         uint8_t packed_vertex[24];
+         const VBOSlot *packed_vertex_slot = NULL;
+ 
+         // Vertex
+         if (g.va_vertex.enabled && v_slot && vbo_is_packed_ptc(v_slot)) {
+-            vbo_decode_packed_ptc_vertex(v_slot, src_index, packed_vertex);
++            vbo_decode_packed_ptc_vertex(v_slot, (int)src_index, packed_vertex);
+             packed_vertex_slot = v_slot;
+             memcpy(dst, packed_vertex, pos_bytes);
+         } else if (g.va_vertex.enabled && src_v && NOVA_PTR_OK(src_v)) {
+             float pos[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+-            read_vertex_attrib_float(pos, src_v + src_index * p_str, g.va_vertex.size, g.va_vertex.type);
++            read_vertex_attrib_float(pos,
++                                     src_v + (size_t)src_index * (size_t)p_str,
++                                     g.va_vertex.size, g.va_vertex.type);
+             memcpy(dst, pos, pos_bytes);
+         } else memset(dst, 0, pos_bytes);
+ 
+         // TexCoord
+         if (g.va_texcoord.enabled && t_slot && vbo_is_packed_ptc(t_slot)) {
+             if (packed_vertex_slot != t_slot) {
+-                vbo_decode_packed_ptc_vertex(t_slot, src_index, packed_vertex);
++                vbo_decode_packed_ptc_vertex(t_slot, (int)src_index, packed_vertex);
+                 packed_vertex_slot = t_slot;
+             }
+             memcpy(dst + pos_bytes, packed_vertex + 12, 8);
+         } else if (g.va_texcoord.enabled && src_t && NOVA_PTR_OK(src_t)) {
+             float tc[2] = {0.0f, 0.0f};
+-            read_vertex_attrib_float(tc, src_t + src_index * t_str, g.va_texcoord.size > 2 ? 2 : g.va_texcoord.size,
++            read_vertex_attrib_float(tc,
++                                     src_t + (size_t)src_index * (size_t)t_str,
++                                     g.va_texcoord.size > 2 ? 2 : g.va_texcoord.size,
+                                      g.va_texcoord.type);
+             memcpy(dst + pos_bytes, tc, 8);
+         } else memset(dst + pos_bytes, 0, 8);
+@@ -2427,18 +2653,24 @@
+         // Color
+         if (g.va_color.enabled && c_slot && vbo_is_packed_ptc(c_slot)) {
+             if (packed_vertex_slot != c_slot) {
+-                vbo_decode_packed_ptc_vertex(c_slot, src_index, packed_vertex);
++                vbo_decode_packed_ptc_vertex(c_slot, (int)src_index, packed_vertex);
+                 packed_vertex_slot = c_slot;
+             }
+             memcpy(dst + col_offset, packed_vertex + 20, 4);
+             if (g.va_color.size == 3) dst[col_offset + 3] = 255;
+         } else if (g.va_color.enabled && src_c && NOVA_PTR_OK(src_c)) {
+-            const uint8_t *c_ptr = src_c + src_index * c_str;
++            const uint8_t *c_ptr = src_c + (size_t)src_index * (size_t)c_str;
+             if (g.va_color.type == GL_UNSIGNED_BYTE) {
+                 memcpy(dst + col_offset, c_ptr, g.va_color.size == 3 ? 3 : 4);
+                 if (g.va_color.size == 3) dst[col_offset + 3] = 255;
+             } else if (g.va_color.type == GL_FLOAT) {
+                 const float *cf = (const float *) c_ptr;
++                for (int ch = 0; ch < g.va_color.size; ++ch) {
++                    if (!nova_float_is_finite(cf[ch])) {
++                        cleanup_vbo_stream();
++                        return;
++                    }
++                }
+                 dst[col_offset + 0] = (uint8_t) (clampf(cf[0], 0.0f, 1.0f) * 255.0f);
+                 dst[col_offset + 1] = (uint8_t) (clampf(cf[1], 0.0f, 1.0f) * 255.0f);
+                 dst[col_offset + 2] = (uint8_t) (clampf(cf[2], 0.0f, 1.0f) * 255.0f);
+@@ -2482,12 +2714,40 @@
+         if (lit) {
+             float nrm[3] = {g.cur_normal[0], g.cur_normal[1], g.cur_normal[2]};
+             if (g.va_normal.enabled && src_n && NOVA_PTR_OK(src_n)) {
+-                read_vertex_attrib_float(nrm, src_n + src_index * n_str,
++                read_vertex_attrib_float(nrm,
++                                         src_n + (size_t)src_index * (size_t)n_str,
+                                          g.va_normal.size >= 3 ? 3 : g.va_normal.size, g.va_normal.type);
+             }
+             memcpy(dst + normal_offset, nrm, 12);
+         }
+ 
++        /* The generic path is the final fallback for uncommon layouts.  Check
++         * the fully converted stream too so zero-copy guards cannot be bypassed
++         * by a client array or packed-VBO decode containing NaN/Inf. */
++        float checked_pos[4], checked_uv[2], checked_normal[3];
++        memcpy(checked_pos, dst, (size_t)pos_bytes);
++        memcpy(checked_uv, dst + pos_bytes, sizeof(checked_uv));
++        for (int c = 0; c < pos_elements; ++c) {
++            if (!nova_float_is_finite(checked_pos[c])) {
++                cleanup_vbo_stream();
++                return;
++            }
++        }
++        if (!nova_float_is_finite(checked_uv[0]) ||
++            !nova_float_is_finite(checked_uv[1])) {
++            cleanup_vbo_stream();
++            return;
++        }
++        if (lit) {
++            memcpy(checked_normal, dst + normal_offset, sizeof(checked_normal));
++            if (!nova_float_is_finite(checked_normal[0]) ||
++                !nova_float_is_finite(checked_normal[1]) ||
++                !nova_float_is_finite(checked_normal[2])) {
++                cleanup_vbo_stream();
++                return;
++            }
++        }
++
+         dst += internal_stride;
+     }
+ 
+@@ -2528,7 +2788,8 @@
+         nova_setup_attr_info_lit();
+         C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+         BufInfo_Init(bufInfo);
+-        BufInfo_Add(bufInfo, dst_start, internal_stride, 4, 0x3210);
++        g.vertex_stream_invalid =
++            BufInfo_Add(bufInfo, dst_start, internal_stride, 4, 0x3210) < 0;
+         nova_invalidate_buf_cache(); /* bypassed the buf cache; keep it honest */
+         if (mode == GL_QUADS) {
+             draw_emulated_quads(count);
+@@ -2559,59 +2820,86 @@
+ 
+ void novaDrawClipspaceTris(const void *verts, int vertex_count) {
+     if (!verts || vertex_count <= 0) return;
++    if (g.client_array_buf_size <= 0 ||
++        vertex_count > g.client_array_buf_size / 28) {
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return;
++    }
+     if (g.cull_face_enabled && g.cull_face_mode == GL_FRONT_AND_BACK) return;
+ 
++#ifndef NOVAGL_NO_CLIPSPACE_NEAR_CLIP
++    const NovaClipV *in_v = (const NovaClipV *) verts;
++    for (int i = 0; i < vertex_count; ++i) {
++        if (!nova_float_is_finite(in_v[i].x) ||
++            !nova_float_is_finite(in_v[i].y) ||
++            !nova_float_is_finite(in_v[i].z) ||
++            !nova_float_is_finite(in_v[i].w) ||
++            !nova_float_is_finite(in_v[i].u) ||
++            !nova_float_is_finite(in_v[i].v))
++            return;
++    }
++#endif
++
+ #if !NOVAGL_BATCH_CLIPSPACE
+     /* Batcher runs apply_gpu_state once per run (see nova_batch_submit); the
+      * immediate path applies it per draw. */
+     apply_gpu_state();
++    if (nova_draw_region_discarded()) return;
+ #endif
+ 
+ #ifndef NOVAGL_NO_CLIPSPACE_NEAR_CLIP
+     /* Does ANY vertex cross the near plane (z + w < 0)? If not, skip clipping. */
+     int any_near = 0;
+-    const NovaClipV *in_v = (const NovaClipV *) verts;
+     if (!g.depth_clamp_enabled) {
+         for (int i = 0; i < vertex_count; i++) {
+-            if (in_v[i].z + in_v[i].w < 0.0f) { any_near = 1; break; }
++            float near_distance = in_v[i].z + in_v[i].w;
++            if (!nova_float_is_finite(near_distance)) return;
++            if (near_distance < 0.0f) { any_near = 1; break; }
+         }
+     }
+     if (any_near) {
+         int in_tris = vertex_count / 3;
++        if (in_tris <= 0 ||
++            in_tris > g.client_array_buf_size / (6 * (int)sizeof(NovaClipV))) {
++            gl_set_error(GL_OUT_OF_MEMORY);
++            return; /* mandatory clip cannot safely fall back to original vertices */
++        }
+         int max_out = in_tris * 6;                 /* <=2 output tris per input */
+-        int out_bytes = max_out * 28;
+-        if (out_bytes <= g.client_array_buf_size) {  /* else fall through to no-clip */
++        int out_bytes = max_out * (int)sizeof(NovaClipV);
+ #if NOVAGL_BATCH_CLIPSPACE
+-            /* The clipped stream is variable-length and never batched: commit
+-             * the pending run first (the GPU still holds its state), then apply
+-             * state for this standalone clipped draw. */
+-            nova_batch_flush();
+-            apply_gpu_state();
++        /* The clipped stream is variable-length and never batched: commit
++         * the pending run first (the GPU still holds its state), then apply
++         * state for this standalone clipped draw. */
++        nova_batch_flush();
++        apply_gpu_state();
++        if (nova_draw_region_discarded()) return;
+ #endif
+-            NovaClipV *cdst = (NovaClipV *) linear_alloc_ring(
+-                g.client_array_buf, &g.client_array_buf_offset, out_bytes, g.client_array_buf_size);
+-            /* Ring can't fit the clipped output — drop this draw rather than
+-             * clip into NULL. */
+-            if (!cdst) return;
+-            int out_count = 0;
+-            for (int t = 0; t < in_tris; t++) {
+-                out_count += nova_clip_tri_near(&in_v[t * 3], &cdst[out_count]);
+-            }
+-            if (out_count == 0) return;            /* whole batch behind near */
+-            GSPGPU_FlushDataCache(cdst, (u32) (out_count * 28));
+-            nova_setup_attr_info(4);
+-            nova_setup_buf_info(cdst, 28);
+-            C3D_DrawArrays(GPU_TRIANGLES, 0, out_count);
+-            return;
++        NovaClipV *cdst = (NovaClipV *) linear_alloc_ring(
++            g.client_array_buf, &g.client_array_buf_offset, out_bytes,
++            g.client_array_buf_size);
++        /* Ring can't fit the clipped output — drop this draw rather than
++         * clip into NULL or submit the unsafe original stream. */
++        if (!cdst) return;
++        int out_count = 0;
++        for (int t = 0; t < in_tris; t++) {
++            const int produced =
++                nova_clip_tri_near(&in_v[t * 3], &cdst[out_count]);
++            if (produced < 0 || produced > 6 ||
++                out_count > max_out - produced)
++                return;
++            out_count += produced;
+         }
++        if (out_count == 0) return;            /* whole batch behind near */
++        GSPGPU_FlushDataCache(cdst,
++                              (u32)(out_count * (int)sizeof(NovaClipV)));
++        nova_setup_attr_info(4);
++        nova_setup_buf_info(cdst, (int)sizeof(NovaClipV));
++        C3D_DrawArrays(GPU_TRIANGLES, 0, out_count);
++        return;
+     }
+ #endif
+ 
+     const int bytes = vertex_count * 28;
+-    if (bytes > g.client_array_buf_size) {
+-        gl_set_error(GL_OUT_OF_MEMORY);
+-        return;
+-    }
+ #if NOVAGL_BATCH_CLIPSPACE
+     /* Defer + coalesce: appended to the open run, or flushes the old run and
+      * starts a new one. The actual C3D_DrawArrays happens in nova_batch_flush
+diff --git a/src/clear.c b/src/clear.c
+--- a/src/clear.c
++++ b/src/clear.c
+@@ -88,7 +88,8 @@
+ 
+     C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+     BufInfo_Init(bufInfo);
+-    BufInfo_Add(bufInfo, staged, 10 * sizeof(float), 3, 0x210);
++    g.vertex_stream_invalid =
++        BufInfo_Add(bufInfo, staged, 10 * sizeof(float), 3, 0x210) < 0;
+ 
+     /* Bypass the heavy MVP transform by using the clipspace passthrough shader */
+     if (g.shader_clipspace_dvlb) {
+@@ -102,7 +103,7 @@
+ 
+     static const uint16_t indices[6] = {0, 1, 2, 0, 2, 3};
+     uint8_t *idx_staged = (uint8_t *)linear_alloc_ring(g.index_buf, &g.index_buf_offset, sizeof(indices), g.index_buf_size);
+-    if (idx_staged) {
++    if (idx_staged && !g.vertex_stream_invalid) {
+         memcpy(idx_staged, indices, sizeof(indices));
+         GSPGPU_FlushDataCache(idx_staged, sizeof(indices));
+         C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT, idx_staged);
+@@ -122,6 +123,8 @@
+         gl_set_error(GL_INVALID_VALUE);
+         return;
+     }
++    if (nova_scissor_region_empty())
++        return;
+ 
+     C3D_ClearBits bits = (C3D_ClearBits) 0;
+     u32 color = 0;
+@@ -213,18 +216,19 @@
+ 
+ void glClearColor(GLclampf r, GLclampf g_, GLclampf b, GLclampf a) {
+     // Clamping is important to prevent overflow during bit shifting
+-    g.clear_r = clampf(r, 0.0f, 1.0f);
+-    g.clear_g = clampf(g_, 0.0f, 1.0f);
+-    g.clear_b = clampf(b, 0.0f, 1.0f);
+-    g.clear_a = clampf(a, 0.0f, 1.0f);
++    g.clear_r = nova_float_is_finite(r)  ? clampf(r,  0.0f, 1.0f) : 0.0f;
++    g.clear_g = nova_float_is_finite(g_) ? clampf(g_, 0.0f, 1.0f) : 0.0f;
++    g.clear_b = nova_float_is_finite(b)  ? clampf(b,  0.0f, 1.0f) : 0.0f;
++    g.clear_a = nova_float_is_finite(a)  ? clampf(a,  0.0f, 1.0f) : 0.0f;
+ }
+ 
+ void glClearDepthf(GLclampf depth) {
+-    g.clear_depth = clampf(depth, 0.0f, 1.0f);
++    g.clear_depth = nova_float_is_finite(depth) ? clampf(depth, 0.0f, 1.0f) : 1.0f;
+ }
+ 
+ void glClearDepth(GLclampd depth) {
+-    g.clear_depth = clampf((GLfloat) depth, 0.0f, 1.0f);
++    GLfloat value = (GLfloat)depth;
++    g.clear_depth = nova_float_is_finite(value) ? clampf(value, 0.0f, 1.0f) : 1.0f;
+ }
+ 
+ void glClearStencil(GLint s) {
+diff --git a/src/context.h b/src/context.h
+--- a/src/context.h
++++ b/src/context.h
+@@ -491,6 +491,7 @@
+     int scissor_test_enabled;
+     GLint scissor_x, scissor_y;
+     GLsizei scissor_w, scissor_h;
++    int scissor_empty;
+ 
+     GLenum shade_model;
+ 
+@@ -518,6 +519,9 @@
+ 
+     GLint vp_x, vp_y;
+     GLsizei vp_w, vp_h;
++    int viewport_empty;
++    int transform_invalid;
++    int vertex_stream_invalid;
+ 
+     /* glViewport dedupe shadow — the values LAST APPLIED via C3D_SetViewport,
+      * keyed on the screen/FBO orientation swap (the C3D call differs for
+diff --git a/src/current.c b/src/current.c
+--- a/src/current.c
++++ b/src/current.c
+@@ -24,6 +24,11 @@
+ static inline GLfloat norm_ui(GLuint c)  { return (float)c / 4294967295.0f; }
+ 
+ void glColor4f(GLfloat r, GLfloat g_, GLfloat b, GLfloat a) {
++    if (!nova_float_is_finite(r) || !nova_float_is_finite(g_) ||
++        !nova_float_is_finite(b) || !nova_float_is_finite(a)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     if (g.dl_recording >= 0) {
+         dl_record_color4f(r, g_, b, a);
+         return;
+@@ -36,6 +41,11 @@
+ }
+ 
+ void glColor3f(GLfloat r, GLfloat g_, GLfloat b) {
++    if (!nova_float_is_finite(r) || !nova_float_is_finite(g_) ||
++        !nova_float_is_finite(b)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     if (g.dl_recording >= 0) {
+         dl_record_color3f(r, g_, b);
+         return;
+@@ -85,11 +95,7 @@
+ }
+ 
+ void glColor3d(GLdouble r, GLdouble g_, GLdouble b) {
+-    g.cur_color[0] = (GLfloat) r;
+-    g.cur_color[1] = (GLfloat) g_;
+-    g.cur_color[2] = (GLfloat) b;
+-    g.cur_color[3] = 1.0f;
+-    update_packed_color();
++    glColor3f((GLfloat)r, (GLfloat)g_, (GLfloat)b);
+ }
+ 
+ void glColor3dv(const GLdouble *v) {
+@@ -165,11 +171,7 @@
+ }
+ 
+ void glColor4d(GLdouble r, GLdouble g_, GLdouble b, GLdouble a) {
+-    g.cur_color[0] = (GLfloat) r;
+-    g.cur_color[1] = (GLfloat) g_;
+-    g.cur_color[2] = (GLfloat) b;
+-    g.cur_color[3] = (GLfloat) a;
+-    update_packed_color();
++    glColor4f((GLfloat)r, (GLfloat)g_, (GLfloat)b, (GLfloat)a);
+ }
+ 
+ void glColor4dv(const GLdouble *v) {
+diff --git a/src/draw.c b/src/draw.c
+--- a/src/draw.c
++++ b/src/draw.c
+@@ -8,6 +8,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <limits.h>
+ 
+ // === [DIAG] dump first N draw calls to stdout to compare against expected geometry ===
+ // Set NOVA_DIAG_DRAW_LIMIT=N (compile-time) to re-enable; off by default because
+@@ -339,72 +340,73 @@
+             return;
+     }
+ 
+-    /* Use the linear index ring buffer instead of malloc/free per call —
+-     * malloc on 3DS fragments heap and stalls hot draw loops. The ring is
+-     * already aligned/cache-flushed by linear_alloc_ring + the GSPGPU flush
+-     * below. nova_draw_internal will see the staged pointer and (because it's
+-     * not a VBO-backed index buffer) memcpy it again into its own index ring
+-     * for the GPU — that second copy is unavoidable given the current draw
+-     * path, but we no longer hit the heap. */
+-    int bytes = count * (int) element_size;
+-    if (bytes > g.index_buf_size) {
+-        /* Too big for the ring — fall back to the per-call malloc path. */
+-        void *scratch = malloc((size_t) bytes);
+-        if (!scratch) return;
+-        memcpy(scratch, indices, (size_t) bytes);
++    if ((size_t)count > SIZE_MAX / element_size ||
++        (size_t)count > SIZE_MAX / sizeof(uint32_t))
++        return;
++    const size_t source_bytes = (size_t)count * element_size;
++    const size_t shifted_bytes = (size_t)count * sizeof(uint32_t);
++    if (shifted_bytes > (size_t)INT_MAX) return;
++
++    /* `indices` is an offset while an EBO is bound. Resolve and validate that
++     * source before touching it; treating the offset as a host pointer was a
++     * direct low-address read. */
++    const uint8_t *source = (const uint8_t *)indices;
++    if (g.bound_element_array_buffer > 0) {
++        if (g.bound_element_array_buffer >= NOVA_MAX_VBOS) return;
++        const VBOSlot *ebo = &g.vbos[g.bound_element_array_buffer];
++        if (!ebo->allocated || !ebo->data || ebo->size < 0) return;
++        const uintptr_t offset = (uintptr_t)indices;
++        if (offset > (uintptr_t)ebo->size ||
++            source_bytes > (size_t)ebo->size - (size_t)offset)
++            return;
++        source = (const uint8_t *)ebo->data + offset;
++    }
++    if (!source) return;
++
++    uint32_t *shifted = NULL;
++    int heap_allocated = 0;
++    if ((int)shifted_bytes <= g.index_buf_size) {
++        shifted = (uint32_t *)linear_alloc_ring(
++            g.index_buf, &g.index_buf_offset, (int)shifted_bytes,
++            g.index_buf_size);
++    }
++    if (!shifted) {
++        shifted = (uint32_t *)malloc(shifted_bytes);
++        heap_allocated = shifted != NULL;
++    }
++    if (!shifted) return;
++
++    int valid = 1;
++    for (GLsizei i = 0; i < count; ++i) {
++        uint32_t raw = 0;
+         if (type == GL_UNSIGNED_BYTE) {
+-            uint8_t *p = (uint8_t *) scratch;
+-            for (GLsizei i = 0; i < count; i++) p[i] = (uint8_t) (p[i] + basevertex);
++            raw = source[i];
+         } else if (type == GL_UNSIGNED_SHORT) {
+-            uint16_t *p = (uint16_t *) scratch;
+-            for (GLsizei i = 0; i < count; i++) p[i] = (uint16_t) (p[i] + basevertex);
++            uint16_t value16;
++            memcpy(&value16, source + (size_t)i * sizeof(value16),
++                   sizeof(value16));
++            raw = value16;
+         } else {
+-            uint32_t *p = (uint32_t *) scratch;
+-            for (GLsizei i = 0; i < count; i++) p[i] = p[i] + (uint32_t) basevertex;
++            memcpy(&raw, source + (size_t)i * sizeof(raw), sizeof(raw));
+         }
+-        nova_draw_internal(mode, 0, count, 1, type, scratch);
+-        free(scratch);
+-        return;
+-    }
+-
+-    uint8_t *staged = (uint8_t *) linear_alloc_ring(g.index_buf,
+-                                                    &g.index_buf_offset,
+-                                                    bytes,
+-                                                    g.index_buf_size);
+-    if (!staged) {
+-        /* Ring couldn't fit the aligned request (128B round-up can push a
+-         * just-under-capacity `bytes` over the edge). Fall back to the per-call
+-         * malloc path rather than deref NULL. */
+-        void *scratch = malloc((size_t) bytes);
+-        if (!scratch) return;
+-        memcpy(scratch, indices, (size_t) bytes);
+-        if (type == GL_UNSIGNED_BYTE) {
+-            uint8_t *p = (uint8_t *) scratch;
+-            for (GLsizei i = 0; i < count; i++) p[i] = (uint8_t) (p[i] + basevertex);
+-        } else if (type == GL_UNSIGNED_SHORT) {
+-            uint16_t *p = (uint16_t *) scratch;
+-            for (GLsizei i = 0; i < count; i++) p[i] = (uint16_t) (p[i] + basevertex);
+-        } else {
+-            uint32_t *p = (uint32_t *) scratch;
+-            for (GLsizei i = 0; i < count; i++) p[i] = p[i] + (uint32_t) basevertex;
++        const int64_t value = (int64_t)raw + (int64_t)basevertex;
++        if (value < 0 || (uint64_t)value > UINT32_MAX) {
++            valid = 0;
++            break;
+         }
+-        nova_draw_internal(mode, 0, count, 1, type, scratch);
+-        free(scratch);
+-        return;
++        shifted[i] = (uint32_t)value;
+     }
+-    memcpy(staged, indices, (size_t) bytes);
+-    if (type == GL_UNSIGNED_BYTE) {
+-        uint8_t *p = staged;
+-        for (GLsizei i = 0; i < count; i++) p[i] = (uint8_t) (p[i] + basevertex);
+-    } else if (type == GL_UNSIGNED_SHORT) {
+-        uint16_t *p = (uint16_t *) staged;
+-        for (GLsizei i = 0; i < count; i++) p[i] = (uint16_t) (p[i] + basevertex);
+-    } else {
+-        uint32_t *p = (uint32_t *) staged;
+-        for (GLsizei i = 0; i < count; i++) p[i] = p[i] + (uint32_t) basevertex;
++
++    if (valid) {
++        /* The materialized list is a client-side U32 stream. Temporarily hide
++         * the caller's EBO binding so nova_draw_internal does not reinterpret
++         * this pointer as another byte offset. */
++        const GLuint saved_ebo = g.bound_element_array_buffer;
++        g.bound_element_array_buffer = 0;
++        nova_draw_internal(mode, 0, count, 1, GL_UNSIGNED_INT, shifted);
++        g.bound_element_array_buffer = saved_ebo;
+     }
+-    GSPGPU_FlushDataCache(staged, bytes);
+-    nova_draw_internal(mode, 0, count, 1, type, staged);
++    if (heap_allocated) free(shifted);
+ }
+ 
+ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type,
+@@ -460,18 +462,32 @@
+     return staged;
+ }
+ 
++static int fast_ptc_vertex_is_finite(const uint8_t *base, uint32_t index) {
++    float values[5];
++    memcpy(values, base + (size_t)index * 24u, sizeof(values));
++    for (int i = 0; i < 5; ++i) {
++        if (!nova_float_is_finite(values[i])) return 0;
++    }
++    return 1;
++}
++
+ void novaDrawObjects(GLenum mode, GLsizei count) {
+     if (count <= 0) return;
++    if (count > INT_MAX / 24) return;
+     if (g.fast_vbo_id == 0 || g.fast_vbo_id >= NOVA_MAX_VBOS) return;
+ 
+     VBOSlot *vbo = &g.vbos[g.fast_vbo_id];
+-    if (!vbo->allocated || !vbo->data) return;
++    if (!vbo->allocated || !vbo->data || vbo->size < 0) return;
+     if (vbo_is_packed_ptc(vbo)) return; /* fast path assumes raw 24-byte layout */
+ 
+     uint8_t *base = fast_vbo_gpu_base(vbo, g.fast_vbo_offset, count * 24);
+     if (!base) return;
++    for (GLsizei i = 0; i < count; ++i) {
++        if (!fast_ptc_vertex_is_finite(base, (uint32_t)i)) return;
++    }
+ 
+     apply_gpu_state();
++    if (nova_draw_region_discarded()) return;
+     /* novaDrawObjects PTC contract = 3-float position */
+     nova_setup_attr_info(3);
+     nova_setup_buf_info(base, 24);
+@@ -488,41 +504,76 @@
+     if (g.fast_vbo_id == 0 || g.fast_vbo_id >= NOVA_MAX_VBOS) return;
+ 
+     VBOSlot *vbo = &g.vbos[g.fast_vbo_id];
+-    if (!vbo->allocated || !vbo->data) return;
++    if (!vbo->allocated || !vbo->data || vbo->size < 0) return;
+     if (vbo_is_packed_ptc(vbo)) return;
+ 
+     GLenum t = g.fast_idx_type ? g.fast_idx_type : GL_UNSIGNED_SHORT;
++    if (t != GL_UNSIGNED_BYTE && t != GL_UNSIGNED_SHORT) return;
+     int c3d_type = (t == GL_UNSIGNED_BYTE) ? C3D_UNSIGNED_BYTE : C3D_UNSIGNED_SHORT;
+     int esz = (t == GL_UNSIGNED_BYTE) ? 1 : 2;
++    if (count > INT_MAX / esz) return;
++    const size_t ibytes = (size_t)count * (size_t)esz;
+ 
+-    const void *gpu_indices = NULL;
+-    if (g.fast_idx_vbo_id > 0 && g.fast_idx_vbo_id < NOVA_MAX_VBOS) {
++    const uint8_t *index_source = NULL;
++    int index_source_gpu_readable = 0;
++    if (g.fast_idx_vbo_id > 0) {
++        if (g.fast_idx_vbo_id >= NOVA_MAX_VBOS) return;
+         VBOSlot *ivbo = &g.vbos[g.fast_idx_vbo_id];
+-        if (!ivbo->allocated || !ivbo->data) return;
+-        gpu_indices = (const uint8_t *)ivbo->data + (uintptr_t)indices;
+-        if (!vbo_gpu_readable(ivbo)) {
+-            /* Heap-backed index store — stage through the index ring. */
+-            int ibytes = count * esz;
+-            if (ibytes > g.index_buf_size) return;
+-            uint8_t *staged = (uint8_t *) linear_alloc_ring(g.index_buf, &g.index_buf_offset,
+-                                                            ibytes, g.index_buf_size);
+-            if (!staged) return;
+-            memcpy(staged, gpu_indices, (size_t) ibytes);
+-            GSPGPU_FlushDataCache(staged, (u32) ibytes);
+-            gpu_indices = staged;
+-        }
++        if (!ivbo->allocated || !ivbo->data || ivbo->size < 0) return;
++        const uintptr_t offset = (uintptr_t)indices;
++        if (offset > (uintptr_t)ivbo->size ||
++            ibytes > (size_t)ivbo->size - (size_t)offset)
++            return;
++        index_source = (const uint8_t *)ivbo->data + offset;
++        index_source_gpu_readable = vbo_gpu_readable(ivbo);
+     } else {
+-        gpu_indices = indices;
++        index_source = (const uint8_t *)indices;
+     }
+-    if (!gpu_indices) return;
++    if (!index_source) return;
++    if (esz == 2 && ((uintptr_t)index_source & 1u)) return;
+ 
+-    /* Indexed draw can reference any vertex up to the VBO's end — stage the
+-     * whole remaining span when the store isn't GPU-fetchable. */
++    uint32_t max_index = 0;
++    for (GLsizei i = 0; i < count; ++i) {
++        uint32_t value = t == GL_UNSIGNED_BYTE
++            ? ((const uint8_t *)index_source)[i]
++            : ((const uint16_t *)index_source)[i];
++        if (value > max_index) max_index = value;
++    }
++
++    if (g.fast_vbo_offset > (GLuint)vbo->size) return;
++    const size_t available = (size_t)vbo->size - (size_t)g.fast_vbo_offset;
++    if ((size_t)max_index > (SIZE_MAX / 24u) - 1u ||
++        ((size_t)max_index + 1u) * 24u > available)
++        return;
++
++    const void *gpu_indices = index_source;
++    if (!index_source_gpu_readable) {
++        /* Client indices and heap-backed EBOs must be copied to linear RAM;
++         * C3D_DrawElements cannot fetch ordinary process-heap pointers. */
++        if (ibytes > (size_t)g.index_buf_size) return;
++        uint8_t *staged = (uint8_t *)linear_alloc_ring(
++            g.index_buf, &g.index_buf_offset, (int)ibytes, g.index_buf_size);
++        if (!staged) return;
++        memcpy(staged, index_source, ibytes);
++        GSPGPU_FlushDataCache(staged, (u32)ibytes);
++        gpu_indices = staged;
++    }
++
++    /* Stage only the referenced prefix when the vertex store is not directly
++     * GPU-readable, after proving that the complete 24-byte max vertex fits. */
++    const int vertex_bytes = (int)(((size_t)max_index + 1u) * 24u);
+     uint8_t *base = fast_vbo_gpu_base(vbo, g.fast_vbo_offset,
+-                                      vbo->size - (int) g.fast_vbo_offset);
++                                      vertex_bytes);
+     if (!base) return;
++    for (GLsizei i = 0; i < count; ++i) {
++        uint32_t value = t == GL_UNSIGNED_BYTE
++            ? ((const uint8_t *)index_source)[i]
++            : ((const uint16_t *)index_source)[i];
++        if (!fast_ptc_vertex_is_finite(base, value)) return;
++    }
+ 
+     apply_gpu_state();
++    if (nova_draw_region_discarded()) return;
+     /* novaDrawObjectsIndexed PTC contract = 3-float position */
+     nova_setup_attr_info(3);
+     nova_setup_buf_info(base, 24);
+diff --git a/src/fog.c b/src/fog.c
+--- a/src/fog.c
++++ b/src/fog.c
+@@ -8,11 +8,28 @@
+ #include "utils.h"
+ 
+ void glFogf(GLenum pname, GLfloat param) {
++    if (pname != GL_FOG_MODE && pname != GL_FOG_START &&
++        pname != GL_FOG_END && pname != GL_FOG_DENSITY) {
++        gl_set_error(GL_INVALID_ENUM);
++        return;
++    }
++    /* NovaGL is built with -ffast-math on 3DS, so use the bitwise helper.
++     * Besides avoiding unsafe PICA uniforms, this prevents a NaN fog mode
++     * from reaching a float-to-enum conversion with undefined behaviour. */
++    if (!nova_float_is_finite(param)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     switch (pname) {
+         case GL_FOG_MODE: {
+-            // cast to enum first then compare, so we dont dirty fog every frame
+-            GLenum new_mode = (GLenum) param;
+-            if (new_mode != GL_LINEAR && new_mode != GL_EXP && new_mode != GL_EXP2) {
++            /* Select a known representable enum before any float-to-integer
++             * conversion. A finite but huge float would still make a direct
++             * cast undefined in C. */
++            GLenum new_mode;
++            if (param == (GLfloat) GL_LINEAR) new_mode = GL_LINEAR;
++            else if (param == (GLfloat) GL_EXP) new_mode = GL_EXP;
++            else if (param == (GLfloat) GL_EXP2) new_mode = GL_EXP2;
++            else {
+                 gl_set_error(GL_INVALID_ENUM); /* spec: invalid mode value, unchanged */
+                 break;
+             }
+@@ -42,12 +59,18 @@
+                 g.fog_dirty = 1;
+             }
+             break;
+-        default: gl_set_error(GL_INVALID_ENUM); break;
++        default: break;
+     }
+ }
+ 
+ void glFogfv(GLenum pname, const GLfloat *params) {
+     if (pname == GL_FOG_COLOR && params) {
++        for (int i = 0; i < 4; ++i) {
++            if (!nova_float_is_finite(params[i])) {
++                gl_set_error(GL_INVALID_VALUE);
++                return;
++            }
++        }
+         /* Spec: fog colour is clamped to [0,1] at specification time. */
+         GLfloat color[4] = {
+             clampf(params[0], 0.0f, 1.0f),
+diff --git a/src/framebuffer.c b/src/framebuffer.c
+--- a/src/framebuffer.c
++++ b/src/framebuffer.c
+@@ -221,10 +221,14 @@
+     g.current_target = new_target;
+ 
+     // ФИКС: При смене цели - сбрасываем вьюпорт, так как правила вращения экрана меняются
+-    if (g.bound_fbo == 0) {
+-        C3D_SetViewport(g.vp_y, g.vp_x, g.vp_h, g.vp_w);
+-    } else {
+-        C3D_SetViewport(g.vp_x, g.vp_y, g.vp_w, g.vp_h);
++    if (!g.viewport_empty) {
++        if (g.bound_fbo == 0) {
++            C3D_SetViewport((u32)g.vp_y, (u32)g.vp_x,
++                            (u32)g.vp_h, (u32)g.vp_w);
++        } else {
++            C3D_SetViewport((u32)g.vp_x, (u32)g.vp_y,
++                            (u32)g.vp_w, (u32)g.vp_h);
++        }
+     }
+     /* Keep the glViewport dedupe shadow in sync with what we just applied. */
+     g.vp_applied_x = g.vp_x;
+@@ -867,7 +871,8 @@
+ 
+     C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+     BufInfo_Init(bufInfo);
+-    BufInfo_Add(bufInfo, staged, 10 * sizeof(float), 3, 0x210);
++    g.vertex_stream_invalid =
++        BufInfo_Add(bufInfo, staged, 10 * sizeof(float), 3, 0x210) < 0;
+ 
+     /* Use clipspace shader so position passes through (with depth clamp). */
+     int prev_shader = g.active_shader;
+@@ -909,7 +914,7 @@
+                                                        sizeof(quad_indices),
+                                                        g.index_buf_size);
+     int drew = 0;
+-    if (idx_staged) {
++    if (idx_staged && !g.vertex_stream_invalid) {
+         memcpy(idx_staged, quad_indices, sizeof(quad_indices));
+         GSPGPU_FlushDataCache(idx_staged, sizeof(quad_indices));
+         C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT, idx_staged);
+diff --git a/src/immediate.c b/src/immediate.c
+--- a/src/immediate.c
++++ b/src/immediate.c
+@@ -12,6 +12,7 @@
+ static struct {
+     GLenum mode;
+     int in_begin;
++    int invalid;
+     int vertex_count;
+ 
+     uint8_t *mapped_ptr;
+@@ -40,6 +41,7 @@
+     }
+     imm.mode = mode;
+     imm.in_begin = 1;
++    imm.invalid = 0;
+     imm.vertex_count = 0;
+ 
+     imm.current_texcoord[0] = 0.0f;
+@@ -119,11 +121,11 @@
+     }
+     imm.in_begin = 0;
+ 
+-    if (imm.vertex_count == 0) return;
+-
+     g.client_array_buf_offset = imm.start_offset + (imm.vertex_count * 24);
++    if (imm.vertex_count == 0 || imm.invalid) return;
+ 
+     apply_gpu_state();
++    if (nova_draw_region_discarded()) return;
+ 
+     GPU_Primitive_t prim = gl_to_gpu_primitive(imm.mode);
+ 
+@@ -135,6 +137,14 @@
+ static inline void add_vertex(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+     (void) w;
+     if (!imm.in_begin || !imm.mapped_ptr) return;
++    if (imm.invalid) return;
++    if (!nova_float_is_finite(x) || !nova_float_is_finite(y) ||
++        !nova_float_is_finite(z) ||
++        !nova_float_is_finite(imm.current_texcoord[0]) ||
++        !nova_float_is_finite(imm.current_texcoord[1])) {
++        imm.invalid = 1;
++        return;
++    }
+     if (imm.vertex_count >= imm.mapped_max_verts) {
+         if (!imm_grow_reserve()) return; /* truncate at hard limit */
+     }
+diff --git a/src/raster.c b/src/raster.c
+--- a/src/raster.c
++++ b/src/raster.c
+@@ -35,10 +35,21 @@
+     g.vp_w = width;
+     g.vp_h = height;
+ 
+-    if (g.bound_fbo == 0) {
+-        C3D_SetViewport(y, x, height, width);
+-    } else {
+-        C3D_SetViewport(x, y, width, height);
++    /* C3D_SetViewport takes unsigned coordinates and computes reciprocal
++     * width/height.  Passing a legal GL zero-sized viewport therefore creates
++     * Inf register values, while a negative origin wraps to a huge unsigned
++     * coordinate.  Keep the last safe hardware viewport and discard geometry
++     * until the application supplies a representable rectangle. */
++    g.viewport_empty = (width == 0 || height == 0 || x < 0 || y < 0 ||
++                        width > 4096 || height > 4096 ||
++                        x > 4096 || y > 4096);
++
++    if (!g.viewport_empty) {
++        if (g.bound_fbo == 0) {
++            C3D_SetViewport((u32)y, (u32)x, (u32)height, (u32)width);
++        } else {
++            C3D_SetViewport((u32)x, (u32)y, (u32)width, (u32)height);
++        }
+     }
+     g.vp_applied_x = x;
+     g.vp_applied_y = y;
+@@ -170,6 +181,11 @@
+  * 0..1 floats (clamped per spec); apply_gpu_state packs to PICA 0xAABBGGRR and
+  * pushes via C3D_BlendingColor. */
+ void glBlendColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) {
++    if (!nova_float_is_finite(red) || !nova_float_is_finite(green) ||
++        !nova_float_is_finite(blue) || !nova_float_is_finite(alpha)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     GLclampf r = clampf(red, 0.0f, 1.0f), gr = clampf(green, 0.0f, 1.0f);
+     GLclampf b = clampf(blue, 0.0f, 1.0f), a = clampf(alpha, 0.0f, 1.0f);
+     if (g.blend_color[0] == r && g.blend_color[1] == gr &&
+@@ -253,6 +269,10 @@
+ void glAlphaFunc(GLenum func, GLclampf ref) {
+     if (!is_valid_cmp_func(func)) {
+         gl_set_error(GL_INVALID_ENUM);
++        return;
++    }
++    if (!nova_float_is_finite(ref)) {
++        gl_set_error(GL_INVALID_VALUE);
+         return;
+     }
+     /* Spec: ref is clamped to [0,1] at specification time. */
+@@ -307,6 +327,10 @@
+ }
+ 
+ void glPolygonOffset(GLfloat factor, GLfloat units) {
++    if (!nova_float_is_finite(factor) || !nova_float_is_finite(units)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     /* Redundant-set filter: PD's r_set_depth_mode re-sends the same offset per
+      * ZMODE between batched draws — the unconditional flush here used to break
+      * every clipspace batch run for a no-op re-emit. */
+@@ -520,6 +544,15 @@
+ static GLfloat gzd_clip_line[4] = { -10000000.0f, 0, 0, 0 };
+ static GLfloat gzd_clip_height = 0.0f;
+ static GLfloat gzd_clip_height_direction = 0.0f;
++
++static int gzd_floats_finite(const GLfloat *values, int count)
++{
++    if (!values || count < 0) return 0;
++    for (int i = 0; i < count; ++i) {
++        if (!nova_float_is_finite(values[i])) return 0;
++    }
++    return 1;
++}
+ 
+ /* GLSL uniforms belong to a program.  GZDoom relies on that rule and keeps a
+  * separate CPU-side uniform cache for every shader variant.  The original
+@@ -646,6 +679,10 @@
+ void nova_gzdoom_set_vertex_color(const GLfloat *value)
+ {
+     if (!value) return;
++    if (!gzd_floats_finite(value, 4)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     memcpy(gzd_vertex_color, value, sizeof(gzd_vertex_color));
+     gzd_apply_color();
+ }
+@@ -659,6 +696,10 @@
+             GLfloat sum = 0.0f;
+             for (int k = 0; k < 4; ++k)
+                 sum += gzd_view[k * 4 + row] * gzd_model[col * 4 + k];
++            if (!nova_float_is_finite(sum)) {
++                gl_set_error(GL_INVALID_VALUE);
++                return;
++            }
+             result[col * 4 + row] = sum;
+         }
+     }
+@@ -763,6 +804,13 @@
+ 
+ void glUniform1f(GLint location, GLfloat v0) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
++    if ((location == GZD_U_CLIP_HEIGHT ||
++         location == GZD_U_CLIP_HEIGHT_DIRECTION ||
++         location == GZD_U_ALPHA_THRESHOLD) &&
++        !nova_float_is_finite(v0)) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
+     GzdProgramState *state = gzd_current_program_state();
+     if (location == GZD_U_CLIP_HEIGHT) {
+         gzd_clip_height = v0;
+@@ -818,6 +866,10 @@
+ void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
+     if (count > 0 && value && !transpose) {
++        if (!gzd_floats_finite(value, 16)) {
++            gl_set_error(GL_INVALID_VALUE);
++            return;
++        }
+         switch (location) {
+             case GZD_U_PROJECTION:
+                 if (gzd_projection_valid &&
+@@ -880,6 +932,14 @@
+ void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
+ #ifdef NOVAGL_GZDOOM_COMPAT
+     if (count > 0 && value) {
++        if ((location == GZD_U_OBJECT_COLOR ||
++             location == GZD_U_ADD_COLOR ||
++             location == GZD_U_FOG_COLOR ||
++             location == GZD_U_CLIP_LINE) &&
++            !gzd_floats_finite(value, 4)) {
++            gl_set_error(GL_INVALID_VALUE);
++            return;
++        }
+         GzdProgramState *state = gzd_current_program_state();
+         switch (location) {
+             case GZD_U_OBJECT_COLOR:
+diff --git a/src/texture.c b/src/texture.c
+--- a/src/texture.c
++++ b/src/texture.c
+@@ -4,6 +4,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <limits.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <errno.h>
+@@ -2797,25 +2798,44 @@
+     nova_update_fast_tev(unit);
+ }
+ 
+-void glTexEnvf(GLenum target, GLenum pname, GLfloat param) { glTexEnvi(target, pname, (GLint) param); }
++void glTexEnvf(GLenum target, GLenum pname, GLfloat param) {
++    /* A float-to-integer conversion outside GLint's representable range is
++     * undefined in C.  Use the bitwise finite helper because the 3DS build
++     * enables -ffast-math, then compare in double precision so INT_MAX does
++     * not round up to 2^31 as a float. */
++    if (!nova_float_is_finite(param) ||
++        (double) param < (double) INT_MIN ||
++        (double) param > (double) INT_MAX) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
++    glTexEnvi(target, pname, (GLint) param);
++}
+ 
+ void glTexEnvfv(GLenum target, GLenum pname, const GLfloat *params) {
+     if (!params) return;
+     if (target != GL_TEXTURE_ENV) return;
+     if (pname == GL_TEXTURE_ENV_COLOR) {
+-        /* TEV CONSTANT for the active unit. Stored verbatim — apply_gpu_state
+-         * packs to 0xAABBGGRR for C3D_TexEnvColor when a stage consumes it. */
++        GLfloat color[4];
++        for (int i = 0; i < 4; ++i) {
++            if (!nova_float_is_finite(params[i])) {
++                gl_set_error(GL_INVALID_VALUE);
++                return;
++            }
++            color[i] = clampf(params[i], 0.0f, 1.0f);
++        }
++        /* TEV CONSTANT for the active unit. Clamp at specification time and
++         * keep the stored context safe for cache signatures and later packing. */
+         int unit = g.active_texture_unit;
+         if (unit >= 0 && unit < 3) {
+-            g.tex_env_color[unit][0] = params[0];
+-            g.tex_env_color[unit][1] = params[1];
+-            g.tex_env_color[unit][2] = params[2];
+-            g.tex_env_color[unit][3] = params[3];
+-            g.tev_dirty = 1;
++            if (memcmp(g.tex_env_color[unit], color, sizeof(color)) != 0) {
++                memcpy(g.tex_env_color[unit], color, sizeof(color));
++                g.tev_dirty = 1;
++            }
+         }
+         return;
+     }
+-    glTexEnvi(target, pname, (GLint) params[0]);
++    glTexEnvf(target, pname, params[0]);
+ }
+ 
+ GLboolean glIsTexture(GLuint texture) {
+diff --git a/src/utils.c b/src/utils.c
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -12,6 +12,7 @@
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <limits.h>
+ 
+ /* Exported by the pinned Citro3D 1.7.1 library (declared in its internal.h).
+  * Unlike C3D_FrameBegin, this performs the GX-queue fence without opening a
+@@ -59,13 +60,53 @@
+     C3D_AttrInfo attr_info;
+ } NovaHwDrawSnapshot;
+ 
++#define NOVA_HW_MAX_DRAW_RECORDS 4096u
++#define NOVA_HW_MAX_SEGMENT_RECORDS 32u
++#define NOVA_HW_STALL_TICKS ((u64)5 * (u64)SYSCLOCK_ARM11)
++
++typedef struct {
++    u32 serial;
++    u32 cmd_vaddr, cmd_paddr;
++    u32 cmd_words_before, cmd_words_after;
++    u32 vertex_paddr, index_paddr, buf0_paddr, texture_paddr;
++    u32 vbo_size, texture_size;
++    int primitive, first, count, indexed, index_type;
++    int vertex_vbo, texture_id, shader;
++    int viewport_x, viewport_y, viewport_w, viewport_h;
++    int scissor_x, scissor_y, scissor_w, scissor_h;
++    u32 state_flags;
++} NovaHwDrawRecord;
++
++typedef struct {
++    u32 cmd_vaddr, cmd_paddr, bytes, flags;
++    u32 first_draw, last_draw;
++    u16 queue_index;
++    u16 source_line;
++} NovaHwSegmentRecord;
++
+ static NovaHwDrawSnapshot s_hw_draw;
++static NovaHwDrawRecord s_hw_draw_records[NOVA_HW_MAX_DRAW_RECORDS];
++static NovaHwSegmentRecord s_hw_segment_records[NOVA_HW_MAX_SEGMENT_RECORDS];
++static unsigned s_hw_draw_record_count;
++static unsigned s_hw_draw_record_dropped;
++static unsigned s_hw_segment_record_count;
++static unsigned s_hw_segment_first_draw;
+ static unsigned s_hw_checkpoints;
+ static int s_hw_watchdog_enabled;
++static int s_hw_dump_written;
++static unsigned s_hw_dump_bytes;
++static int s_hw_stall_snapshot_valid;
++static unsigned s_hw_stall_queue_index;
++static unsigned s_hw_stall_num_entries;
++static unsigned s_hw_stall_cur_entry;
++static unsigned s_hw_stall_last_entry;
++static u32 s_hw_stall_type, s_hw_stall_cmd_vaddr, s_hw_stall_bytes;
+ static const char *s_hw_last_file = "(none)";
+ static int s_hw_last_line;
+ static const char *s_hw_report_path =
+     "sdmc:/3ds/legend-of-doom/gpu-diagnostic.log";
++static const char *s_hw_cmd_dump_path =
++    "sdmc:/3ds/legend-of-doom/gpu-command-segment.bin";
+ 
+ static const char *nova_hw_gx_type(unsigned type)
+ {
+@@ -79,19 +120,95 @@
+     }
+ }
+ 
++static const NovaHwDrawRecord *nova_hw_find_draw_for_vaddr(u32 vaddr)
++{
++    for (unsigned i = 0; i < s_hw_draw_record_count; ++i) {
++        if (s_hw_draw_records[i].cmd_vaddr == vaddr)
++            return &s_hw_draw_records[i];
++    }
++    return NULL;
++}
++
++static void nova_hw_draw_range_for_vaddr(u32 vaddr, unsigned *first,
++                                         unsigned *last, unsigned *count)
++{
++    unsigned lo = 0, hi = 0, n = 0;
++    for (unsigned i = 0; i < s_hw_draw_record_count; ++i) {
++        const NovaHwDrawRecord *r = &s_hw_draw_records[i];
++        if (r->cmd_vaddr != vaddr) continue;
++        if (!n) lo = r->serial;
++        hi = r->serial;
++        ++n;
++    }
++    if (first) *first = lo;
++    if (last) *last = hi;
++    if (count) *count = n;
++}
++
++static void nova_hw_dump_stalled_segment(void)
++{
++    s_hw_dump_written = 0;
++    s_hw_dump_bytes = 0;
++    if (!s_hw_stall_snapshot_valid || s_hw_stall_type != 1 ||
++        !s_hw_stall_cmd_vaddr || !s_hw_stall_bytes ||
++        s_hw_stall_bytes > C3D_DEFAULT_CMDBUF_SIZE)
++        return;
++
++    const NovaHwDrawRecord *r = nova_hw_find_draw_for_vaddr(s_hw_stall_cmd_vaddr);
++    const void *cmd = r ? (const void *)(uintptr_t)r->cmd_vaddr : NULL;
++    u32 expected_paddr = r ? r->cmd_paddr : 0;
++    if (!cmd) {
++        for (unsigned i = 0; i < s_hw_segment_record_count; ++i) {
++            if (s_hw_segment_records[i].cmd_vaddr == s_hw_stall_cmd_vaddr) {
++                cmd = (const void *)(uintptr_t)s_hw_segment_records[i].cmd_vaddr;
++                expected_paddr = s_hw_segment_records[i].cmd_paddr;
++                break;
++            }
++        }
++    }
++    u32 actual_paddr = cmd ? (u32)osConvertVirtToPhys(cmd) : 0;
++    if (!cmd || (u32)(uintptr_t)cmd != s_hw_stall_cmd_vaddr ||
++        !actual_paddr || (expected_paddr && actual_paddr != expected_paddr))
++        return;
++
++    FILE *f = fopen(s_hw_cmd_dump_path, "wb");
++    if (!f) return;
++    size_t written = fwrite(cmd, 1, s_hw_stall_bytes, f);
++    fflush(f);
++    fclose(f);
++    if (written == s_hw_stall_bytes) {
++        s_hw_dump_written = 1;
++        s_hw_dump_bytes = (unsigned)written;
++    }
++}
++
+ static void nova_hw_write_report(const char *result, const char *tag)
+ {
+     gxCmdQueue_s *q = &__C3D_Context.gxQueue;
+     __sync_synchronize();
+     FILE *f = fopen(s_hw_report_path, "w");
+     if (!f) return;
+-    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v2\n");
+-    fprintf(f, "submission=bounded-natural-segments\n");
++    fprintf(f, "Legend of Doom PICA200 first-frame supervisor v3\n");
++    fprintf(f, "submission=validated-192k-bounded-segments\n");
+     fprintf(f, "result=%s\n", result ? result : "UNKNOWN");
+     fprintf(f, "tag=%s source=%s:%d\n",
+             tag ? tag : "(null)", s_hw_last_file, s_hw_last_line);
+     fprintf(f, "draw_serial=%u checkpoints=%u frame_index=%d\n",
+             s_hw_draw.serial, s_hw_checkpoints, g.frame_index);
++    fprintf(f, "draw_records=%u draw_records_dropped=%u segments=%u\n",
++            s_hw_draw_record_count, s_hw_draw_record_dropped,
++            s_hw_segment_record_count);
++    fprintf(f, "raw_command_segment=%s bytes=%u path=%s\n",
++            s_hw_dump_written ? "written" : "unavailable",
++            s_hw_dump_bytes, s_hw_cmd_dump_path);
++    if (s_hw_stall_snapshot_valid) {
++        fprintf(f, "stall_snapshot queue=%u type=%u cmd_vaddr=%08X bytes=%u "
++                   "num=%u submitted=%u completed=%u\n",
++                s_hw_stall_queue_index, (unsigned)s_hw_stall_type,
++                (unsigned)s_hw_stall_cmd_vaddr, (unsigned)s_hw_stall_bytes,
++                s_hw_stall_num_entries, s_hw_stall_cur_entry,
++                s_hw_stall_last_entry);
++    }
+     fprintf(f, "draw primitive=%d first=%d count=%d indexed=%d "
+                "index_type=%d indices_vaddr=%p indices_paddr=%08X\n",
+             s_hw_draw.primitive, s_hw_draw.first, s_hw_draw.count,
+@@ -153,24 +270,82 @@
+             fprintf(f, " %08X", (unsigned)s_hw_draw.cmd_capture[j]);
+         fputc('\n', f);
+     }
++    const unsigned report_num = s_hw_stall_snapshot_valid ?
++        s_hw_stall_num_entries : (unsigned)q->numEntries;
++    const unsigned report_cur = s_hw_stall_snapshot_valid ?
++        s_hw_stall_cur_entry : (unsigned)q->curEntry;
++    const unsigned report_last = s_hw_stall_snapshot_valid ?
++        s_hw_stall_last_entry : (unsigned)q->lastEntry;
+     fprintf(f, "queue max=%u num=%u submitted=%u completed=%u "
+                "first_incomplete=%u\n",
+-            (unsigned)q->maxEntries, (unsigned)q->numEntries,
+-            (unsigned)q->curEntry, (unsigned)q->lastEntry,
+-            (unsigned)q->lastEntry);
+-    unsigned n = q->numEntries;
++            (unsigned)q->maxEntries, report_num, report_cur, report_last,
++            report_last);
++    unsigned n = report_num;
+     if (n > q->maxEntries) n = q->maxEntries;
+     for (unsigned i = 0; i < n; ++i) {
+         const gxCmdEntry_s *e = &q->entries[i];
++        unsigned range_first = 0, range_last = 0, range_count = 0;
++        if (e->type == 1)
++            nova_hw_draw_range_for_vaddr(e->args[0], &range_first,
++                                         &range_last, &range_count);
+         fprintf(f, "queue[%u] status=%s type=%u(%s) "
+-                   "args=%08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
+-                i, i < q->lastEntry ? "complete" :
+-                   (i == q->lastEntry ? "HUNG_OR_PENDING" : "pending"),
++                   "args=%08X,%08X,%08X,%08X,%08X,%08X,%08X "
++                   "draws=%u-%u draw_count=%u\n",
++                i, i < report_last ? "complete" :
++                   (i == report_last ? "STALLED_OR_SLOW" : "pending"),
+                 (unsigned)e->type, nova_hw_gx_type(e->type),
+                 (unsigned)e->args[0], (unsigned)e->args[1],
+                 (unsigned)e->args[2], (unsigned)e->args[3],
+                 (unsigned)e->args[4], (unsigned)e->args[5],
+-                (unsigned)e->args[6]);
++                (unsigned)e->args[6], range_first, range_last, range_count);
++    }
++    for (unsigned i = 0; i < s_hw_segment_record_count; ++i) {
++        const NovaHwSegmentRecord *s = &s_hw_segment_records[i];
++        fprintf(f, "segment[%u] queue=%u paddr=%08X vaddr=%08X bytes=%u "
++                   "flags=%08X draws=%u-%u source_line=%u\n",
++                i, (unsigned)s->queue_index, (unsigned)s->cmd_paddr,
++                (unsigned)s->cmd_vaddr, (unsigned)s->bytes,
++                (unsigned)s->flags, (unsigned)s->first_draw,
++                (unsigned)s->last_draw, (unsigned)s->source_line);
++    }
++    u32 stalled_vaddr = s_hw_stall_snapshot_valid && s_hw_stall_type == 1 ?
++                        s_hw_stall_cmd_vaddr :
++                        (report_last < n && q->entries[report_last].type == 1 ?
++                         q->entries[report_last].args[0] : 0);
++    if (stalled_vaddr) {
++        fprintf(f, "stalled_segment_queue=%u cmd_vaddr=%08X bytes=%u\n",
++                s_hw_stall_snapshot_valid ? s_hw_stall_queue_index :
++                                            report_last,
++                (unsigned)stalled_vaddr,
++                s_hw_stall_snapshot_valid ? (unsigned)s_hw_stall_bytes :
++                                            (unsigned)q->entries[report_last].args[1]);
++        for (unsigned i = 0; i < s_hw_draw_record_count; ++i) {
++            const NovaHwDrawRecord *r = &s_hw_draw_records[i];
++            if (r->cmd_vaddr != stalled_vaddr) continue;
++            fprintf(f, "stalled_draw[%u] cmd_vaddr=%08X cmd_paddr=%08X "
++                       "words=%u..%u prim=%d "
++                       "first=%d count=%d indexed=%d index_type=%d "
++                       "vbo=%d vbo_paddr=%08X vbo_size=%u "
++                       "index_paddr=%08X buf0_paddr=%08X "
++                       "texture=%d texture_paddr=%08X texture_size=%u "
++                       "shader=%d viewport=%d,%d,%d,%d "
++                       "scissor=%d,%d,%d,%d state=%08X\n",
++                    (unsigned)r->serial, (unsigned)r->cmd_vaddr,
++                    (unsigned)r->cmd_paddr,
++                    (unsigned)r->cmd_words_before,
++                    (unsigned)r->cmd_words_after, r->primitive,
++                    r->first, r->count, r->indexed, r->index_type,
++                    r->vertex_vbo, (unsigned)r->vertex_paddr,
++                    (unsigned)r->vbo_size, (unsigned)r->index_paddr,
++                    (unsigned)r->buf0_paddr, r->texture_id,
++                    (unsigned)r->texture_paddr,
++                    (unsigned)r->texture_size, r->shader,
++                    r->viewport_x, r->viewport_y,
++                    r->viewport_w, r->viewport_h,
++                    r->scissor_x, r->scissor_y,
++                    r->scissor_w, r->scissor_h,
++                    (unsigned)r->state_flags);
++        }
+     }
+     fflush(f);
+     fclose(f);
+@@ -178,7 +353,25 @@
+ 
+ static void nova_hw_abort(const char *tag)
+ {
+-    nova_hw_write_report("TIMEOUT", tag);
++    gxCmdQueue_s *q = &__C3D_Context.gxQueue;
++    __sync_synchronize();
++    const unsigned num = q->numEntries;
++    const unsigned cur = q->curEntry;
++    const unsigned last = q->lastEntry;
++    s_hw_stall_snapshot_valid = 0;
++    s_hw_stall_num_entries = num;
++    s_hw_stall_cur_entry = cur;
++    s_hw_stall_last_entry = last;
++    if (last < num && last < q->maxEntries) {
++        const gxCmdEntry_s *e = &q->entries[last];
++        s_hw_stall_snapshot_valid = 1;
++        s_hw_stall_queue_index = last;
++        s_hw_stall_type = e->type;
++        s_hw_stall_cmd_vaddr = e->args[0];
++        s_hw_stall_bytes = e->args[1];
++    }
++    nova_hw_dump_stalled_segment();
++    nova_hw_write_report("STALLED_OR_SLOW", tag);
+     /* C3D_Fini and normal exit both wait forever on a wedged queue. */
+     svcExitProcess();
+ }
+@@ -186,14 +379,31 @@
+ void nova_hw_watchdog_reset(void)
+ {
+     memset(&s_hw_draw, 0, sizeof(s_hw_draw));
++    memset(s_hw_draw_records, 0, sizeof(s_hw_draw_records));
++    memset(s_hw_segment_records, 0, sizeof(s_hw_segment_records));
++    s_hw_draw_record_count = 0;
++    s_hw_draw_record_dropped = 0;
++    s_hw_segment_record_count = 0;
++    s_hw_segment_first_draw = 1;
+     s_hw_checkpoints = 0;
+     s_hw_watchdog_enabled = 1;
++    s_hw_dump_written = 0;
++    s_hw_dump_bytes = 0;
++    s_hw_stall_snapshot_valid = 0;
++    s_hw_stall_queue_index = 0;
++    s_hw_stall_num_entries = 0;
++    s_hw_stall_cur_entry = 0;
++    s_hw_stall_last_entry = 0;
++    s_hw_stall_type = 0;
++    s_hw_stall_cmd_vaddr = 0;
++    s_hw_stall_bytes = 0;
+     s_hw_last_file = "(none)";
+     s_hw_last_line = 0;
++    remove(s_hw_cmd_dump_path);
+     FILE *f = fopen(s_hw_report_path, "w");
+     if (f) {
+-        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v2\n");
+-        fprintf(f, "submission=bounded-natural-segments\n");
++        fprintf(f, "Legend of Doom PICA200 first-frame supervisor v3\n");
++        fprintf(f, "submission=validated-192k-bounded-segments\n");
+         fprintf(f, "result=RUNNING\n");
+         fflush(f);
+         fclose(f);
+@@ -231,12 +441,68 @@
+     s_hw_draw.attr_info = *C3D_GetAttrInfo();
+     s_hw_last_file = "draw-wrapper";
+     s_hw_last_line = (int)s_hw_draw.serial;
++
++    if (s_hw_draw_record_count >= NOVA_HW_MAX_DRAW_RECORDS) {
++        ++s_hw_draw_record_dropped;
++        return;
++    }
++    NovaHwDrawRecord *r = &s_hw_draw_records[s_hw_draw_record_count++];
++    memset(r, 0, sizeof(*r));
++    r->serial = s_hw_draw.serial;
++    r->cmd_vaddr = (u32)(uintptr_t)gpuCmdBuf;
++    r->cmd_paddr = gpuCmdBuf ? (u32)osConvertVirtToPhys(gpuCmdBuf) : 0;
++    r->cmd_words_before = (u32)gpuCmdBufOffset;
++    r->cmd_words_after = (u32)gpuCmdBufOffset;
++    r->primitive = primitive;
++    r->first = first;
++    r->count = count;
++    r->indexed = indexed;
++    r->index_type = index_type;
++    r->index_paddr = indices ? (u32)osConvertVirtToPhys(indices) : 0;
++    r->vertex_vbo = (int)g.va_vertex.vbo_id;
++    r->vertex_paddr = s_hw_draw.vbo_data ?
++        (u32)osConvertVirtToPhys(s_hw_draw.vbo_data) : 0;
++    r->vbo_size = s_hw_draw.vbo_size > 0 ? (u32)s_hw_draw.vbo_size : 0;
++    if (s_hw_draw.buf_info.bufCount > 0)
++        r->buf0_paddr = s_hw_draw.buf_info.base_paddr +
++                        s_hw_draw.buf_info.buffers[0].offset;
++    r->texture_id = (int)g.bound_texture[0];
++    if (g.bound_texture[0] > 0 && g.bound_texture[0] < NOVA_MAX_TEXTURES) {
++        const TexSlot *tex = &g.textures[g.bound_texture[0]];
++        if (tex->allocated && !tex->is_cube && tex->tex.data) {
++            r->texture_paddr = (u32)osConvertVirtToPhys(tex->tex.data);
++            r->texture_size = (u32)tex->tex.size;
++        }
++    }
++    r->shader = g.active_shader;
++    r->viewport_x = g.vp_x;
++    r->viewport_y = g.vp_y;
++    r->viewport_w = g.vp_w;
++    r->viewport_h = g.vp_h;
++    r->scissor_x = g.scissor_x;
++    r->scissor_y = g.scissor_y;
++    r->scissor_w = g.scissor_w;
++    r->scissor_h = g.scissor_h;
++    r->state_flags = (g.depth_test_enabled ? BIT(0) : 0) |
++                     (g.stencil_test_enabled ? BIT(1) : 0) |
++                     (g.alpha_test_enabled ? BIT(2) : 0) |
++                     (g.cull_face_enabled ? BIT(3) : 0) |
++                     (g.scissor_test_enabled ? BIT(4) : 0) |
++                     (g.scissor_empty ? BIT(5) : 0) |
++                     (g.viewport_empty ? BIT(6) : 0) |
++                     (g.transform_invalid ? BIT(7) : 0) |
++                     (g.vertex_stream_invalid ? BIT(8) : 0);
+ }
+ 
+ void nova_hw_watchdog_after_draw(void)
+ {
+     if (!s_hw_watchdog_enabled || g.frame_index != 0) return;
+     s_hw_draw.cmd_words_after = (unsigned)gpuCmdBufOffset;
++    if (s_hw_draw_record_count > 0) {
++        NovaHwDrawRecord *r = &s_hw_draw_records[s_hw_draw_record_count - 1];
++        if (r->serial == s_hw_draw.serial)
++            r->cmd_words_after = (u32)gpuCmdBufOffset;
++    }
+     unsigned begin = s_hw_draw.cmd_words_before;
+     unsigned end = s_hw_draw.cmd_words_after;
+     if (end > begin && gpuCmdBuf) {
+@@ -254,14 +520,52 @@
+ 
+ void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line)
+ {
++    gxCmdQueue_s *q = &__C3D_Context.gxQueue;
++    unsigned queue_before = q->numEntries;
++    u32 cmd_vaddr = (u32)(uintptr_t)gpuCmdBuf;
++    u32 cmd_paddr = gpuCmdBuf ? (u32)osConvertVirtToPhys(gpuCmdBuf) : 0;
+     if (s_hw_watchdog_enabled && g.frame_index == 0) {
+         s_hw_last_file = file ? file : "(null)";
+         s_hw_last_line = line;
+         ++s_hw_checkpoints;
+     }
+     (C3D_FrameSplit)((u8)flags);
++    if (s_hw_watchdog_enabled && g.frame_index == 0 &&
++        s_hw_segment_record_count < NOVA_HW_MAX_SEGMENT_RECORDS) {
++        __sync_synchronize();
++        unsigned queue_after = q->numEntries;
++        if (queue_after > q->maxEntries) queue_after = q->maxEntries;
++        for (unsigned i = queue_before; i < queue_after; ++i) {
++            const gxCmdEntry_s *e = &q->entries[i];
++            if (e->type != 1) continue;
++            NovaHwSegmentRecord *s =
++                &s_hw_segment_records[s_hw_segment_record_count++];
++            s->cmd_vaddr = e->args[0] ? e->args[0] : cmd_vaddr;
++            s->cmd_paddr = cmd_paddr;
++            s->bytes = e->args[1];
++            s->flags = flags;
++            s->first_draw = s_hw_segment_first_draw;
++            s->last_draw = s_hw_draw.serial;
++            s->queue_index = (u16)i;
++            s->source_line = line > 0 && line <= 0xFFFF ? (u16)line : 0;
++            s_hw_segment_first_draw = s_hw_draw.serial + 1;
++        }
++    }
+ }
+ 
++unsigned nova_hw_cmdlist_segment_words(void)
++{
++    const unsigned normal_words =
++        (C3D_DEFAULT_CMDBUF_SIZE * 3u) / (4u * sizeof(u32));
++    /* The GX queue has exactly 32 entries. A 3 MiB backing store split at
++     * 64 KiB can need 48 PICA entries before clears/copies/display transfer;
++     * switching back to 192 KiB only near the end is already too late. Keep
++     * the same bounded 192 KiB lists in the supervised frame. Draw/segment
++     * correlation still isolates a stall without making the capture itself
++     * capable of corrupting the queue. */
++    return normal_words;
++}
++
+ int nova_hw_watchdog_frame_begin(unsigned flags)
+ {
+     if (!s_hw_watchdog_enabled || g.frame_index != 0)
+@@ -440,18 +744,48 @@
+ #if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
+     if (s_hw_watchdog_enabled && g.frame_index == 0) {
+         gxCmdQueue_s *q = &__C3D_Context.gxQueue;
+-        /* gxCmdQueueWait's timeout is nanoseconds.  Keep this boundary finite
+-         * so a bad first-frame command produces gpu-diagnostic.log instead of
+-         * leaving the loading animation on screen forever. */
+-        if (!gxCmdQueueWait(q, (s64)2000000000LL))
+-            nova_hw_abort("render-queue-timeout");
++        /* libctru 2.7.0 adds gxCmdQueueWait's argument directly to the system
++         * tick counter despite documenting nanoseconds. Poll queue progress
++         * explicitly so the deadline is both correctly scaled and refreshed
++         * whenever PICA completes another command. A genuinely slow frame is
++         * allowed to continue; only five seconds without any progress aborts. */
++        __sync_synchronize();
++        unsigned completed = q->lastEntry;
++        u64 stall_deadline = svcGetSystemTick() + NOVA_HW_STALL_TICKS;
++        for (;;) {
++            __sync_synchronize();
++            unsigned now = q->lastEntry;
++            unsigned total = q->numEntries;
++            if (now >= total) break;
++            if (now != completed) {
++                completed = now;
++                stall_deadline = svcGetSystemTick() + NOVA_HW_STALL_TICKS;
++            } else if ((s64)(svcGetSystemTick() - stall_deadline) >= 0) {
++                nova_hw_abort("render-queue-no-progress-5s");
++            }
++            svcSleepThread(1000000);
++        }
++        /* Let libctru observe the terminal queue state and preserve Citro3D's
++         * normal callback/stop/clear sequence. The value is one real second
++         * in the pinned implementation's tick-based timeout. */
++        if (!gxCmdQueueWait(q, (s64)SYSCLOCK_ARM11))
++            nova_hw_abort("render-queue-callback-timeout");
+         gxCmdQueueStop(q);
+         gxCmdQueueClear(q);
+         return;
+     }
+ #endif
+     C3Di_RenderQueueWaitDone();
++}
++
++#if defined(NOVA_DIAG_DRAW_CUTOFF) && NOVA_DIAG_DRAW_CUTOFF >= 0
++int nova_diag_draw_allowed(void) {
++    static unsigned first_frame_draw;
++    if (g.frame_index != 0) return 1;
++    ++first_frame_draw;
++    return first_frame_draw <= (unsigned)NOVA_DIAG_DRAW_CUTOFF;
+ }
++#endif
+ 
+ /* Diagnostic breadcrumbs into the host app's boot log. Weak: resolves to the
+  * OpenMW CTR layer when linked into it, null elsewhere. */
+@@ -531,9 +865,18 @@
+ }
+ 
+ static void *ring_grow(void **alias, void **slot_buf, int *slot_cap, int *shared_cap, int *offset, int size) {
++    if (!alias || !slot_buf || !slot_cap || !shared_cap || !offset ||
++        size <= 0 || *slot_cap < 0 || *slot_cap > INT_MAX - size)
++        return NULL;
++    const int required = *slot_cap + size;
+     int newcap = *slot_cap > 0 ? *slot_cap : (256 * 1024);
+-    while (newcap < *slot_cap + size)
++    while (newcap < required) {
++        if (newcap > INT_MAX / 2) {
++            newcap = required;
++            break;
++        }
+         newcap *= 2;
++    }
+     void *nb = linearAlloc((size_t) newcap);
+     if (!nb) {
+         ring_crumb("[NovaRing] grow FAILED: want %d KB (linear exhausted)", newcap / 1024, 0);
+@@ -568,13 +911,18 @@
+      * safe for cache-line 32 + GX-DMA 16) is opt-in. Some PICA200 dispatch
+      * paths assume 128 — keep the conservative default unless explicitly
+      * told otherwise. */
++    if (!base || !offset || size <= 0 || capacity <= 0 ||
++        *offset < 0 || *offset > capacity)
++        return NULL;
+ #ifdef NOVAGL_RING_ALIGN_64
++    if (size > INT_MAX - 0x3F) return NULL;
+     size = (size + 0x3F) & ~0x3F;
+ #else
++    if (size > INT_MAX - 0x7F) return NULL;
+     size = (size + 0x7F) & ~0x7F;
+ #endif
+ 
+-    if (*offset + size > capacity) {
++    if (size > capacity - *offset) {
+         /* Identify which ring this is by its alias and grow it. */
+         void *grown = NULL;
+         int s = g.frame_slot;
+@@ -634,19 +982,41 @@
+     return x < lo ? lo : (x > hi ? hi : x);
+ }
+ 
+-static int clampi(int x, int lo, int hi) {
++static int64_t clampi64(int64_t x, int64_t lo, int64_t hi) {
+     return x < lo ? lo : (x > hi ? hi : x);
++}
++
++int nova_scissor_region_empty(void) {
++    if (!g.scissor_test_enabled) return 0;
++
++    C3D_FrameBuf *fb = g.current_target ? &g.current_target->frameBuf : NULL;
++    const int logical_w = g.bound_fbo == 0
++        ? NOVA_SCREEN_W : (fb ? (int)fb->width : NOVA_SCREEN_H);
++    const int logical_h = g.bound_fbo == 0
++        ? NOVA_SCREEN_H : (fb ? (int)fb->height : NOVA_SCREEN_W);
++    const int64_t x0 = clampi64((int64_t)g.scissor_x, 0, logical_w);
++    const int64_t y0 = clampi64((int64_t)g.scissor_y, 0, logical_h);
++    const int64_t x1 = clampi64((int64_t)g.scissor_x + (int64_t)g.scissor_w,
++                                0, logical_w);
++    const int64_t y1 = clampi64((int64_t)g.scissor_y + (int64_t)g.scissor_h,
++                                0, logical_h);
++    return x1 <= x0 || y1 <= y0;
+ }
+ 
++int nova_draw_region_discarded(void) {
++    return g.viewport_empty || g.transform_invalid ||
++           (g.scissor_test_enabled && g.scissor_empty);
++}
++
+ static void apply_scissor_box(void) {
+     C3D_FrameBuf *fb = g.current_target ? &g.current_target->frameBuf : NULL;
+     const int native_w = fb ? (int)fb->width : NOVA_SCREEN_H;
+     const int native_h = fb ? (int)fb->height : NOVA_SCREEN_W;
+ 
+-    int x0 = g.scissor_x;
+-    int y0 = g.scissor_y;
+-    int x1 = g.scissor_x + g.scissor_w;
+-    int y1 = g.scissor_y + g.scissor_h;
++    int64_t x0 = g.scissor_x;
++    int64_t y0 = g.scissor_y;
++    int64_t x1 = (int64_t)g.scissor_x + (int64_t)g.scissor_w;
++    int64_t y1 = (int64_t)g.scissor_y + (int64_t)g.scissor_h;
+ 
+     if (g.bound_fbo == 0) {
+         /* Screen is rendered sideways (per-draw tilt); scissor rotated to
+@@ -654,11 +1024,18 @@
+          * is POT-padded). */
+         const int logical_w = NOVA_SCREEN_W; /* 400 */
+         const int logical_h = NOVA_SCREEN_H; /* 240 */
+-        x0 = clampi(x0, 0, logical_w);
+-        x1 = clampi(x1, 0, logical_w);
+-        y0 = clampi(y0, 0, logical_h);
+-        y1 = clampi(y1, 0, logical_h);
++        x0 = clampi64(x0, 0, logical_w);
++        x1 = clampi64(x1, 0, logical_w);
++        y0 = clampi64(y0, 0, logical_h);
++        y1 = clampi64(y1, 0, logical_h);
+ 
++        if (x1 <= x0 || y1 <= y0) {
++            g.scissor_empty = 1;
++            C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
++            return;
++        }
++        g.scissor_empty = 0;
++
+         C3D_SetScissor(GPU_SCISSOR_NORMAL,
+                        (u32)y0,
+                        (u32)(logical_w - x1),
+@@ -667,11 +1044,18 @@
+     } else {
+         const int logical_w = native_w;
+         const int logical_h = native_h;
+-        x0 = clampi(x0, 0, logical_w);
+-        x1 = clampi(x1, 0, logical_w);
+-        y0 = clampi(y0, 0, logical_h);
+-        y1 = clampi(y1, 0, logical_h);
++        x0 = clampi64(x0, 0, logical_w);
++        x1 = clampi64(x1, 0, logical_w);
++        y0 = clampi64(y0, 0, logical_h);
++        y1 = clampi64(y1, 0, logical_h);
+ 
++        if (x1 <= x0 || y1 <= y0) {
++            g.scissor_empty = 1;
++            C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
++            return;
++        }
++        g.scissor_empty = 0;
++
+         C3D_SetScissor(GPU_SCISSOR_NORMAL,
+                        (u32)x0,
+                        (u32)(logical_h - y1),
+@@ -1317,11 +1701,18 @@
+ 
+ /* Pack a 0..1 RGBA into PICA's 0xAABBGGRR layout (high byte = alpha) consumed
+  * by C3D_TexEnvColor. */
++static inline float sanitize_tev_color_component(float value) {
++    /* Keep this bitwise: ordinary isfinite/comparisons can be folded away by
++     * the 3DS -ffast-math build. Transparent black is the safe fallback. */
++    if (!nova_float_is_finite(value)) return 0.0f;
++    return clampf(value, 0.0f, 1.0f);
++}
++
+ static u32 pack_tev_color(const float c[4]) {
+-    u32 r = (u32) (clampf(c[0], 0.0f, 1.0f) * 255.0f + 0.5f);
+-    u32 g_ = (u32) (clampf(c[1], 0.0f, 1.0f) * 255.0f + 0.5f);
+-    u32 b = (u32) (clampf(c[2], 0.0f, 1.0f) * 255.0f + 0.5f);
+-    u32 a = (u32) (clampf(c[3], 0.0f, 1.0f) * 255.0f + 0.5f);
++    u32 r = (u32) (sanitize_tev_color_component(c[0]) * 255.0f + 0.5f);
++    u32 g_ = (u32) (sanitize_tev_color_component(c[1]) * 255.0f + 0.5f);
++    u32 b = (u32) (sanitize_tev_color_component(c[2]) * 255.0f + 0.5f);
++    u32 a = (u32) (sanitize_tev_color_component(c[3]) * 255.0f + 0.5f);
+     return (a << 24) | (b << 16) | (g_ << 8) | r;
+ }
+ 
+@@ -1369,6 +1760,16 @@
+ void novaSetExplicitTevStages(int count, const NovaTevStageGL *stages) {
+     if (count < 0) count = 0;
+     if (count > NOVA_TEV_MAX_STAGES) count = NOVA_TEV_MAX_STAGES;
++    if (count > 0 && !stages) count = 0;
++
++    NovaTevStageGL sanitized[NOVA_TEV_MAX_STAGES];
++    for (int i = 0; i < count; ++i) {
++        sanitized[i] = stages[i];
++        for (int channel = 0; channel < 4; ++channel) {
++            sanitized[i].constant_color[channel] =
++                sanitize_tev_color_component(stages[i].constant_color[channel]);
++        }
++    }
+     /* The fast3d backend re-stages the TEV programme on EVERY draw (the
+      * per-draw constants force it to). Most consecutive draws share the same
+      * programme, so skip the dirty-flag when nothing changed — otherwise we'd
+@@ -1377,13 +1778,14 @@
+      * memset+assignments. */
+     if (count == g.explicit_tev_count &&
+         (count == 0 ||
+-         (stages && memcmp(g.explicit_tev_stages, stages,
+-                           (size_t) count * sizeof(NovaTevStageGL)) == 0))) {
++         memcmp(g.explicit_tev_stages, sanitized,
++                (size_t) count * sizeof(NovaTevStageGL)) == 0)) {
+         return;
+     }
+     g.explicit_tev_count = count;
+-    if (count > 0 && stages) {
+-        memcpy(g.explicit_tev_stages, stages, count * sizeof(NovaTevStageGL));
++    if (count > 0) {
++        memcpy(g.explicit_tev_stages, sanitized,
++               (size_t) count * sizeof(NovaTevStageGL));
+     }
+     g.tev_dirty = 1;
+ }
+@@ -1574,12 +1976,26 @@
+             default:                    color_loc = g.uLoc_colorparams;           break;
+         }
+         if (color_loc >= 0) {
++            const int color_ok =
++                nova_float_is_finite(g.gzdoom_color_mul[0]) &&
++                nova_float_is_finite(g.gzdoom_color_mul[1]) &&
++                nova_float_is_finite(g.gzdoom_color_mul[2]) &&
++                nova_float_is_finite(g.gzdoom_color_mul[3]) &&
++                nova_float_is_finite(g.gzdoom_color_add[0]) &&
++                nova_float_is_finite(g.gzdoom_color_add[1]) &&
++                nova_float_is_finite(g.gzdoom_color_add[2]);
++            const float *mul = g.gzdoom_color_mul;
++            const float *add = g.gzdoom_color_add;
++            static const float neutral_mul[4] = {1.0f, 1.0f, 1.0f, 1.0f};
++            static const float neutral_add[4] = {0.0f, 0.0f, 0.0f, 0.0f};
++            if (!color_ok) {
++                mul = neutral_mul;
++                add = neutral_add;
++            }
+             C3D_FVUnifSet(GPU_VERTEX_SHADER, color_loc,
+-                          g.gzdoom_color_mul[0], g.gzdoom_color_mul[1],
+-                          g.gzdoom_color_mul[2], g.gzdoom_color_mul[3]);
++                          mul[0], mul[1], mul[2], mul[3]);
+             C3D_FVUnifSet(GPU_VERTEX_SHADER, color_loc + 1,
+-                          g.gzdoom_color_add[0], g.gzdoom_color_add[1],
+-                          g.gzdoom_color_add[2], 0.0f);
++                          add[0], add[1], add[2], 0.0f);
+         }
+         g.gzdoom_color_dirty = 0;
+     }
+@@ -1641,7 +2057,34 @@
+ 		if (need_mvp_rebuild)
+ 			Mtx_Multiply(&g.mvp_combined, &final_proj, &g.mv_stack[g.mv_sp]);
+ 
++        int transform_ok = nova_mtx_is_finite(&final_proj);
+         switch (g.active_shader) {
++            case NOVA_SHADER_BASIC:
++                transform_ok = transform_ok && nova_mtx_is_finite(&g.mvp_combined);
++                break;
++            case NOVA_SHADER_TEXMTX:
++                transform_ok = transform_ok && nova_mtx_is_finite(&g.mvp_combined) &&
++                               nova_mtx_is_finite(&g.tex_stack[g.tex_sp]);
++                break;
++            case NOVA_SHADER_LIGHTING:
++                transform_ok = transform_ok && nova_mtx_is_finite(&g.mv_stack[g.mv_sp]);
++                break;
++            case NOVA_SHADER_FULL:
++                transform_ok = transform_ok && nova_mtx_is_finite(&g.mv_stack[g.mv_sp]) &&
++                               nova_mtx_is_finite(&g.tex_stack[g.tex_sp]);
++                break;
++            default:
++                break;
++        }
++        g.transform_invalid = !transform_ok;
++        if (!transform_ok)
++            g.final_proj_cached_valid = 0;
++
++        /* Never encode a NaN/Inf matrix as PICA float24 uniform data.  This is
++         * deliberately guarded by the bitwise helper: -ffast-math must not be
++         * able to prove the check away.  The draw path observes
++         * transform_invalid and drops only this invalid geometry. */
++        if (transform_ok) switch (g.active_shader) {
+             case NOVA_SHADER_CLIPSPACE:
+                 if (g.uLoc_projection_clipspace >= 0 && need_proj_rebuild) {
+                     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, g.uLoc_projection_clipspace, &final_proj);
+@@ -1778,6 +2221,7 @@
+         if (g.scissor_test_enabled) {
+             apply_scissor_box();
+         } else {
++            g.scissor_empty = 0;
+             C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+         }
+     }
+@@ -1796,13 +2240,46 @@
+     }
+ 
+     if (g.fog_dirty) {
+-        if (g.active_shader == NOVA_SHADER_FULL && g.uLoc_fogparams >= 0) {
+-            int vertex_fog = g.fog_enabled && g.fog_mode == GL_LINEAR;
++        const int fog_values_ok =
++            nova_float_is_finite(g.fog_start) &&
++            nova_float_is_finite(g.fog_end) &&
++            nova_float_is_finite(g.fog_density) && g.fog_density >= 0.0f &&
++            nova_float_is_finite(g.fog_color[0]) &&
++            nova_float_is_finite(g.fog_color[1]) &&
++            nova_float_is_finite(g.fog_color[2]) &&
++            nova_float_is_finite(g.fog_color[3]);
++        float fog_range = 0.0f;
++        float fog_inv_range = 0.0f;
++        int linear_fog_values_ok = 0;
++        if (fog_values_ok) {
++            fog_range = g.fog_end - g.fog_start;
++            if (nova_float_is_finite(fog_range) && fog_range != 0.0f) {
++                fog_inv_range = 1.0f / fog_range;
++                linear_fog_values_ok = nova_float_is_finite(fog_inv_range);
++            }
++        }
++        /* Citro3D reconstructs eye Z as far*near /
++         * (depth*(far-near)+near). Require a strictly positive interval and
++         * finite derived products so FogLut_Exp cannot encounter 0/0, a zero
++         * denominator or overflow while filling its integer LUT. */
++        float fog_nf_product = 0.0f;
++        float fog_density_far = 0.0f;
++        int exp_fog_values_ok = 0;
++        if (fog_values_ok && g.fog_start > 0.0f &&
++            g.fog_end > g.fog_start) {
++            fog_nf_product = g.fog_start * g.fog_end;
++            fog_density_far = g.fog_density * g.fog_end;
++            exp_fog_values_ok =
++                nova_float_is_finite(fog_range) && fog_range > 0.0f &&
++                nova_float_is_finite(fog_nf_product) &&
++                nova_float_is_finite(fog_density_far);
++        }
++        if (g.active_shader == NOVA_SHADER_FULL && g.uLoc_fogparams >= 0) {
++            int vertex_fog = linear_fog_values_ok && g.fog_enabled &&
++                             g.fog_mode == GL_LINEAR;
+             if (vertex_fog) {
+-                float safe_end = g.fog_end;
+-                if (fabsf(safe_end - g.fog_start) < 0.001f) safe_end = g.fog_start + 0.001f;
+-                float inv_range = 1.0f / (safe_end - g.fog_start);
+-                C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uLoc_fogparams, g.fog_start, safe_end, inv_range, 0.0f);
++                C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uLoc_fogparams,
++                              g.fog_start, g.fog_end, fog_inv_range, 0.0f);
+                 C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uLoc_fogparams + 1, g.fog_color[0], g.fog_color[1], g.fog_color[2], g.fog_color[3]);
+             } else {
+                 C3D_FVUnifSet(GPU_VERTEX_SHADER, g.uLoc_fogparams, 0.0f, 0.0f, 0.0f, 0.0f);
+@@ -1821,7 +2298,8 @@
+ #ifdef NOVAGL_DISABLE_FOG_LUT
+         if (0) {
+ #else
+-        if (g.fog_enabled && (g.fog_mode == GL_EXP || g.fog_mode == GL_EXP2)) {
++        if (exp_fog_values_ok && g.fog_enabled &&
++            (g.fog_mode == GL_EXP || g.fog_mode == GL_EXP2)) {
+ #endif
+             static GLenum s_lut_mode = 0;
+             static float s_lut_density = -1.0f, s_lut_start = 0.0f, s_lut_end = 0.0f;
+@@ -1830,7 +2308,8 @@
+                 if (g.fog_mode == GL_EXP) {
+                     FogLut_Exp(&g.fog_lut, g.fog_density, 1.0f, g.fog_start, g.fog_end);
+                 } else {
+-                    FogLut_Exp(&g.fog_lut, g.fog_density * g.fog_density, 2.0f, g.fog_start, g.fog_end);
++                    FogLut_Exp(&g.fog_lut, g.fog_density, 2.0f,
++                               g.fog_start, g.fog_end);
+                 }
+                 s_lut_mode = g.fog_mode;
+                 s_lut_density = g.fog_density;
+@@ -2051,10 +2530,16 @@
+ }
+ 
+ void nova_setup_fixed_color(void) {
+-    const float color[4] = {
++    float color[4] = {
+         g.cur_color[0] * 255.0f, g.cur_color[1] * 255.0f,
+         g.cur_color[2] * 255.0f, g.cur_color[3] * 255.0f
+     };
++    for (int i = 0; i < 4; ++i) {
++        if (!nova_float_is_finite(color[i])) {
++            g.vertex_stream_invalid = 1;
++            return;
++        }
++    }
+     if (!s_fixed_color_valid || memcmp(s_fixed_color, color, sizeof(color)) != 0) {
+         C3D_FixedAttribSet(2, color[0], color[1], color[2], color[3]);
+         memcpy(s_fixed_color, color, sizeof(color));
+@@ -2076,19 +2561,34 @@
+     if (s_buf_base != base || s_buf_stride != stride || s_buf_layout != 2) {
+         C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+         BufInfo_Init(bufInfo);
+-        BufInfo_Add(bufInfo, base, stride, 2, 0x10);
+-        s_buf_base = base;
+-        s_buf_stride = stride;
+-        s_buf_layout = 2;
++        if (BufInfo_Add(bufInfo, base, stride, 2, 0x10) < 0) {
++            g.vertex_stream_invalid = 1;
++            nova_invalidate_buf_cache();
++        } else {
++            g.vertex_stream_invalid = 0;
++            s_buf_base = base;
++            s_buf_stride = stride;
++            s_buf_layout = 2;
++        }
++    } else {
++        g.vertex_stream_invalid = 0;
+     }
+     nova_setup_fixed_color();
+ }
+ 
+ void nova_setup_buf_info(void *base, int stride) {
+-    if (s_buf_base == base && s_buf_stride == stride && s_buf_layout == 3) return;
++    if (s_buf_base == base && s_buf_stride == stride && s_buf_layout == 3) {
++        g.vertex_stream_invalid = 0;
++        return;
++    }
+     C3D_BufInfo *bufInfo = C3D_GetBufInfo();
+     BufInfo_Init(bufInfo);
+-    BufInfo_Add(bufInfo, base, stride, 3, 0x210);
++    if (BufInfo_Add(bufInfo, base, stride, 3, 0x210) < 0) {
++        g.vertex_stream_invalid = 1;
++        nova_invalidate_buf_cache();
++        return;
++    }
++    g.vertex_stream_invalid = 0;
+     s_buf_base = base;
+     s_buf_stride = stride;
+     s_buf_layout = 3;
+@@ -2310,6 +2810,12 @@
+ 
+ void nova_batch_flush(void) {
+     if (!s_batch.active || s_batch.total_verts <= 0) {
++        s_batch.active = 0;
++        s_batch.total_verts = 0;
++        return;
++    }
++    if (g.client_array_buf_size <= 0 ||
++        s_batch.total_verts > g.client_array_buf_size / 28) {
+         s_batch.active = 0;
+         s_batch.total_verts = 0;
+         return;
+@@ -2332,6 +2838,9 @@
+ }
+ 
+ void nova_batch_submit(const void *verts, int vertex_count) {
++    if (!verts || vertex_count <= 0 || g.client_array_buf_size <= 0 ||
++        vertex_count > g.client_array_buf_size / 28)
++        return;
+     const int bytes = vertex_count * 28;
+ 
+     /* Capture the matrices/fog/tev dirty flags BEFORE apply_gpu_state clears
+@@ -2342,8 +2851,10 @@
+     NovaBatchSig cand;
+     batch_build_sig(&cand);
+ 
+-    int fits = s_batch.active &&
+-               ((s_batch.total_verts + vertex_count) * 28 <= g.client_array_buf_size);
++    const int max_batch_verts = g.client_array_buf_size / 28;
++    int fits = s_batch.active && s_batch.total_verts >= 0 &&
++               s_batch.total_verts <= max_batch_verts &&
++               vertex_count <= max_batch_verts - s_batch.total_verts;
+     int can_merge = fits && !break_dirty && !stereo &&
+                     cand.current_target == s_batch.sig.current_target &&
+                     memcmp(&cand, &s_batch.sig, sizeof(NovaBatchSig)) == 0;
+@@ -2351,6 +2862,11 @@
+     if (!can_merge) {
+         nova_batch_flush();   /* commit the old run (GPU still holds its state) */
+         apply_gpu_state();    /* push THIS run's state, exactly once */
++        if (nova_draw_region_discarded()) {
++            s_batch.active = 0;
++            s_batch.total_verts = 0;
++            return;
++        }
+         s_batch.active = 1;
+         s_batch.total_verts = 0;
+         s_batch.sig = cand;
+@@ -2358,7 +2874,8 @@
+ 
+     int need = (s_batch.total_verts + vertex_count) * 28;
+     if (need > s_batch.scratch_cap) {
+-        int newcap = need + 64 * 1024;
++        int newcap = need <= INT_MAX - 64 * 1024
++            ? need + 64 * 1024 : need;
+         uint8_t *p = (uint8_t *) realloc(s_batch.scratch, (size_t) newcap);
+         if (!p) {
+             /* Couldn't grow scratch — draw what we have, then this chunk direct. The
+diff --git a/src/utils.h b/src/utils.h
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -7,6 +7,29 @@
+ #include <stdint.h>
+ #include "context.h"
+ 
++/* Do not use isfinite() in NovaGL's hot files.  The 3DS build intentionally
++ * enables -ffast-math, whose -ffinite-math-only sub-option allows GCC to fold
++ * isfinite(x) to true even when x came from game data.  Inspecting the IEEE-754
++ * exponent bits keeps this safety check real without disabling the other
++ * targeted fast-math optimisations. */
++static inline int nova_float_is_finite(float value) {
++    uint32_t bits;
++    __builtin_memcpy(&bits, &value, sizeof(bits));
++    return (bits & UINT32_C(0x7f800000)) != UINT32_C(0x7f800000);
++}
++
++static inline int nova_mtx_is_finite(const C3D_Mtx *m) {
++    if (!m) return 0;
++    for (int row = 0; row < 4; ++row) {
++        if (!nova_float_is_finite(m->r[row].x) ||
++            !nova_float_is_finite(m->r[row].y) ||
++            !nova_float_is_finite(m->r[row].z) ||
++            !nova_float_is_finite(m->r[row].w))
++            return 0;
++    }
++    return 1;
++}
++
+ unsigned int nova_next_pow2(unsigned int v);
+ 
+ /* Re-home an existing texture slot's storage in VRAM so it can be wrapped as a
+@@ -92,8 +115,19 @@
+  * deletion is forbidden while a frame is open. */
+ void nova_render_queue_wait_idle(void);
+ 
++#if defined(NOVA_DIAG_DRAW_CUTOFF) && NOVA_DIAG_DRAW_CUTOFF >= 0
++int nova_diag_draw_allowed(void);
++#endif
++
+ float clampf(float x, float lo, float hi);
+ 
++/* True when application geometry must not be submitted.  Empty raster regions
++ * and invalid transforms are represented with safe PICA state, then discarded
++ * here so zero-sized viewports/scissors and non-finite uniforms never reach a
++ * draw command. */
++int nova_draw_region_discarded(void);
++int nova_scissor_region_empty(void);
++
+ void dl_record_translate(float x, float y, float z);
+ 
+ void dl_record_color3f(float r, float g_, float b);
+@@ -243,6 +277,7 @@
+ void nova_hw_watchdog_after_draw(void);
+ void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line);
+ int nova_hw_watchdog_frame_begin(unsigned flags);
++unsigned nova_hw_cmdlist_segment_words(void);
+ #endif
+ 
+ static inline void nova_c3d_frame_split_(unsigned flags,
+@@ -328,19 +363,27 @@
+      * GPUCMD_Split's finalize/alignment words. PICA state and draw order live
+      * across C3D_FrameSplit; only the natural frame command stream is divided.
+      * A 3 MiB store can produce at most 16 bounded lists, below Citro3D's
+-     * 32-entry GX queue even with the frame's clears and display transfer. */
+-    enum {
+-        NOVA_CMDLIST_SEGMENT_WORDS =
+-            (C3D_DEFAULT_CMDBUF_SIZE * 3u) / (4u * sizeof(u32))
+-    };
++     * 32-entry GX queue even with the frame's clears and display transfer.
++     * Do not shrink the supervised frame further: 64 KiB segments can create
++     * up to 48 command-list entries and overflow Citro3D's fixed queue before
++     * the diagnostic watchdog gets a chance to report anything. */
++    unsigned segment_words =
++        (C3D_DEFAULT_CMDBUF_SIZE * 3u) / (4u * sizeof(u32));
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    segment_words = nova_hw_cmdlist_segment_words();
++#endif
+     /* C3D_GetCmdBufUsage() is updated only after a split. gpuCmdBufOffset is
+      * the authoritative live fill level, expressed in words. */
+-    if (gpuCmdBufSize && gpuCmdBufOffset >= NOVA_CMDLIST_SEGMENT_WORDS)
++    if (gpuCmdBufSize && gpuCmdBufOffset >= segment_words)
+         C3D_FrameSplit(0);
+ }
+ 
+ static inline void nova_c3d_draw_arrays_(GPU_Primitive_t primitive, int first, int size)
+ {
++#if defined(NOVA_DIAG_DRAW_CUTOFF) && NOVA_DIAG_DRAW_CUTOFF >= 0
++    if (!nova_diag_draw_allowed()) return;
++#endif
++    if (g.vertex_stream_invalid) return;
+     nova_cmd_buffer_guard_();
+     g.p3d_pending = 1;
+ #if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
+@@ -353,6 +396,10 @@
+ }
+ static inline void nova_c3d_draw_elements_(GPU_Primitive_t primitive, int count, int type, const void* indices)
+ {
++#if defined(NOVA_DIAG_DRAW_CUTOFF) && NOVA_DIAG_DRAW_CUTOFF >= 0
++    if (!nova_diag_draw_allowed()) return;
++#endif
++    if (g.vertex_stream_invalid) return;
+     nova_cmd_buffer_guard_();
+     g.p3d_pending = 1;
+ #if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG

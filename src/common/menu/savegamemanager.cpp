@@ -47,6 +47,10 @@
 #include "v_draw.h"
 #include "savegamemanager.h"
 
+#ifdef __3DS__
+#include <3ds.h>
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 
 //=============================================================================
@@ -263,6 +267,38 @@ DEFINE_ACTION_FUNCTION(FSavegameManager, DoSave)
 	PARAM_STRING(name);
 	self->DoSave(sel, name);
 	return 0;
+}
+
+DEFINE_ACTION_FUNCTION(FSavegameManager, UsesNativeKeyboard)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FSavegameManagerBase);
+#ifdef __3DS__
+	ACTION_RETURN_BOOL(true);
+#else
+	ACTION_RETURN_BOOL(false);
+#endif
+}
+
+DEFINE_ACTION_FUNCTION(FSavegameManager, OpenNativeKeyboard)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(FSavegameManagerBase);
+	PARAM_STRING(initialText);
+#ifdef __3DS__
+	I_3DSPrepareNativeKeyboardTop();
+	SwkbdState keyboard = {};
+	char text[160] = {};
+	swkbdInit(&keyboard, SWKBD_TYPE_QWERTY, 2, 48);
+	swkbdSetValidation(&keyboard, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+	swkbdSetFeatures(&keyboard, SWKBD_DEFAULT_QWERTY | SWKBD_ALLOW_HOME);
+	swkbdSetHintText(&keyboard, "Save game name");
+	swkbdSetButton(&keyboard, SWKBD_BUTTON_LEFT, "Cancel", false);
+	swkbdSetButton(&keyboard, SWKBD_BUTTON_RIGHT, "Save", true);
+	if (!initialText.IsEmpty()) swkbdSetInitialText(&keyboard, initialText.GetChars());
+	const SwkbdButton button = swkbdInputText(&keyboard, text, sizeof(text));
+	ACTION_RETURN_STRING(button == SWKBD_BUTTON_CONFIRM ? FString(text) : FString());
+#else
+	ACTION_RETURN_STRING(FString());
+#endif
 }
 
 //=============================================================================
@@ -538,4 +574,3 @@ DEFINE_FIELD(FSaveGameNode, bNoDelete);
 DEFINE_FIELD_X(SavegameManager, FSavegameManagerBase, WindowSize);
 DEFINE_FIELD_X(SavegameManager, FSavegameManagerBase, quickSaveSlot);
 DEFINE_FIELD_X(SavegameManager, FSavegameManagerBase, SaveCommentString);
-

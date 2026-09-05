@@ -44,17 +44,30 @@
 
 #define NUMSCALEMODES countof(vScaleTable)
 extern bool setsizeneeded;
+#if defined(__3DS__)
+EXTERN_CVAR(Int, lod3ds_render_scale)
+#endif
 
-CUSTOM_CVAR(Int, vid_scale_customwidth, VID_MIN_WIDTH, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+// Keep small bounds available while the canvas switches atomically between the
+// selected gameplay resolution and native 400x240 menus.
+static constexpr int PlatformMinimumWidth = 40;
+static constexpr int PlatformMinimumHeight = 24;
+#else
+static constexpr int PlatformMinimumWidth = VID_MIN_WIDTH;
+static constexpr int PlatformMinimumHeight = VID_MIN_HEIGHT;
+#endif
+
+CUSTOM_CVAR(Int, vid_scale_customwidth, PlatformMinimumWidth, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	if (self < VID_MIN_WIDTH)
-		self = VID_MIN_WIDTH;
+	if (self < PlatformMinimumWidth)
+		self = PlatformMinimumWidth;
 	setsizeneeded = true;
 }
-CUSTOM_CVAR(Int, vid_scale_customheight, VID_MIN_HEIGHT, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, vid_scale_customheight, PlatformMinimumHeight, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	if (self < VID_MIN_HEIGHT)
-		self = VID_MIN_HEIGHT;
+	if (self < PlatformMinimumHeight)
+		self = PlatformMinimumHeight;
 	setsizeneeded = true;
 }
 CVAR(Bool, vid_scale_linear, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -70,8 +83,8 @@ static const int VID_MIN_UI_HEIGHT = 400;
 
 namespace
 {
-	uint32_t min_width = VID_MIN_WIDTH;
-	uint32_t min_height = VID_MIN_HEIGHT;
+	uint32_t min_width = PlatformMinimumWidth;
+	uint32_t min_height = PlatformMinimumHeight;
 
 	float v_MinimumToFill(uint32_t inwidth, uint32_t inheight)
 	{
@@ -98,6 +111,25 @@ namespace
 	{
 		return (uint32_t)((float)inheight * v_MinimumToFill(inwidth, inheight));
 	}
+	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+	inline uint32_t platform_custom_width(uint32_t, uint32_t)
+	{
+		return 400u * static_cast<uint32_t>(lod3ds_render_scale) / 10u;
+	}
+	inline uint32_t platform_custom_height(uint32_t, uint32_t)
+	{
+		return 240u * static_cast<uint32_t>(lod3ds_render_scale) / 10u;
+	}
+	#else
+	inline uint32_t platform_custom_width(uint32_t, uint32_t)
+	{
+		return vid_scale_customwidth;
+	}
+	inline uint32_t platform_custom_height(uint32_t, uint32_t)
+	{
+		return vid_scale_customheight;
+	}
+	#endif
 	inline void refresh_minimums()
 	{
 		// specialUI is tracking a state where high-res console fonts are actually required, and
@@ -107,7 +139,16 @@ namespace
 		static bool lastspecialUI = false;
 		bool isInActualMenu = false;
 
+		#if defined(__3DS__) && (defined(LOD3DS_SAFE_SOFTWARE) || defined(LOD3DS_HYBRID_PERFORMANCE))
+		// Keep the 3D game at the reduced software resolution, but let menus and
+		// the console switch the canvas to the top LCD's native 400x240. The
+		// generic GZDoom minimum of 640x400 would waste work beyond the panel's
+		// physical resolution; keeping the gameplay canvas everywhere made menu
+		// fonts irreversibly blocky after the PICA upscale.
 		bool specialUI = (!sysCallbacks.IsSpecialUI || sysCallbacks.IsSpecialUI());
+		#else
+		bool specialUI = (!sysCallbacks.IsSpecialUI || sysCallbacks.IsSpecialUI());
+		#endif
 
 		if (specialUI == lastspecialUI)
 			return;
@@ -117,13 +158,18 @@ namespace
 
 		if (!specialUI)
 		{
-			min_width = VID_MIN_WIDTH;
-			min_height = VID_MIN_HEIGHT;
+			min_width = PlatformMinimumWidth;
+			min_height = PlatformMinimumHeight;
 		}
 		else
 		{
+			#if defined(__3DS__) && (defined(LOD3DS_SAFE_SOFTWARE) || defined(LOD3DS_HYBRID_PERFORMANCE))
+			min_width = 400;
+			min_height = 240;
+			#else
 			min_width = VID_MIN_UI_WIDTH;
 			min_height = VID_MIN_UI_HEIGHT;
+			#endif
 		}
 	}
 	
@@ -137,7 +183,7 @@ namespace
 		{ true,				[](uint32_t Width, uint32_t Height)->uint32_t { return 640; },		            		[](uint32_t Width, uint32_t Height)->uint32_t { return 400; },			        	1.2f,   				false   },	// 2  - 640x400 (formerly 320x200)
 		{ true,				[](uint32_t Width, uint32_t Height)->uint32_t { return 960; },		            		[](uint32_t Width, uint32_t Height)->uint32_t { return 600; },				        1.2f,  				 	false   },	// 3  - 960x600 (formerly 640x400)
 		{ true,				[](uint32_t Width, uint32_t Height)->uint32_t { return 1280; },		           		[](uint32_t Width, uint32_t Height)->uint32_t { return 800; },	        			1.2f,   				false   },	// 4  - 1280x800
-		{ true,				[](uint32_t Width, uint32_t Height)->uint32_t { return vid_scale_customwidth; },		[](uint32_t Width, uint32_t Height)->uint32_t { return vid_scale_customheight; },	1.0f,   				true    },	// 5  - Custom
+		{ true,				platform_custom_width,																platform_custom_height,															1.0f,   				true    },	// 5  - Custom
 		{ true,				[](uint32_t Width, uint32_t Height)->uint32_t { return 320; },		            		[](uint32_t Width, uint32_t Height)->uint32_t { return 200; },			        	1.2f,   				false   },	// 7  - 320x200
 	};
 	bool isOutOfBounds(int x)
@@ -163,10 +209,49 @@ CUSTOM_CVAR(Int, vid_scalemode, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 		self = 0;
 }
 
+#if defined(__3DS__)
+CUSTOM_CVAR(Int, lod3ds_render_scale, 8, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self != 5 && self != 8 && self != 10) self = 8;
+	// The menu value must drive the engine's real custom render canvas, not
+	// merely the diagnostic label. Menus still switch to native 400x240 through
+	// refresh_minimums(), then gameplay returns to the selected resolution.
+	vid_scalemode = 5;
+	vid_scale_customwidth = 400 * self / 10;
+	vid_scale_customheight = 240 * self / 10;
+	vid_scale_custompixelaspect = 1.0;
+	setsizeneeded = true;
+}
+#endif
+
 CUSTOM_CVAR(Bool, vid_cropaspect, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
 	setsizeneeded = true;
 }
+
+#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+namespace
+{
+	constexpr int GameplayDisplayWidth = 400;
+	constexpr int GameplayDisplayHeight = 240;
+}
+
+int I_3DSGameplayResolutionTenths()
+{
+	return lod3ds_render_scale;
+}
+
+int I_3DSGameplayResolutionWidth()
+{
+	return GameplayDisplayWidth * lod3ds_render_scale / 10;
+}
+
+int I_3DSGameplayResolutionHeight()
+{
+	return GameplayDisplayHeight * lod3ds_render_scale / 10;
+}
+
+#endif
 
 bool ViewportLinearScale()
 {

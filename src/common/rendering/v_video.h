@@ -194,6 +194,10 @@ public:
 
 	// Make the surface visible.
 	virtual void Update ();
+	// Applies a scale-mode change without presenting the previous frame. This is
+	// used by the 3DS before view-size calculation so transitions and touch
+	// resolution changes cannot render one frame with stale viewport geometry.
+	void ApplyPendingVirtualSize();
 
 	// Stores the palette with flash blended in into 256 dwords
 	// Mark the palette as changed. It will be updated on the next Update().
@@ -258,6 +262,9 @@ public:
 	void ScaleCoordsFromWindow(int16_t &x, int16_t &y);
 
 	virtual void Draw2D() {}
+	#ifdef __3DS__
+	virtual void CaptureNativeMenuBase() {}
+	#endif
 
 	virtual void SetViewportRects(IntRect *bounds);
 	int ScreenToWindowX(int x);

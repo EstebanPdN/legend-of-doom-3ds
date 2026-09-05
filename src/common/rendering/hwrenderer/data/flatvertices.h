@@ -60,7 +60,13 @@ public:
 
 	unsigned int mMapStart;
 
-#ifdef __3DS__
+#if defined(__3DS__) && defined(LOD3DS_SAFE_SOFTWARE)
+	// The CPU recovery path holds a 2 MiB startup reserve and releases it just
+	// before this buffer is allocated. 65,536 vertices require 1.25 MiB, fit in
+	// that known-contiguous hole, and still leave over 26k vertices beyond the
+	// largest Legend of Doom map's measured base geometry.
+	static const unsigned int BUFFER_SIZE = 65536;
+#elif defined(__3DS__)
 	// The desktop allocation is 40 MiB even after accounting for bytes
 	// correctly. Legend of Doom's largest map has 19,552 node segments
 	// (under 39,104 base plane vertices before de-duplication), so 100k keeps

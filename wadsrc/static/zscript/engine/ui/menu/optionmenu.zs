@@ -421,6 +421,17 @@ class OptionMenu : Menu
 		return screen.GetWidth() / 2 + indent * CleanXfac_1;
 	}
 
+	// Handheld layouts can opt into two independent anchors.  The stock
+	// option menu uses one indent, which necessarily right-aligns every label.
+	// Keeping this virtual and disabled by default preserves every existing
+	// menu while allowing the 3DS menus to put labels on the left and values on
+	// the right.
+	virtual bool UseSplitOptionLayout() { return false; }
+	virtual bool UseCompactSplitSliders() { return false; }
+	virtual int GetSplitLabelLeft() { return 0; }
+	virtual int GetSplitValueLeft() { return GetIndent(); }
+	virtual int GetSplitValueRight() { return screen.GetWidth(); }
+
 	//=============================================================================
 	//
 	// draws and/or measures the caption. 
@@ -478,7 +489,10 @@ class OptionMenu : Menu
 			{
 				if (((MenuTime() % 8) < 6) || GetCurrentMenu() != self)
 				{
-					DrawOptionText(cur_indent + 3 * CleanXfac_1, y, OptionMenuSettings.mFontColorSelection, "◄");
+					int cursorx = UseSplitOptionLayout()
+						? GetSplitLabelLeft() - 12 * CleanXfac_1
+						: cur_indent + 3 * CleanXfac_1;
+					DrawOptionText(cursorx, y, OptionMenuSettings.mFontColorSelection, "◄");
 				}
 			}
 			y += fontheight;

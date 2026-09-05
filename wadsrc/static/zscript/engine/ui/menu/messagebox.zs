@@ -126,15 +126,19 @@ class MessageBoxMenu : Menu
 		{
 			y += fontheight;
 			mMouseY = int(y);
-			screen.DrawText(textFont, messageSelection == 0? OptionMenuSettings.mFontColorSelection : OptionMenuSettings.mFontColor, destWidth / 2, y, Stringtable.Localize("$TXT_YES"), DTA_VirtualWidth, destWidth, DTA_VirtualHeight, destHeight, DTA_KeepRatio, 	true, DTA_ScaleX, NotifyFontScale, DTA_ScaleY, NotifyFontScale);
-			screen.DrawText(textFont, messageSelection == 1? OptionMenuSettings.mFontColorSelection : OptionMenuSettings.mFontColor, destWidth / 2, y + fontheight, Stringtable.Localize("$TXT_NO"), DTA_VirtualWidth, destWidth, DTA_VirtualHeight, destHeight, DTA_KeepRatio, true, DTA_ScaleX, NotifyFontScale, DTA_ScaleY, NotifyFontScale);
+			let yesX = destWidth / 2 - 62;
+			let noX = destWidth / 2 + 38;
+			mMouseLeft = yesX - 14;
+			mMouseRight = noX + textFont.StringWidth(Stringtable.Localize("$TXT_NO"));
+			screen.DrawText(textFont, messageSelection == 0? OptionMenuSettings.mFontColorSelection : OptionMenuSettings.mFontColor, yesX, y, Stringtable.Localize("$TXT_YES"), DTA_VirtualWidth, destWidth, DTA_VirtualHeight, destHeight, DTA_KeepRatio, 	true, DTA_ScaleX, NotifyFontScale, DTA_ScaleY, NotifyFontScale);
+			screen.DrawText(textFont, messageSelection == 1? OptionMenuSettings.mFontColorSelection : OptionMenuSettings.mFontColor, noX, y, Stringtable.Localize("$TXT_NO"), DTA_VirtualWidth, destWidth, DTA_VirtualHeight, destHeight, DTA_KeepRatio, true, DTA_ScaleX, NotifyFontScale, DTA_ScaleY, NotifyFontScale);
 
 			if (messageSelection >= 0)
 			{
 				if ((MenuTime() % 8) < 6)
 				{
 					screen.DrawText(arrowFont, OptionMenuSettings.mFontColorSelection,
-						destWidth/2 - 11, y + fontheight * messageSelection, selector, DTA_VirtualWidth, destWidth, DTA_VirtualHeight, destHeight, DTA_KeepRatio, true);
+						(messageSelection == 0? yesX : noX) - 11, y, selector, DTA_VirtualWidth, destWidth, DTA_VirtualHeight, destHeight, DTA_KeepRatio, true);
 				}
 			}
 		}
@@ -248,7 +252,8 @@ class MessageBoxMenu : Menu
 	{
 		if (mMessageMode == 0)
 		{
-			if (mkey == MKEY_Up || mkey == MKEY_Down)
+			if (mkey == MKEY_Up || mkey == MKEY_Down ||
+				mkey == MKEY_Left || mkey == MKEY_Right)
 			{
 				MenuSound("menu/cursor");
 				messageSelection = !messageSelection;
@@ -300,9 +305,9 @@ class MessageBoxMenu : Menu
 			x = x * destWidth / screen.GetWidth();
 			y = y * destHeight / screen.GetHeight();
 
-			if (x >= mMouseLeft && x <= mMouseRight && y >= mMouseY && y < mMouseY + 2 * fh)
+			if (x >= mMouseLeft && x <= mMouseRight && y >= mMouseY && y < mMouseY + fh)
 			{
-				sel = y >= mMouseY + fh;
+				sel = x >= destWidth / 2;
 			}
 			messageSelection = sel;
 			if (type == MOUSE_Release)
@@ -315,6 +320,5 @@ class MessageBoxMenu : Menu
 
 
 }
-
 
 

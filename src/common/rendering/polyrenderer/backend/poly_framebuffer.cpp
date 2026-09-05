@@ -29,6 +29,8 @@
 #include "i_video.h"
 #include "v_draw.h"
 
+#include <cstring>
+
 #include "hw_clock.h"
 #include "hw_vrmodes.h"
 #include "hw_cvars.h"
@@ -44,6 +46,11 @@
 #include "poly_renderstate.h"
 #include "poly_hwtexture.h"
 #include "engineerrors.h"
+
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#include "common/platform/3ds/memory_3ds.h"
+#endif
 
 void Draw2D(F2DDrawer *drawer, FRenderState &state);
 
@@ -85,6 +92,9 @@ PolyFrameBuffer::~PolyFrameBuffer()
 
 void PolyFrameBuffer::InitializeState()
 {
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-state-enter");
+	#endif
 	vendorstring = "Poly";
 	hwcaps = RFL_SHADER_STORAGE_BUFFER | RFL_BUFFER_STORAGE;
 	glslversion = 4.50f;
@@ -92,11 +102,31 @@ void PolyFrameBuffer::InitializeState()
 	maxuniformblock = 0x7fffffff;
 
 	mRenderState.reset(new PolyRenderState());
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-render-state-ready");
+	// Return the early 2 MiB reservation only after the small framebuffer and
+	// render-state objects exist. The next allocation is the reduced 1.25 MiB
+	// flat-vertex store, so allocator fragmentation cannot consume its hole.
+	I_3DSReleaseRendererMemory();
+	I_3DSStartupLog("softpoly-reserve-released");
+	#endif
 
 	mVertexData = new FFlatVertexBuffer(GetWidth(), GetHeight());
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-vertices-ready");
+	#endif
 	mSkyData = new FSkyVertexBuffer;
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-sky-ready");
+	#endif
 	mViewpoints = new HWViewpointBuffer;
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-viewpoints-ready");
+	#endif
 	mLights = new FLightBuffer();
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-lights-ready");
+	#endif
 
 	static const FVertexBufferAttribute format[] =
 	{
@@ -112,8 +142,14 @@ void PolyFrameBuffer::InitializeState()
 
 	mScreenQuad.IndexBuffer = screen->CreateIndexBuffer();
 	mScreenQuad.IndexBuffer->SetData(6 * sizeof(uint32_t), indices, false);
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-screen-quad-ready");
+	#endif
 
 	CheckCanvas();
+	#ifdef __3DS__
+	I_3DSStartupLog("softpoly-canvas-ready");
+	#endif
 }
 
 void PolyFrameBuffer::CheckCanvas()
@@ -175,27 +211,114 @@ void PolyFrameBuffer::Update()
 		int w = mCanvas->GetWidth();
 		int h = mCanvas->GetHeight();
 		int pixelsize = 4;
-		const uint8_t *src = (const uint8_t*)mCanvas->GetPixels();
-		int pitch = 0;
-		uint8_t *dst = I_PolyPresentLock(w, h, cur_vsync, pitch);
-		if (dst)
+		#ifdef __3DS__
+		// All drawer workers must retire before native HUD pixels overwrite the
+		// final CPU canvas. This path works identically at 200x120, 320x192 and
+		// 400x240 instead of relying on resolution-sensitive 2D commands.
+		DrawerThreads::WaitForWorkers();
+		I_3DSComposeGameplayFrame(
+			static_cast<unsigned char *>(mCanvas->GetPixels()),
+			mCanvas->GetPitch() * pixelsize, w, h);
+		if (!mNativeMenuBase.empty() && I_3DSNativeMenuVisible() &&
+			mNativeMenuBaseWidth == w && mNativeMenuBaseHeight == h &&
+			mNativeMenuBasePitch == mCanvas->GetPitch() * pixelsize)
 		{
-			auto copyqueue = std::make_shared<DrawerCommandQueue>(&mFrameMemory);
-			if (vid_gamma == 1.0f && vid_contrast == 1.0f &&
-				vid_brightness == 0.0f && vid_saturation == 1.0f)
-			{
-				copyqueue->Push<MemcpyCommand>(dst, pitch / pixelsize, src, w, h,
-					mCanvas->GetPitch(), pixelsize);
-			}
-			else
-			{
-				copyqueue->Push<CopyAndApplyGammaCommand>(dst, pitch / pixelsize, src, w, h,
-					mCanvas->GetPitch(), vid_gamma, vid_contrast, vid_brightness, vid_saturation);
-			}
-			DrawerThreads::Execute(copyqueue);
-
+			// The final menu commands may have run on core 2. Do not sample or
+			// restore the canvas until every tile has retired.
 			DrawerThreads::WaitForWorkers();
-			I_PolyPresentUnlock(mOutputLetterbox.left, mOutputLetterbox.top, mOutputLetterbox.width, mOutputLetterbox.height);
+			I_3DSRouteNativeMenuFrame(
+				static_cast<unsigned char *>(mCanvas->GetPixels()),
+				mNativeMenuBase.data(), mNativeMenuBasePitch, w, h);
+		}
+		mNativeMenuBase.clear();
+		mNativeMenuBasePitch = 0;
+		mNativeMenuBaseWidth = 0;
+		mNativeMenuBaseHeight = 0;
+		#endif
+		const uint8_t *src = (const uint8_t*)mCanvas->GetPixels();
+		const bool neutralColorTransform = vid_gamma == 1.0f &&
+			vid_contrast == 1.0f && vid_brightness == 0.0f &&
+			vid_saturation == 1.0f;
+		bool presented = false;
+		#if defined(__3DS__) && (!defined(LOD3DS_SAFE_SOFTWARE) || defined(LOD3DS_HYBRID_PERFORMANCE))
+		if (neutralColorTransform)
+		{
+			// Present the normal 320x200 profile without the old canvas->SDL
+			// texture copy, SDL software scale and second LCD-rotation copy.
+			DrawerThreads::WaitForWorkers();
+			presented = I_PolyPresentDirect3DS(src, mCanvas->GetPitch() * pixelsize,
+				w, h, mOutputLetterbox.left, mOutputLetterbox.top,
+				mOutputLetterbox.width, mOutputLetterbox.height);
+		}
+		#endif
+		if (!presented)
+		{
+			int pitch = 0;
+			uint8_t *dst = I_PolyPresentLock(w, h, cur_vsync, pitch);
+			if (dst)
+			{
+				#if defined(__3DS__) && !defined(LOD3DS_SAFE_SOFTWARE)
+				if (neutralColorTransform)
+				{
+				// FlushDrawCommands may have queued 2D work on DrawerThreads. Wait for
+				// it before reading the canvas, then copy inline instead of paying a
+				// second same-core queue/mutex/condition-variable hand-off for 200 rows.
+				DrawerThreads::WaitForWorkers();
+				const size_t rowBytes = static_cast<size_t>(w) * pixelsize;
+				const size_t sourcePitchBytes =
+					static_cast<size_t>(mCanvas->GetPitch()) * pixelsize;
+				if (static_cast<size_t>(pitch) == rowBytes && sourcePitchBytes == rowBytes)
+				{
+					std::memcpy(dst, src, rowBytes * static_cast<size_t>(h));
+				}
+				else
+				{
+					for (int row = 0; row < h; ++row)
+					{
+						std::memcpy(dst + static_cast<size_t>(row) * pitch,
+							src + static_cast<size_t>(row) * sourcePitchBytes, rowBytes);
+					}
+				}
+				}
+				else
+				#endif
+				{
+					auto copyqueue = std::make_shared<DrawerCommandQueue>(&mFrameMemory);
+					if (neutralColorTransform)
+					{
+						copyqueue->Push<MemcpyCommand>(dst, pitch / pixelsize, src, w, h,
+							mCanvas->GetPitch(), pixelsize);
+					}
+					else
+					{
+						copyqueue->Push<CopyAndApplyGammaCommand>(dst, pitch / pixelsize, src, w, h,
+							mCanvas->GetPitch(), vid_gamma, vid_contrast, vid_brightness, vid_saturation);
+					}
+					DrawerThreads::Execute(copyqueue);
+					DrawerThreads::WaitForWorkers();
+				}
+				#if defined(__3DS__) && defined(LOD3DS_SAFE_SOFTWARE)
+				static unsigned startupFrame = 0;
+				static const char *const frameEnter[] = {
+					"softpoly-frame-1-enter", "softpoly-frame-2-enter",
+					"softpoly-frame-3-enter"
+				};
+				static const char *const framePresentReady[] = {
+					"softpoly-frame-1-present-ready", "softpoly-frame-2-present-ready",
+					"softpoly-frame-3-present-ready"
+				};
+				if (startupFrame < 3) I_3DSStartupLog(frameEnter[startupFrame]);
+				#endif
+				I_PolyPresentUnlock(mOutputLetterbox.left, mOutputLetterbox.top,
+					mOutputLetterbox.width, mOutputLetterbox.height);
+				#if defined(__3DS__) && defined(LOD3DS_SAFE_SOFTWARE)
+				if (startupFrame < 3)
+				{
+					I_3DSStartupLog(framePresentReady[startupFrame]);
+					++startupFrame;
+				}
+				#endif
+			}
 		}
 		FPSLimit();
 	}
@@ -472,8 +595,30 @@ TArray<uint8_t> PolyFrameBuffer::GetScreenshotBuffer(int &pitch, ESSType &color_
 
 void PolyFrameBuffer::BeginFrame()
 {
+	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+	// DFrameBuffer normally applies a requested virtual-size change at the end
+	// of the frame. Applying it before viewport setup prevents the first New
+	// Game frame from being rendered with the title menu's old 400x240 canvas.
+	Super::Update();
+	#endif
 	SetViewportRects(nullptr);
 	CheckCanvas();
+
+	#ifdef __3DS__
+	// The Poly renderer's Clear(CT_Color) path is intentionally a no-op. On a
+	// desktop compositor that is usually hidden by complete redraws, but the
+	// 3DS scanout preserves uncovered pixels and leaked the previous HUD/frame
+	// into sky columns. Start each software frame from transparent black: it
+	// appears black at scanout and alpha 0 remains a sentinel for untouched
+	// pixels that the software sky fallback fills later in the frame.
+	if (mCanvas != nullptr && mCanvas->GetPixels() != nullptr)
+	{
+		constexpr size_t CanvasBytesPerPixel = 4;
+		std::memset(mCanvas->GetPixels(), 0,
+			static_cast<size_t>(mCanvas->GetPitch()) * mCanvas->GetHeight() *
+				CanvasBytesPerPixel);
+	}
+	#endif
 
 #if 0
 	swrenderer::R_InitFuzzTable(GetCanvas()->GetPitch());
@@ -489,6 +634,30 @@ void PolyFrameBuffer::Draw2D()
 {
 	::Draw2D(twod, *mRenderState);
 }
+
+#ifdef __3DS__
+void PolyFrameBuffer::CaptureNativeMenuBase()
+{
+	if (mCanvas == nullptr || mCanvas->GetPixels() == nullptr) return;
+
+	// Resolve the world/page, blend and HUD that were queued before M_Drawer.
+	// M_Drawer can then use the ordinary engine canvas without any special-case
+	// rendering code, while this exact pre-menu image remains available for the
+	// upper LCD restoration and menu-pixel extraction.
+	Draw2D();
+	twod->Clear();
+	FlushDrawCommands();
+	DrawerThreads::WaitForWorkers();
+
+	mNativeMenuBasePitch = mCanvas->GetPitch() * 4;
+	mNativeMenuBaseWidth = mCanvas->GetWidth();
+	mNativeMenuBaseHeight = mCanvas->GetHeight();
+	mNativeMenuBase.resize(static_cast<size_t>(mNativeMenuBasePitch) *
+		mNativeMenuBaseHeight);
+	std::memcpy(mNativeMenuBase.data(), mCanvas->GetPixels(),
+		mNativeMenuBase.size());
+}
+#endif
 
 unsigned int PolyFrameBuffer::GetLightBufferBlockSize() const
 {

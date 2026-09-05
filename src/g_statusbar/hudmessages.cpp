@@ -132,6 +132,18 @@ void DHUDMessageBase::CallDraw(int bottom, int visibility)
 DHUDMessage::DHUDMessage (FFont *font, const char *text, float x, float y, int hudwidth, int hudheight,
 						  EColorRange textColor, float holdTime)
 {
+	#ifdef __3DS__
+	// The opening cave sentence is wider than the 3DS canvas. Give its two
+	// clauses an authored break and center each line independently.
+	const char *messageText = text;
+	if (text != nullptr && stricmp(text, "IT'S DANGEROUS TO GO ALONE! TAKE THIS.") == 0)
+	{
+		messageText = "IT'S DANGEROUS TO GO ALONE!\nTAKE THIS.";
+		x = 1.5f;
+	}
+	#else
+	const char *messageText = text;
+	#endif
 	if (hudwidth == 0 || hudheight == 0)
 	{
 		// for y range [-1.0, 0.0]: Positions top edge of box
@@ -202,13 +214,13 @@ DHUDMessage::DHUDMessage (FFont *font, const char *text, float x, float y, int h
 	// Try to find the optimal font if none is specified. Prefer SmallFont, but if that cannot handle this text use the IWAD's SmallFont and if that doesn't work either, use the VGA font.
 	if (font) Font = font;
 	else if (generic_ui) Font = NewSmallFont;
-	else if (SmallFont->CanPrint(text)) Font = SmallFont;
-	else if (OriginalSmallFont->CanPrint(text)) Font = OriginalSmallFont;
+	else if (SmallFont->CanPrint(messageText)) Font = SmallFont;
+	else if (OriginalSmallFont->CanPrint(messageText)) Font = OriginalSmallFont;
 	else Font = NewSmallFont;
 
 	TextColor = textColor;
 	State = 0;
-	SourceText = copystring (text);
+	SourceText = copystring (messageText);
 	VisibilityFlags = 0;
 	Style = STYLE_Translucent;
 	Alpha = 1.;
@@ -924,4 +936,3 @@ void C_MidPrint(FFont* font, const char* msg, bool bold)
 		StatusBar->DetachMessage(MAKE_ID('C', 'N', 'T', 'R'));
 	}
 }
-

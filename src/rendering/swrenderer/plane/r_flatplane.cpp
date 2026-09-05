@@ -175,18 +175,36 @@ namespace swrenderer
 		
 		if (viewport->RenderTarget->IsBgra())
 		{
-			double distance2 = viewport->PlaneDepth(y + 1, planeheight);
-			double xmagnitude = fabs(ystepscale * (distance2 - distance) * viewport->FocalLengthX);
-			double ymagnitude = fabs(xstepscale * (distance2 - distance) * viewport->FocalLengthX);
-			double magnitude = MAX(ymagnitude, xmagnitude);
-			double min_lod = -1000.0;
-			drawerargs.SetTextureLOD(MAX(log2(magnitude) + r_lod_bias, min_lod));
+			const bool nearestWithoutMipmaps = !r_mipmap && !r_minfilter && !r_magfilter;
+			if (nearestWithoutMipmaps)
+			{
+				// LOD cannot affect sampling in this mode. Avoid a libm log2 call for
+				// every visible plane span on the scalar ARM11 drawer.
+				drawerargs.SetTextureLOD(0.0);
+			}
+			else
+			{
+				double distance2 = viewport->PlaneDepth(y + 1, planeheight);
+				double xmagnitude = fabs(ystepscale * (distance2 - distance) * viewport->FocalLengthX);
+				double ymagnitude = fabs(xstepscale * (distance2 - distance) * viewport->FocalLengthX);
+				double magnitude = MAX(ymagnitude, xmagnitude);
+				double min_lod = -1000.0;
+				drawerargs.SetTextureLOD(MAX(log2(magnitude) + r_lod_bias, min_lod));
+			}
 		}
 
 		if (plane_shade)
 		{
 			// Determine lighting based on the span's distance from the viewer.
-			drawerargs.SetLight((float)Thread->Light->FlatPlaneVis(y, planeheight, foggy, viewport), lightlevel, foggy, viewport);
+			double visibility = Thread->Light->FlatPlaneVis(y, planeheight,
+				foggy, viewport);
+			#ifdef __3DS__
+			visibility = Apply3DSMap01DistanceFogVisibility(
+				drawerargs.BaseColormap(), distance, visibility,
+				LightVisibility::LightLevelToShade(lightlevel, foggy, viewport));
+			#endif
+			drawerargs.SetLight(static_cast<float>(visibility), lightlevel,
+				foggy, viewport);
 		}
 
 		if (r_dynlights)

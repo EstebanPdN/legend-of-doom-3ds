@@ -1,0 +1,1054 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index ff2621ed629259eba2a65c7157434229798086c6..5ecdce35e485e7be1ed8585a3922fb905fdeed9d 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -85,10 +85,10 @@ static void nova_hw_stage(const char *stage, float cmd_usage)
+      GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
+      GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
+ 
+-/* Frame buffering depth (1 = single/SYNCDRAW, 2 = double, 3 = triple). With K>1
+- * the CPU runs ahead of the GPU (async); NovaGL splits the vertex/index rings
+- * and the texture/FBO orphan GC into K rotating slots so a slot is reused only
+- * K frames later (GPU finished) — making async SAFE. Choose at runtime with
++/* Frame buffering depth (1 = single, 2 = double, 3 = triple). NovaGL splits
++ * the vertex/index rings and texture/FBO orphan GC into K rotating slots.
++ * C3D_FrameBegin still waits for the preceding GX queue before slot reuse.
++ * Choose at runtime with
+  * novaSetFrameBuffers() before nova_init(), or set the compile default here.
+  * Legacy -DNOVAGL_ASYNC_FRAME maps to double-buffering (now safe). */
+ #ifndef NOVAGL_FRAME_BUFFERS
+@@ -220,12 +220,11 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+         C3D_TexSetWrap(&g.app_tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+         g.app_target = C3D_RenderTargetCreateFromTex(&g.app_tex, GPU_TEXFACE_2D, 0,
+                                                      GPU_RB_DEPTH24_STENCIL8);
+-        /* Zero the whole POT buffer so LINEAR sampling across the logical↔pad
+-         * boundary never pulls undefined VRAM (Butterscotch does the same). */
+-        if (g.app_target && g.app_tex.data) {
+-            memset(g.app_tex.data, 0, g.app_tex.size);
+-            GSPGPU_FlushDataCache(g.app_tex.data, g.app_tex.size);
+-        }
++        /* VRAM is not CPU-writable on hardware. Clear through GX so LINEAR
++         * sampling across the logical↔pad boundary cannot pull undefined
++         * texels. The next C3D_FrameBegin fences this initialization command. */
++        if (g.app_target)
++            C3D_RenderTargetClear(g.app_target, C3D_CLEAR_COLOR, 0, 0);
+     }
+ #endif
+     if (!g.app_target) {
+@@ -405,7 +404,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+      * completed GX memory fill).  Normal depth testing remains fully active;
+      * only the optional early rejection optimisation is disabled. */
+     g.early_z_allowed = 0;
+-    g.c3d_frame_flag = (K > 1) ? 0 : C3D_FRAME_SYNCDRAW;
++    g.c3d_frame_flag = 0;
+ 
+     /* One vertex + index ring PER frame slot (full per-slot capacity), so the
+      * GPU reading slot s's data is never overwritten by the CPU until that slot
+@@ -424,7 +423,7 @@ void nova_init_ex(int cmd_buf_size, int client_array_buf_size, int index_buf_siz
+             if (g.index_buf_slots[i])        { linearFree(g.index_buf_slots[i]);        g.index_buf_slots[i] = NULL; }
+             if (i == 0) { K = 1; } else { K = i; }
+             g.frame_buffers = K;
+-            g.c3d_frame_flag = (K > 1) ? 0 : C3D_FRAME_SYNCDRAW;
++            g.c3d_frame_flag = 0;
+             break;
+         }
+     }
+@@ -901,15 +900,9 @@ void novaSnapshotAppSurface(void) {
+     nova_invalidate_state_cache();
+ }
+ 
+-/* Frame-rate cap. citro3d's C3D_FRAME_SYNCDRAW only waits for the GPU to
+- * finish drawing — it does NOT pace the CPU loop to the display. On real
+- * hardware the slow ARM11 hides this, but under Citra the GPU "finishes"
+- * instantly, so the main loop free-runs at hundreds of fps. Games that advance
+- * animation per-frame (e.g. the rotating-cube demo does `angle += 1.0` each
+- * iteration) then spin absurdly fast. Waiting one VBlank per swap caps the
+- * loop at 60 fps — the standard 3DS main-loop idiom — so per-frame animation
+- * runs at a sane, hardware-consistent rate. Compile with -DNOVAGL_VSYNC=0 to
+- * free-run (e.g. for benchmarking); see the guard near the top of the file. */
++/* Frame-rate cap. C3D_FRAME_SYNCDRAW waits Citro3D's display counters before
++ * its normal GX-queue fence. NovaGL instead uses one explicit top-screen
++ * VBlank here; combining both waits can consume two refresh intervals. */
+ 
+ void novaSetEarlyZEnabled(int enabled) {
+     /* Hardware-safety contract for this port.  Keep the public entry point so
+@@ -949,7 +942,9 @@ void novaSwapBuffers(void) {
+     if (g.app_target) nova_present_app(g.render_target_top);
+ 
+     if (log_stage) nova_hw_stage("swap-before-frame-end", C3D_GetCmdBufUsage());
+-    C3D_FrameEnd(0);
++    /* All CPU->GPU ranges and every command-list segment are flushed
++     * explicitly. Avoid citro3d's fallback flush of the entire linear heap. */
++    C3D_FrameEnd(GX_CMDLIST_FLUSH);
+     if (log_stage) nova_hw_stage("swap-after-frame-end", 0.0f);
+     /* VBlank pacing quantizes the frame rate to 60/N: a 45ms frame stalls
+      * until the 4th impulse and reads as a hard 15 FPS. Engines that pace
+@@ -966,7 +961,15 @@ void novaSwapBuffers(void) {
+      * preceding queue even without the redundant display-counter sync.) */
+     g.frame_slot = (g.frame_slot + 1) % g.frame_buffers;
+ 
++    /* FrameEnd merely starts Citro3D's GX queue. Retire it before freeing any
++     * resource bucket; C3D_FRAME_SYNCDRAW is display-counter synchronization,
++     * while this is the queue-completion fence we actually need. */
++    nova_render_queue_wait_idle();
+     nova_fbo_gc_collect();              /* free this slot's orphaned FBO targets */
++    nova_tex_gc_collect();              /* free this slot's orphaned textures   */
++    nova_ring_gc_collect();             /* free ring buffers orphaned by growth */
++    nova_vbo_gc_collect();              /* free VBO storage orphaned by delete/respec */
++    nova_transfer_gc_collect();         /* free completed GX-copy sources       */
+ 
+     /* No wait tag here: this is the HEALTHY once-per-frame swap wait — under
+      * a rolling per-frame tag budget it floods the log and drowns the rare
+@@ -987,9 +990,6 @@ void novaSwapBuffers(void) {
+      * fix) corrupting the screen. */
+     g.p3d_pending = 0;
+ 
+-    nova_tex_gc_collect();              /* free this slot's orphaned textures   */
+-    nova_ring_gc_collect();             /* free ring buffers orphaned by growth */
+-    nova_vbo_gc_collect();              /* free VBO storage orphaned by delete/respec */
+     nova_tex_staging_tick();            /* shrink idle texture staging buffer   */
+ 
+     /* Point the active rings at this slot's buffers and reset their offsets —
+@@ -1029,16 +1029,18 @@ void nova_fini(void) {
+     // pending transfer на удаляемом таргете и валит процесс. Сначала закрываем
+     // кадр и ждём GPU.
+     nova_wait_tag("[W] swap-end>");
+-    C3D_FrameEnd(0);
+-    nova_wait_tag("[W] swap-p3d>");
+-    gspWaitForP3D();
+-    nova_wait_tag("[W] swap-p3d<");
++    C3D_FrameEnd(GX_CMDLIST_FLUSH);
++    nova_wait_tag("[W] swap-queue>");
++    nova_render_queue_wait_idle();
++    nova_wait_tag("[W] swap-queue<");
+     g.p3d_pending = 0; /* frame fully retired; next wait needs new work */
+ 
+     /* GPU is idle now — flush ALL frame slots of orphaned texture/FBO/VBO storage. */
+     nova_tex_gc_collect_all();
+     nova_fbo_gc_collect_all();
+     nova_vbo_gc_collect_all();
++    nova_transfer_gc_collect_all();
++    nova_ring_gc_collect_all();
+ 
+     for (int i = 0; i < g.frame_buffers; i++) {
+         if (g.client_array_buf_slots[i]) linearFree(g.client_array_buf_slots[i]);
+@@ -1390,8 +1392,9 @@ static int nova_basic_near_clip(GLenum mode, GPU_Primitive_t prim, const uint8_t
+     /* MVP the active shader applies (valid after apply_gpu_state). Pre-fold the z
+      * and w rows into one row 'a' so the near distance is a single dot/vertex:
+      * d = z_clip + w_clip = a·(x,y,z,1). */
+-    C3D_Mtx mvp;
+-    Mtx_Multiply(&mvp, &g.final_proj_cached, &g.mv_stack[g.mv_sp]);
++    /* apply_gpu_state already rebuilt this exact matrix when either stack
++     * changed. Reusing it removes a 4x4 multiply from each clip candidate. */
++    C3D_Mtx mvp = g.mvp_combined;
+     for (int row = 0; row < 4; ++row) {
+         if (!isfinite(mvp.r[row].x) || !isfinite(mvp.r[row].y) ||
+             !isfinite(mvp.r[row].z) || !isfinite(mvp.r[row].w))
+@@ -1875,8 +1878,8 @@ static int gzdoom_draw_needs_near_clip(GLenum mode, GLint first, GLsizei count,
+         if (!base || !NOVA_PTR_OK(base)) return 0;
+     }
+ 
+-    C3D_Mtx mvp;
+-    Mtx_Multiply(&mvp, &g.final_proj_cached, &g.mv_stack[g.mv_sp]);
++    /* apply_gpu_state keeps this current for all shader variants. */
++    C3D_Mtx mvp = g.mvp_combined;
+     for (int row = 0; row < 4; ++row) {
+         if (!isfinite(mvp.r[row].x) || !isfinite(mvp.r[row].y) ||
+             !isfinite(mvp.r[row].z) || !isfinite(mvp.r[row].w))
+@@ -2638,21 +2641,12 @@ void glFlush(void) {
+ }
+ 
+ void glFinish(void) {
+-    nova_batch_flush();   /* commit deferred draws before the split */
+-    /* Wait ONLY when work was actually submitted: splitting an empty command
+-     * list raises no P3D interrupt and gspWaitForP3D() then never returns
+-     * (the previous frame's event was already consumed by novaSwapBuffers).
+-     * OSG calls glFinish on RTT paths before any draw touched the frame. */
+-    if (g.p3d_pending) {
+-        nova_wait_tag("[W] glFinish>");
+-        /* See linear_alloc_ring: raw gspWaitForP3D never wakes while the
+-         * citro3d render queue owns the P3D callback. FrameEnd+SYNCDRAW
+-         * begin is the sanctioned mid-stream drain. */
+-        C3D_FrameEnd(0);
+-        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+-        if (g.current_target)
+-            C3D_FrameDrawOn(g.current_target);
+-        nova_wait_tag("[W] glFinish<");
+-        g.p3d_pending = 0;
+-    }
++    /* GX clears/copies do not set g.p3d_pending, but GL requires every command
++     * issued before glFinish to be complete when it returns.  The force helper
++     * closes the currently-open frame, flushes the command list, fences the
++     * complete Citro3D render queue, and then opens exactly one replacement
++     * frame.  Do not reproduce that lifecycle locally. */
++    nova_wait_tag("[W] glFinish>");
++    nova_midframe_drain_force();
++    nova_wait_tag("[W] glFinish<");
+ }
+diff --git a/src/context.h b/src/context.h
+index 0a7fb0ab9f2e1fe0692d598370ebb0e849b9e393..411875436210c768eba743c47dcbd051ba91bb51 100644
+--- a/src/context.h
++++ b/src/context.h
+@@ -170,6 +170,8 @@ typedef struct {
+     uint8_t mem_kind;       /* NOVA_VBO_MEM_* */
+     GLenum usage;
+     uint8_t mapped;
++    int map_offset;
++    int map_length;
+ } VBOSlot;
+ 
+ static inline int vbo_gpu_readable(const VBOSlot *s) {
+@@ -547,17 +549,14 @@ extern struct NovaState {
+ 
+     GLenum last_error;
+     int initialized;
+-    /* Frame buffering: 1 = single (SYNCDRAW, CPU waits for GPU each frame),
+-     * 2 = double, 3 = triple (async — CPU runs ahead of the GPU). With K>1 the
+-     * vertex/index rings and the texture/FBO orphan GC are split into K slots
+-     * rotated per frame, so a slot is only reused/freed K frames later (when the
+-     * GPU has definitely finished it) — the use-after-free that broke async is
+-     * gone. See novaSetFrameBuffers(). */
++    /* Frame buffering: rings and deferred-free buckets rotate with frame_slot.
++     * C3D_FrameBegin always fences the preceding GX queue, independently of
++     * the display-counter-only C3D_FRAME_SYNCDRAW flag. */
+     int frame_buffers;        /* K = 1/2/3 */
+     int frame_slot;           /* current ring/GC slot, 0..K-1 */
+     int frame_index;          /* monotonic frame counter (novaSwapBuffers) —
+                                * used to throttle diagnostic logs to 1/60 frames */
+-    int c3d_frame_flag;       /* C3D_FrameBegin flag: SYNCDRAW (K==1) or 0 (async) */
++    int c3d_frame_flag;       /* kept at 0: queue fence without a second VBlank */
+     int swap_interval;        /* novaSetSwapInterval: 0 = free-run (no VBlank wait
+                                * at swap), N>0 = wait N VBlanks. Default comes from
+                                * the NOVAGL_VSYNC compile flag. */
+@@ -565,8 +564,8 @@ extern struct NovaState {
+                                * Forced off for this port; ordinary depth testing
+                                * remains enabled. */
+     int ring_synced_this_frame; /* per-frame guard for the linear_alloc_ring
+-                               * mid-frame drain (C3D_FrameEnd(0)+FrameBegin
+-                               * SYNCDRAW). The drain is the ONLY sanctioned
++                               * explicit-flush FrameEnd + FrameBegin drain.
++                               * The drain is the ONLY sanctioned
+                                * mid-frame wait, and it may fire AT MOST ONCE per
+                                * frame — a second drain in the same frame is both
+                                * wasteful (extra partial present) and a hang risk.
+diff --git a/src/framebuffer.c b/src/framebuffer.c
+index 40aa6220e9aa838c31baf543ec54da7d54b80b70..e1ec4ddd3e7669e355398d4e5981a1b0614d3423 100644
+--- a/src/framebuffer.c
++++ b/src/framebuffer.c
+@@ -40,7 +40,7 @@ static void nova_queue_render_target_delete(C3D_RenderTarget *target) {
+          * work so this slot's targets are safe to delete now, then reuse it.
+          * Raw split+gspWaitForP3D parks forever under citro3d's render queue
+          * — use the sanctioned mid-frame drain instead. */
+-        nova_midframe_drain();
++        nova_midframe_drain_force();
+         fbo_gc_free_slot(s);
+     }
+     s_fbo_gc_targets[s][s_fbo_gc_count[s]++] = target;
+@@ -396,17 +396,29 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
+                              GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+                              GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGBA8) |
+                              GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
+-        C3D_FrameSplit(0);
+-        C3D_SyncDisplayTransfer(fb_data, GX_BUFFER_DIM(fb_w, fb_h),
+-                                (u32 *)pixels, GX_BUFFER_DIM(fb_w, fb_h),
+-                                transfer_flags);
+-        return;
++        /* GX needs a physically contiguous destination; an arbitrary GL
++         * client pointer is not guaranteed to be one. Stage into linear RAM,
++         * fence the queued transfer, invalidate, then copy to the caller. */
++        void *readback = linearAlloc(total);
++        if (readback) {
++            GSPGPU_InvalidateDataCache(readback, (u32)total);
++            C3D_FrameSplit(0);
++            C3D_SyncDisplayTransfer(fb_data, GX_BUFFER_DIM(fb_w, fb_h),
++                                    (u32 *)readback, GX_BUFFER_DIM(fb_w, fb_h),
++                                    transfer_flags);
++            nova_midframe_drain_force();
++            GSPGPU_InvalidateDataCache(readback, (u32)total);
++            memcpy(pixels, readback, total);
++            linearFree(readback);
++            return;
++        }
+     }
+ #endif
+ 
+-    /* Soft fallback: untile + axis-swap pixel-by-pixel. CPU reads need the
+-     * queued draws retired — raw split+wait parks forever mid-frame. */
+-    nova_midframe_drain();
++    /* Soft fallback: untile + axis-swap pixel-by-pixel.  The framebuffer may
++     * have been modified only by a GX clear/copy, which does not set
++     * g.p3d_pending, so this must be the unconditional queue drain. */
++    nova_midframe_drain_force();
+ 
+     uint8_t *dst = (uint8_t *) pixels;
+ 
+diff --git a/src/immediate.c b/src/immediate.c
+index bc9d42873ece7328637c79cbfb717bd86d2abdfc..c8b02441278da0eae3d57c233e803d5bb7cae933 100644
+--- a/src/immediate.c
++++ b/src/immediate.c
+@@ -53,14 +53,16 @@ void glBegin(GLenum mode) {
+      * FrameSplit + GPU wait — fatal for HUD-heavy scenes. */
+     imm.mapped_max_verts = 256;
+     int req_size = imm.mapped_max_verts * 24;
+-
+-    if (g.client_array_buf_offset + req_size > g.client_array_buf_size) {
+-        C3D_FrameSplit(0);
+-        g.client_array_buf_offset = 0;
++    imm.mapped_ptr = (uint8_t *)linear_alloc_ring(
++        g.client_array_buf, &g.client_array_buf_offset,
++        req_size, g.client_array_buf_size);
++    if (!imm.mapped_ptr) {
++        imm.mapped_max_verts = 0;
++        imm.start_offset = g.client_array_buf_offset;
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return;
+     }
+-
+-    imm.start_offset = g.client_array_buf_offset;
+-    imm.mapped_ptr = (uint8_t *) g.client_array_buf + g.client_array_buf_offset;
++    imm.start_offset = (int)(imm.mapped_ptr - (uint8_t *)g.client_array_buf);
+ }
+ 
+ /* If the caller pushes more verts than the current reserve, double the reserve
+@@ -132,7 +134,7 @@ void glEnd(void) {
+ /* Helper function to add a vertex to the mapped ring buffer */
+ static inline void add_vertex(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+     (void) w;
+-    if (!imm.in_begin) return;
++    if (!imm.in_begin || !imm.mapped_ptr) return;
+     if (imm.vertex_count >= imm.mapped_max_verts) {
+         if (!imm_grow_reserve()) return; /* truncate at hard limit */
+     }
+diff --git a/src/texture.c b/src/texture.c
+index a8dbdbafa91bfa10001752db7812a43924a23f57..e0b17f6405fad489d4ad01221cb0f7eb1a9ce579 100644
+--- a/src/texture.c
++++ b/src/texture.c
+@@ -101,6 +101,20 @@ static int texture_data_is_vram(const void *data) {
+     return address >= 0x1f000000u && address < 0x1f600000u;
+ }
+ 
++/* C3D_TexLoadImage performs an internal C3D_FrameSplit(0) for VRAM
++ * destinations and a plain memcpy (without a cache flush) for linear ones.
++ * Pre-splitting through NovaGL's shim makes the hidden split empty, and the
++ * explicit linear-destination flush keeps both branches correct after removal
++ * of Citro3D's whole-linear-heap FrameEnd fallback.  NovaGL uses this helper
++ * for 2D textures only. */
++static void tex_load_image_safe(C3D_Tex *tex, const void *data,
++                                GPU_TEXFACE face, int level) {
++    C3D_FrameSplit(0);
++    (C3D_TexLoadImage)(tex, data, face, level);
++    if (!texture_data_is_vram(tex->data))
++        C3D_TexFlush(tex);
++}
++
+ static int zero_texture_storage_safe(C3D_Tex *tex) {
+     if (!tex || !tex->data || tex->size == 0) return 1;
+     const size_t bytes = tex->maxLevel > 0
+@@ -112,11 +126,12 @@ static int zero_texture_storage_safe(C3D_Tex *tex) {
+         return 1;
+     }
+     if (bytes > NOVA_VRAM_UPLOAD_MAX) return 0;
+-    void *staging = get_tex_staging((int)bytes);
++    void *staging = nova_transfer_staging_alloc((int)bytes);
+     if (!staging) return 0;
+     memset(staging, 0, bytes);
+     GSPGPU_FlushDataCache(staging, (u32)bytes);
+-    C3D_TexLoadImage(tex, staging, GPU_TEXFACE_2D, -1);
++    tex_load_image_safe(tex, staging, GPU_TEXFACE_2D, -1);
++    nova_transfer_staging_defer(staging);
+     return 1;
+ }
+ 
+@@ -314,12 +329,16 @@ static int nova_texcache_load_path(const char *path, int *out_orig_w, int *out_o
+         /* User-mode CPU writes to VRAM fault on real hardware. Read the tiled
+          * cache image into linear staging, then let citro3d perform a raw GX
+          * copy; C3D_TexLoadImage safely splits an active frame when needed. */
+-        void *staging = get_tex_staging((int)hdr.data_size);
++        void *staging = nova_transfer_staging_alloc((int)hdr.data_size);
+         size_t got = staging ? fread(staging, 1, hdr.data_size, f) : 0;
+         fclose(f);
+-        if (got != hdr.data_size) return 0;
++        if (got != hdr.data_size) {
++            if (staging) linearFree(staging);
++            return 0;
++        }
+         GSPGPU_FlushDataCache(staging, hdr.data_size);
+-        C3D_TexLoadImage(&slot->tex, staging, GPU_TEXFACE_2D, -1);
++        tex_load_image_safe(&slot->tex, staging, GPU_TEXFACE_2D, -1);
++        nova_transfer_staging_defer(staging);
+         apply_slot_params_to_tex(&slot->tex, slot);
+     } else {
+         size_t got = fread(slot->tex.data, 1, hdr.data_size, f);
+@@ -777,7 +796,7 @@ void nova_tex_gc_push(C3D_Tex *tex) {
+          * queue active that wait NEVER wakes (queue owns the P3D callback);
+          * observed as the renderTrav park the moment the main menu opened
+          * in-world. */
+-        nova_midframe_drain();
++        nova_midframe_drain_force();
+         tex_gc_free_slot(s);
+     }
+     s_tex_gc[s][s_tex_gc_count[s]++] = *tex;
+@@ -796,6 +815,10 @@ static void free_texture_storage(TexSlot *slot) {
+              * stores C3D_Tex by value and would dangle when the slot is reused.
+              * Cube maps are typically static (loaded once), so deleting now is
+              * fine. */
++            /* A face can still be sampled by an already-recorded draw.  The
++             * embedded C3D_TexCube prevents the normal by-value texture GC,
++             * therefore fence the complete PICA/GX queue before deleting it. */
++            nova_midframe_drain_force();
+             C3D_TexDelete(&slot->tex);
+             memset(&slot->tex, 0, sizeof(slot->tex));
+             memset(&slot->cube, 0, sizeof(slot->cube));
+@@ -851,8 +874,14 @@ static int ensure_texture_cpu_writable(TexSlot *slot) {
+     const u32 bytes = slot->tex.maxLevel > 0
+         ? C3D_TexCalcTotalSize((u32)slot->tex.size, slot->tex.maxLevel)
+         : (u32)slot->tex.size;
++    /* DMA destination protocol: discard any cache lines left behind by a
++     * previous linear-heap occupant before GX writes this allocation. */
++    GSPGPU_InvalidateDataCache(linear_tex.data, bytes);
+     C3D_SyncTextureCopy((u32 *)slot->tex.data, 0, (u32 *)linear_tex.data, 0,
+                         bytes, GX_TRANSFER_RAW_COPY(1));
++    /* Inside a frame SyncTextureCopy only queues the transfer. The CPU update
++     * below must not touch/invalidate the destination until GX has completed. */
++    nova_midframe_drain_force();
+     GSPGPU_InvalidateDataCache(linear_tex.data, bytes);
+ 
+     nova_tex_gc_push(&slot->tex);
+@@ -888,17 +917,20 @@ int nova_texture_make_vram_target(GLuint texture) {
+         gl_set_error(GL_OUT_OF_MEMORY);
+         return 0;
+     }
+-    C3D_TexDelete(&slot->tex);
++    /* Preserve both content and lifetime. The old linear tiled image is a
++     * valid raw GX source, and queued draws may still sample it. Queue the copy
++     * before any draws targeting the new VRAM image, then orphan the old store
++     * until the queue fence. */
++    C3D_Tex oldtex = slot->tex;
++    C3D_TexFlush(&oldtex);
++    tex_load_image_safe(&newtex, oldtex.data, GPU_TEXFACE_2D, 0);
++    nova_tex_gc_push(&oldtex);
+     slot->tex = newtex;
+     slot->is_vram = 1;
+     slot->has_mipmap = 0; // VRAM render targets are single-level
+     slot->mip_uploaded_mask = 1;
+     apply_slot_params_to_tex(&slot->tex, slot);
+ 
+-    if (!zero_texture_storage_safe(&slot->tex)) {
+-        gl_set_error(GL_OUT_OF_MEMORY);
+-        return 0;
+-    }
+     return 1;
+ }
+ 
+@@ -980,7 +1012,7 @@ static void upload_solid_texture(C3D_Tex *tex, GPU_TEXCOLOR fmt, const GLvoid *p
+     C3D_Tex *write_tex = tex;
+     void *vram_staging = NULL;
+     if (texture_data_is_vram(tex->data)) {
+-        vram_staging = get_tex_staging((int)tex->size);
++        vram_staging = nova_transfer_staging_alloc((int)tex->size);
+         if (!vram_staging) {
+             gl_set_error(GL_OUT_OF_MEMORY);
+             return;
+@@ -1024,7 +1056,8 @@ static void upload_solid_texture(C3D_Tex *tex, GPU_TEXCOLOR fmt, const GLvoid *p
+     }
+     C3D_TexFlush(write_tex);
+     if (vram_staging) {
+-        C3D_TexLoadImage(tex, vram_staging, GPU_TEXFACE_2D, 0);
++        tex_load_image_safe(tex, vram_staging, GPU_TEXFACE_2D, 0);
++        nova_transfer_staging_defer(vram_staging);
+     }
+ }
+ 
+@@ -1200,17 +1233,12 @@ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int
+     C3D_Tex staging_tex;
+     C3D_Tex *write_tex = tex;
+     void *vram_staging = NULL;
+-    int transient_vram_staging = 0;
+     if (texture_data_is_vram(tex->data)) {
+         const size_t bytes = (size_t)pot_w * (size_t)pot_h * (size_t)gpu_texfmt_bpp(fmt);
+-        /* An oversized-image downscale can already use g.tex_staging as its
+-         * source. Do not recycle/free that buffer while reading from it. */
+-        if (pixels != NULL && pixels == g.tex_staging) {
+-            vram_staging = linearAlloc(bytes);
+-            transient_vram_staging = 1;
+-        } else if (bytes <= NOVA_VRAM_UPLOAD_MAX) {
+-            vram_staging = get_tex_staging((int)bytes);
+-        }
++        /* Every queued GX copy gets a unique source allocation. Reusing the
++         * persistent CPU scratch here races the deferred transfer. */
++        if (bytes <= NOVA_VRAM_UPLOAD_MAX)
++            vram_staging = nova_transfer_staging_alloc((int)bytes);
+         if (!vram_staging) {
+             gl_set_error(GL_OUT_OF_MEMORY);
+             return;
+@@ -1224,8 +1252,10 @@ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int
+     if (!pixels) {
+         memset(write_tex->data, 0, (size_t) pot_w * (size_t) pot_h * (size_t) gpu_texfmt_bpp(fmt));
+         C3D_TexFlush(write_tex);
+-        if (vram_staging) C3D_TexLoadImage(tex, vram_staging, GPU_TEXFACE_2D, 0);
+-        if (transient_vram_staging) linearFree(vram_staging);
++        if (vram_staging) {
++            tex_load_image_safe(tex, vram_staging, GPU_TEXFACE_2D, 0);
++            nova_transfer_staging_defer(vram_staging);
++        }
+         return;
+     }
+     (void) type; /* only the opt-in HW-swizzle path below consults it */
+@@ -1301,8 +1331,8 @@ static void upload_texture_pixels(C3D_Tex *tex, GPU_TEXCOLOR fmt, int pot_w, int
+         upload_page_8bit(write_tex, pot_w, pot_h, (const uint8_t *) pixels, row_stride, src_x0, src_y0, copy_w, copy_h);
+     }
+     if (vram_staging) {
+-        C3D_TexLoadImage(tex, vram_staging, GPU_TEXFACE_2D, 0);
+-        if (transient_vram_staging) linearFree(vram_staging);
++        tex_load_image_safe(tex, vram_staging, GPU_TEXFACE_2D, 0);
++        nova_transfer_staging_defer(vram_staging);
+     }
+ }
+ 
+@@ -1936,6 +1966,8 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
+     // Auto-generate mip levels 1..N for the freshly-uploaded level 0.
+     if (slot->has_mipmap && !is_solid) {
+         C3D_TexGenerateMipmap(&slot->tex, GPU_TEXFACE_2D);
++        /* Citro3D builds mip levels on the CPU and does not flush them. */
++        C3D_TexFlush(&slot->tex);
+         slot->mip_uploaded_mask = (uint16_t) ((1u << (slot->tex.maxLevel + 1)) - 1u);
+         // Re-apply filter/LOD: max_level may need to reflect the actual pyramid depth now.
+         apply_slot_params_to_tex(&slot->tex, slot);
+@@ -2175,6 +2207,7 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
+      * distance. */
+     if (slot->has_mipmap && slot->generate_mipmap) {
+         C3D_TexGenerateMipmap(&slot->tex, GPU_TEXFACE_2D);
++        C3D_TexFlush(&slot->tex);
+     }
+ }
+ 
+@@ -2198,6 +2231,7 @@ void glGenerateMipmap(GLenum target) {
+      * just arm GL_GENERATE_MIPMAP for the next upload as a best effort. */
+     if (slot->has_mipmap && (slot->fmt == GPU_RGBA8 || slot->fmt == GPU_RGB8) && !slot->is_cube) {
+         C3D_TexGenerateMipmap(&slot->tex, GPU_TEXFACE_2D);
++        C3D_TexFlush(&slot->tex);
+         apply_slot_params_to_tex(&slot->tex, slot);
+     } else {
+         slot->generate_mipmap = 1;
+@@ -2880,15 +2914,22 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
+         width == fb_w && height == fb_h &&
+         slot->pot_w == fb_w && slot->pot_h == fb_h) {
+         C3D_FrameSplit(0);
++        if (!texture_data_is_vram(tex_data))
++            GSPGPU_InvalidateDataCache(tex_data, (u32)(fb_w * fb_h * 4));
+         C3D_SyncTextureCopy(fb_data, 0, tex_data, 0,
+                             (u32)(fb_w * fb_h * 4), 8);
++        /* The copy is a GL-visible write: make it complete before returning so
++         * a following CPU subimage/read cannot observe or flush stale lines. */
++        nova_midframe_drain_force();
++        if (!texture_data_is_vram(tex_data))
++            GSPGPU_InvalidateDataCache(tex_data, (u32)(fb_w * fb_h * 4));
+         return;
+     }
+ #endif
+ 
+-    /* CPU readback needs the queued draws retired first. See
+-     * nova_midframe_drain: a raw split+wait would park forever here. */
+-    nova_midframe_drain();
++    /* CPU readback needs every producer retired, including a framebuffer
++     * modified only by a queued GX clear/copy (no g.p3d_pending bit). */
++    nova_midframe_drain_force();
+     if (!ensure_texture_cpu_writable(slot)) return;
+     tex_data = (uint32_t *)slot->tex.data;
+ 
+diff --git a/src/utils.c b/src/utils.c
+index 83ee96fa9b74b924bf6cb4308d9ada1cf41e7a3e..61527ccaa944b136efb5e6c8f4f43115209b90e1 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -13,6 +13,11 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
++/* Exported by the pinned Citro3D 1.7.1 library (declared in its internal.h).
++ * Unlike C3D_FrameBegin, this performs the GX-queue fence without opening a
++ * frame, which is required before C3D_RenderTargetDelete. */
++extern void C3Di_RenderQueueWaitDone(void);
++
+ /* ── File-scope state cache used by apply_gpu_state.
+  *
+  * These mirror the "last-applied" GPU state so we can skip redundant
+@@ -314,6 +319,15 @@ static void *s_vbo_gc[3][NOVA_VBO_GC_MAX];
+ static uint8_t s_vbo_gc_kind[3][NOVA_VBO_GC_MAX];
+ static int s_vbo_gc_count[3];
+ 
++/* One-shot linear sources for GX texture copies.  A persistent scratch buffer
++ * cannot be reused here: SyncTextureCopy only queues the copy while a frame is
++ * open, so a second upload could overwrite the first source before GX reads it.
++ * Eight outstanding uploads leaves headroom in Citro3D's 32-entry GX queue;
++ * the ninth forces a queue drain before allocating another source. */
++#define NOVA_TRANSFER_GC_MAX 8
++static void *s_transfer_gc[3][NOVA_TRANSFER_GC_MAX];
++static int s_transfer_gc_count[3];
++
+ static void vbo_storage_free_now(void *p, int mem_kind) {
+     if (mem_kind == NOVA_VBO_MEM_HEAP)
+         free(p);
+@@ -328,7 +342,15 @@ void nova_vbo_defer_free(void *p, int mem_kind) {
+         s_vbo_gc_kind[s][s_vbo_gc_count[s]] = (uint8_t) mem_kind;
+         s_vbo_gc[s][s_vbo_gc_count[s]++] = p;
+     } else {
+-        vbo_storage_free_now(p, mem_kind); /* bucket full — old immediate-free behaviour */
++        /* Immediate free is never safe: already-recorded draws may still point
++         * at this allocation.  Retire the queue, reclaim the old buckets, then
++         * enqueue this block in the now-empty current bucket. */
++        nova_midframe_drain_force();
++        nova_vbo_gc_collect_all();
++        s = g.frame_slot;
++        s_vbo_gc_kind[s][0] = (uint8_t)mem_kind;
++        s_vbo_gc[s][0] = p;
++        s_vbo_gc_count[s] = 1;
+     }
+ }
+ 
+@@ -347,17 +369,62 @@ void nova_vbo_gc_collect_all(void) {
+     }
+ }
+ 
++void nova_transfer_gc_collect(void) {
++    int s = g.frame_slot;
++    for (int i = 0; i < s_transfer_gc_count[s]; i++) {
++        linearFree(s_transfer_gc[s][i]);
++        s_transfer_gc[s][i] = NULL;
++    }
++    s_transfer_gc_count[s] = 0;
++}
++
++void nova_transfer_gc_collect_all(void) {
++    for (int s = 0; s < 3; s++) {
++        for (int i = 0; i < s_transfer_gc_count[s]; i++) {
++            linearFree(s_transfer_gc[s][i]);
++            s_transfer_gc[s][i] = NULL;
++        }
++        s_transfer_gc_count[s] = 0;
++    }
++}
++
++void *nova_transfer_staging_alloc(int size) {
++    if (size <= 0) return NULL;
++    int s = g.frame_slot;
++    if (s_transfer_gc_count[s] >= NOVA_TRANSFER_GC_MAX) {
++        nova_midframe_drain_force();
++        nova_transfer_gc_collect_all();
++        s = g.frame_slot;
++    }
++    return linearAlloc((size_t)size);
++}
++
++void nova_transfer_staging_defer(void *p) {
++    if (!p) return;
++    int s = g.frame_slot;
++    if (s_transfer_gc_count[s] >= NOVA_TRANSFER_GC_MAX) {
++        /* Normally allocation drains before this point. Keep the submit side
++         * correct too in case a future caller supplies its own staging block. */
++        nova_midframe_drain_force();
++        nova_transfer_gc_collect_all();
++        s = g.frame_slot;
++    }
++    s_transfer_gc[s][s_transfer_gc_count[s]++] = p;
++}
++
+ /* On-allocation-failure reclaim (see utils.h). The drain retires every queued
+- * command list — including previous async frames (C3D_FrameBegin SYNCDRAW
+- * waits for the whole queue) — after which every deferred-free bucket of
++ * command list — C3D_FrameBegin waits for the whole GX queue — after which
++ * every deferred-free bucket of
+  * every frame slot is provably safe to collect. This both returns bytes AND
+  * defragments the linear heap (freed VBO/tex/ring blocks coalesce). */
+ void nova_emergency_reclaim(void) {
+-    nova_batch_flush();
+-    nova_midframe_drain();
++    /* Allocation failure is rare and correctness-critical: retire even a queue
++     * containing only GX copies/clears (g.p3d_pending alone cannot see those). */
++    nova_midframe_drain_force();
+     nova_tex_gc_collect_all();
+     nova_fbo_gc_collect_all();
+     nova_vbo_gc_collect_all();
++    nova_transfer_gc_collect_all();
+     for (int s = 0; s < 3; s++) {
+         for (int i = 0; i < s_ring_gc_count[s]; i++) {
+             if (s_ring_gc[s][i]) {
+@@ -369,6 +436,10 @@ void nova_emergency_reclaim(void) {
+     }
+ }
+ 
++void nova_render_queue_wait_idle(void) {
++    C3Di_RenderQueueWaitDone();
++}
++
+ /* Diagnostic breadcrumbs into the host app's boot log. Weak: resolves to the
+  * OpenMW CTR layer when linked into it, null elsewhere. */
+ extern void vitaBreadcrumb(const char *msg) __attribute__((weak));
+@@ -404,16 +475,42 @@ void nova_ring_gc_collect(void) {
+     s_ring_gc_count[s] = 0;
+ }
+ 
++void nova_ring_gc_collect_all(void) {
++    for (int s = 0; s < 3; s++) {
++        for (int i = 0; i < s_ring_gc_count[s]; i++) {
++            if (s_ring_gc[s][i]) {
++                linearFree(s_ring_gc[s][i]);
++                s_ring_gc[s][i] = NULL;
++            }
++        }
++        s_ring_gc_count[s] = 0;
++    }
++}
++
+ void nova_midframe_drain(void) {
+     if (!g.p3d_pending)
+         return;
++    nova_midframe_drain_force();
++}
++
++void nova_midframe_drain_force(void) {
++    nova_batch_flush();
+     nova_wait_tag("[W] drain>");
+-    C3D_FrameEnd(0);
+-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
++    C3D_FrameEnd(GX_CMDLIST_FLUSH);
++    /* Stay outside a frame while deleting deferred render targets. */
++    nova_render_queue_wait_idle();
++    nova_fbo_gc_collect_all();
++    nova_tex_gc_collect_all();
++    nova_vbo_gc_collect_all();
++    nova_transfer_gc_collect_all();
++    nova_ring_gc_collect_all();
++    C3D_FrameBegin(0);
+     if (g.current_target)
+         C3D_FrameDrawOn(g.current_target);
++    g.vp_applied_valid = 0;
+     g.p3d_pending = 0;
+     g.ring_synced_this_frame = 1;
++    g.draws_since_split = 0;
+     nova_wait_tag("[W] drain<");
+ }
+ 
+@@ -473,12 +570,11 @@ void *linear_alloc_ring(void *base, int *offset, int size, int capacity) {
+             grown = ring_grow(&g.index_buf, &g.index_buf_slots[s], &g.index_buf_caps[s], &g.index_buf_size,
+                               offset, size);
+ 
+-        /* Grow failed (linear exhausted). Reclaim this slot's orphaned ring
+-         * buffers from earlier growths this frame, then retry the grow ONCE —
+-         * a fragmented heap sometimes has enough space once the GC frees the
+-         * old blocks. */
++        /* Grow failed (linear exhausted). Retire the queue before reclaiming
++         * orphaned buffers; freeing this frame's old ring while recorded draws
++         * still reference it is a use-after-free. Then retry once. */
+         if (!grown) {
+-            nova_ring_gc_collect();
++            nova_emergency_reclaim();
+             if (base == g.client_array_buf)
+                 grown = ring_grow(&g.client_array_buf, &g.client_array_buf_slots[s], &g.client_array_buf_caps[s],
+                                   &g.client_array_buf_size, offset, size);
+@@ -500,31 +596,14 @@ void *linear_alloc_ring(void *base, int *offset, int size, int capacity) {
+             ring_crumb("[NovaRing] overflow SKIP: size=%d KB > cap=%d KB", size / 1024, capacity / 1024);
+             return NULL;
+         } else {
+-            /* RECOVERABLE: the draw fits the ring, we just ran off the end of
+-             * the current fill. Drain the GPU the only way citro3d supports
+-             * mid-stream — end the frame and reopen it with SYNCDRAW — then
+-             * wrap. A raw gspWaitForP3D NEVER wakes here: citro3d's render
+-             * queue owns the P3D event callback, so the waitable event is never
+-             * signalled (observed as a permanent main-thread park on Citra).
+-             *
+-             * This drain may fire AT MOST ONCE per frame (g.ring_synced_this_frame):
+-             * a second mid-frame drain is wasteful and a hang risk. If we have
+-             * already drained this frame, fall through to a bare wrap (the
+-             * earlier drain already retired the in-flight reads for this slot,
+-             * so overwriting from offset 0 is safe). Costs a partial present;
+-             * correctness over beauty. */
+-            if (g.p3d_pending && !g.ring_synced_this_frame) {
+-                ring_crumb("[NovaRing] overflow fallback: size=%d KB cap=%d KB - sync", size / 1024, capacity / 1024);
+-                C3D_FrameEnd(0);
+-                C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+-                if (g.current_target)
+-                    C3D_FrameDrawOn(g.current_target);
+-                g.p3d_pending = 0;
+-                g.ring_synced_this_frame = 1;
+-                ring_crumb("[NovaRing] sync done - wrapped", 0, 0);
+-            } else {
+-                ring_crumb("[NovaRing] overflow fallback: already synced - bare wrap", 0, 0);
+-            }
++            /* RECOVERABLE: the draw fits the ring, but the current fill ran
++             * past its end.  Never perform a bare wrap: new draws may have
++             * been recorded after an earlier drain, so "drained once this
++             * frame" does not prove that offset zero is no longer in flight.
++             * End the frame, fence the complete Citro3D queue, then wrap. */
++            ring_crumb("[NovaRing] overflow fallback: size=%d KB cap=%d KB - sync", size / 1024, capacity / 1024);
++            nova_midframe_drain_force();
++            ring_crumb("[NovaRing] sync done - wrapped", 0, 0);
+             *offset = 0; // wrap
+         }
+     }
+@@ -1539,6 +1618,13 @@ void apply_gpu_state(void) {
+             final_proj = g.final_proj_cached;
+         }
+ 
++		/* The CPU clip guard runs after this state application on every GZDoom
++		 * draw. Keep one current MVP irrespective of the selected shader so it
++		 * can reuse the same multiply instead of rebuilding it per draw. */
++		const int need_mvp_rebuild = need_proj_rebuild || g.mv_dirty;
++		if (need_mvp_rebuild)
++			Mtx_Multiply(&g.mvp_combined, &final_proj, &g.mv_stack[g.mv_sp]);
++
+         switch (g.active_shader) {
+             case NOVA_SHADER_CLIPSPACE:
+                 if (g.uLoc_projection_clipspace >= 0 && need_proj_rebuild) {
+@@ -1546,15 +1632,13 @@ void apply_gpu_state(void) {
+                 }
+                 break;
+             case NOVA_SHADER_BASIC:
+-                if (need_proj_rebuild || g.mv_dirty) {
+-                    Mtx_Multiply(&g.mvp_combined, &final_proj, &g.mv_stack[g.mv_sp]);
++                if (need_mvp_rebuild) {
+                     if (g.uLoc_mvp_basic >= 0)
+                         C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, g.uLoc_mvp_basic, &g.mvp_combined);
+                 }
+                 break;
+             case NOVA_SHADER_TEXMTX:
+-                if (need_proj_rebuild || g.mv_dirty) {
+-                    Mtx_Multiply(&g.mvp_combined, &final_proj, &g.mv_stack[g.mv_sp]);
++                if (need_mvp_rebuild) {
+                     if (g.uLoc_mvp_texmtx >= 0)
+                         C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, g.uLoc_mvp_texmtx, &g.mvp_combined);
+                 }
+@@ -2375,10 +2459,23 @@ void nova_hardware_swizzle(C3D_Tex *tex, const void *linear_pixels, int width, i
+ 
+     transfer_flags |= GX_TRANSFER_IN_FORMAT(in_fmt) | GX_TRANSFER_OUT_FORMAT(out_fmt);
+ 
+-    GSPGPU_FlushDataCache(linear_pixels, width * height * gpu_texfmt_bpp(format));
++    const u32 bytes = (u32)(width * height * gpu_texfmt_bpp(format));
++    const uintptr_t tex_addr = (uintptr_t)tex->data;
++    const int tex_is_vram = tex_addr >= 0x1f000000u && tex_addr < 0x1f600000u;
++    GSPGPU_FlushDataCache(linear_pixels, bytes);
++    /* This path targets a linear C3D texture. Drop stale CPU lines before GX
++     * writes it; otherwise a later eviction can overwrite the DMA result. */
++    if (!tex_is_vram)
++        GSPGPU_InvalidateDataCache(tex->data, bytes);
+ 
+     C3D_SyncDisplayTransfer((u32 *) linear_pixels, GX_BUFFER_DIM(width, height),
+                             (u32 *) tex->data, GX_BUFFER_DIM(tex->width, tex->height), transfer_flags);
++    /* The persistent staging buffer may be reused by the very next upload and
++     * mip generation may read the destination immediately. Retire this rare,
++     * opt-in transfer before either can happen. */
++    nova_midframe_drain_force();
++    if (!tex_is_vram)
++        GSPGPU_InvalidateDataCache(tex->data, bytes);
+ }
+ 
+ /* =========================================================================
+diff --git a/src/utils.h b/src/utils.h
+index aa94dbe8d0d27441b68b18fc7fb47a76b7cc17dc..cc2d1bd169c2214bc9cb4a2af3a2b0c1e34b0726 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -36,6 +36,16 @@ void nova_invalidate_attr_cache(void);
+ /* Free ring buffers orphaned by adaptive growth K frames ago (call at swap,
+  * after rotating g.frame_slot — mirrors the texture/FBO GC). */
+ void nova_ring_gc_collect(void);
++void nova_ring_gc_collect_all(void);
++
++/* A GX texture/display copy queued during an open Citro3D frame does not run
++ * until FrameEnd starts the GX queue.  Its linear source therefore must remain
++ * allocated and unmodified until the following queue fence.  These helpers
++ * provide one-shot staging blocks with that lifetime. */
++void *nova_transfer_staging_alloc(int size);
++void nova_transfer_staging_defer(void *p);
++void nova_transfer_gc_collect(void);
++void nova_transfer_gc_collect_all(void);
+ 
+ /* Deferred VBO-storage free. The GPU may still read a buffer that was deleted
+  * or respecified THIS frame (glDeleteBuffers / glBufferData realloc right
+@@ -73,6 +83,14 @@ void nova_clear_early_depth(void);
+  * present, returns with the GPU idle. No-op when nothing was submitted
+  * since the last retire. */
+ void nova_midframe_drain(void);
++/* Unconditional variant used when non-P3D GX work (for example TextureCopy)
++ * must complete before the CPU reads the destination. */
++void nova_midframe_drain_force(void);
++
++/* Citro3D's queue fence without opening a new frame.  This is needed between
++ * FrameEnd and deferred C3D_RenderTargetDelete calls, because render-target
++ * deletion is forbidden while a frame is open. */
++void nova_render_queue_wait_idle(void);
+ 
+ float clampf(float x, float lo, float hi);
+ 
+@@ -160,7 +178,7 @@ void nova_tex_staging_tick(void);
+  * draws — it is deleted later instead of immediately (the struct is copied;
+  * *tex is zeroed). Collect reclaims everything pushed during the previous
+  * frame; call ONLY when the GPU is known to be done with it —
+- * novaSwapBuffers does it right after C3D_FrameBegin's SYNCDRAW wait. */
++ * novaSwapBuffers does it right after C3D_FrameBegin's GX-queue wait. */
+ void nova_tex_gc_push(C3D_Tex *tex);
+ void nova_tex_gc_collect(void);
+ void nova_tex_gc_collect_all(void);
+@@ -225,15 +243,68 @@ void nova_hw_watchdog_before_draw(int primitive, int first, int count,
+ void nova_hw_watchdog_after_draw(void);
+ void nova_hw_watchdog_frame_split(unsigned flags, const char *file, int line);
+ int nova_hw_watchdog_frame_begin(unsigned flags);
++#endif
+ 
+ static inline void nova_c3d_frame_split_(unsigned flags,
+                                          const char *file, int line)
+ {
++    /* GX_CMDLIST_FLUSH asks GSP to flush this exact command-list segment.
++     * Every segment needs it once FrameEnd stops flushing all linear memory. */
++    flags |= GX_CMDLIST_FLUSH;
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
+     nova_hw_watchdog_frame_split(flags, file, line);
++#else
++    (void)file;
++    (void)line;
++    (C3D_FrameSplit)((u8)flags);
++#endif
+ }
+ #define C3D_FrameSplit(flags) \
+     nova_c3d_frame_split_((flags), __FILE__, __LINE__)
+-#endif
++
++/* Citro3D's Sync* helpers perform a hidden C3D_FrameSplit(0) while a frame is
++ * open.  Pre-split through NovaGL's per-segment flush shim so that hidden split
++ * is empty; otherwise removing FrameEnd's whole-linear-heap flush leaves the
++ * preceding command-list segment dirty. */
++static inline void nova_c3d_sync_display_transfer_(u32 *inadr, u32 indim,
++                                                    u32 *outadr, u32 outdim,
++                                                    u32 flags,
++                                                    const char *file, int line)
++{
++    nova_c3d_frame_split_(GX_CMDLIST_FLUSH, file, line);
++    (C3D_SyncDisplayTransfer)(inadr, indim, outadr, outdim, flags);
++}
++
++static inline void nova_c3d_sync_texture_copy_(u32 *inadr, u32 indim,
++                                                u32 *outadr, u32 outdim,
++                                                u32 size, u32 flags,
++                                                const char *file, int line)
++{
++    nova_c3d_frame_split_(GX_CMDLIST_FLUSH, file, line);
++    (C3D_SyncTextureCopy)(inadr, indim, outadr, outdim, size, flags);
++}
++
++static inline void nova_c3d_sync_memory_fill_(u32 *buf0a, u32 buf0v,
++                                               u32 *buf0e, u16 control0,
++                                               u32 *buf1a, u32 buf1v,
++                                               u32 *buf1e, u16 control1,
++                                               const char *file, int line)
++{
++    nova_c3d_frame_split_(GX_CMDLIST_FLUSH, file, line);
++    (C3D_SyncMemoryFill)(buf0a, buf0v, buf0e, control0,
++                         buf1a, buf1v, buf1e, control1);
++}
++
++#define C3D_SyncDisplayTransfer(inadr, indim, outadr, outdim, flags) \
++    nova_c3d_sync_display_transfer_((inadr), (indim), (outadr), (outdim), \
++                                    (flags), __FILE__, __LINE__)
++#define C3D_SyncTextureCopy(inadr, indim, outadr, outdim, size, flags) \
++    nova_c3d_sync_texture_copy_((inadr), (indim), (outadr), (outdim), \
++                                (size), (flags), __FILE__, __LINE__)
++#define C3D_SyncMemoryFill(buf0a, buf0v, buf0e, control0, buf1a, buf1v, buf1e, control1) \
++    nova_c3d_sync_memory_fill_((buf0a), (buf0v), (buf0e), (control0), \
++                               (buf1a), (buf1v), (buf1e), (control1), \
++                               __FILE__, __LINE__)
+ 
+ 
+ /* ---- P3D-pending tracking -----------------------------------------------
+diff --git a/src/vbo.c b/src/vbo.c
+index e483456ceb867a50c4606d36b2e6f4c72d71f1c2..865d99362d9a1d40b306662f5b633177a1baee04 100644
+--- a/src/vbo.c
++++ b/src/vbo.c
+@@ -460,6 +460,7 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvo
+     }
+ 
+     int required = offset + size;
++    int preserved_bytes = 0;
+ 
+     if (!slot->allocated || slot->capacity < required) {
+         /* Growth must make progress from ANY starting point. The old seed of
+@@ -482,7 +483,10 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvo
+         }
+ 
+         if (slot->data && slot->capacity > 0) {
+-            memcpy(new_buf, slot->data, (size_t) slot->capacity);
++            /* Only the logical store contains defined data. These bytes become
++             * CPU-dirty in the new linear allocation and must be flushed too. */
++            preserved_bytes = slot->size < slot->capacity ? slot->size : slot->capacity;
++            memcpy(new_buf, slot->data, (size_t) preserved_bytes);
+             nova_vbo_defer_free(slot->data, slot->mem_kind); /* may still be read by this frame's draws */
+         }
+ 
+@@ -501,8 +505,15 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvo
+     // streaming app call this many times a frame, full flush kill cpu on big VBO.
+     // heap-backed stores skip it entirely (GPU never fetches them).
+     if (vbo_gpu_readable(slot)) {
+-        uintptr_t start = (uintptr_t) slot->data + (uintptr_t) offset;
+-        uintptr_t end = start + (uintptr_t) size;
++        uintptr_t start;
++        uintptr_t end;
++        if (preserved_bytes > 0) {
++            start = (uintptr_t)slot->data;
++            end = start + (uintptr_t)(required > preserved_bytes ? required : preserved_bytes);
++        } else {
++            start = (uintptr_t) slot->data + (uintptr_t) offset;
++            end = start + (uintptr_t) size;
++        }
+         start &= ~(uintptr_t) 31;
+         end = (end + 31) & ~(uintptr_t) 31;
+         GSPGPU_FlushDataCache((const void *) start, (u32) (end - start));
+@@ -552,6 +563,8 @@ void *glMapBuffer(GLenum target, GLenum access) {
+         vbo_convert_slot_to_raw(slot);
+     }
+     slot->mapped = 1;
++    slot->map_offset = 0;
++    slot->map_length = slot->size;
+     return slot->data;
+ }
+ 
+@@ -564,7 +577,7 @@ void *glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
+      * against CAPACITY (not the logical size) so ports that map a region beyond
+      * the last glBufferData size — common with streaming ring buffers — still
+      * get a valid pointer rather than a spurious GL_INVALID_VALUE. */
+-    if (offset < 0 || length < 0 || offset + length > slot->capacity) {
++    if (offset < 0 || length < 0 || offset > slot->capacity - length) {
+         gl_set_error(GL_INVALID_VALUE);
+         return NULL;
+     }
+@@ -572,6 +585,8 @@ void *glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
+         vbo_convert_slot_to_raw(slot);
+     }
+     slot->mapped = 1;
++    slot->map_offset = (int)offset;
++    slot->map_length = (int)length;
+     return (uint8_t *) slot->data + offset;
+ }
+ 
+@@ -580,9 +595,19 @@ GLboolean glUnmapBuffer(GLenum target) {
+     if (!slot) { gl_set_error(err); return GL_FALSE; }
+     if (!slot->mapped) { gl_set_error(GL_INVALID_OPERATION); return GL_FALSE; } /* not mapped */
+     slot->mapped = 0;
+-    // just flush the whole buffer, we dont track the mapped range. cheap enough.
+-    // heap-backed stores are CPU-gathered — no flush needed.
+-    if (vbo_gpu_readable(slot))
+-        GSPGPU_FlushDataCache(slot->data, (u32) slot->size);
++    // Flush exactly the mapped cache lines. Heap-backed stores are CPU-gathered.
++    if (vbo_gpu_readable(slot) && slot->map_length > 0) {
++        uintptr_t base = (uintptr_t)slot->data;
++        uintptr_t start = (base + (uintptr_t)slot->map_offset) & ~(uintptr_t)31;
++        uintptr_t end = (base + (uintptr_t)slot->map_offset +
++                         (uintptr_t)slot->map_length + 31) & ~(uintptr_t)31;
++        uintptr_t limit = base + (uintptr_t)slot->capacity;
++        if (end > limit) end = limit;
++        GSPGPU_FlushDataCache((const void *)start, (u32)(end - start));
++    }
++    if (slot->map_offset + slot->map_length > slot->size)
++        slot->size = slot->map_offset + slot->map_length;
++    slot->map_offset = 0;
++    slot->map_length = 0;
+     return GL_TRUE;
+-}
+\ No newline at end of file
++}

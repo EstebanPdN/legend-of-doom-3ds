@@ -32,7 +32,9 @@
 #include "p_effect.h"
 #include "po_man.h"
 #include "m_fixed.h"
+#ifndef __3DS__
 #include "ctpl.h"
+#endif
 #include "texturemanager.h"
 #include "hwrenderer/scene/hw_fakeflat.h"
 #include "hwrenderer/scene/hw_clipper.h"
@@ -48,10 +50,10 @@
 #endif // ARCH_IA32
 
 #ifdef __3DS__
-// libstdc++ workers are scheduled on the same application core on 3DS. The
-// desktop producer/consumer path therefore adds atomics, queue traffic and a
-// future wait without running BSP work in parallel. Keep it available on
-// desktop, but make the handheld path explicitly single-threaded.
+// The upstream producer/consumer path has shared renderer state that is benign
+// on its desktop target but is not a race-free cross-core contract on ARM.
+// Keep the 3DS BSP synchronous until those payloads are made immutable; the
+// platform entry point also forces this off so an archived config cannot opt in.
 CVAR(Bool, gl_multithread, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 #else
 CVAR(Bool, gl_multithread, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -60,9 +62,11 @@ CVAR(Bool, gl_multithread, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 EXTERN_CVAR(Float, r_actorspriteshadowdist)
 
 thread_local bool isWorkerThread;
+#ifndef __3DS__
 ctpl::thread_pool renderPool(1);
-bool inited = false;
+#endif
 
+#ifndef __3DS__
 struct RenderJob
 {
 	enum
@@ -83,14 +87,7 @@ struct RenderJob
 
 class RenderJobQueue
 {
-#ifdef __3DS__
-	// The desktop-sized queue costs 3.6 MiB on a 32-bit target. The largest
-	// scene observed upstream needs about 40000 entries, so retain headroom
-	// while recovering 3 MiB of the Old 3DS memory budget.
-	RenderJob pool[50000];
-#else
 	RenderJob pool[300000];	// Way more than ever needed. The largest ever seen on a single viewpoint is around 40000.
-#endif
 	std::atomic<int> readindex{};
 	std::atomic<int> writeindex{};
 public:
@@ -222,6 +219,7 @@ void HWDrawInfo::WorkerThread()
 
 	}
 }
+#endif
 
 
 
@@ -356,11 +354,13 @@ void HWDrawInfo::AddLine (seg_t *seg, bool portalclip)
 
 		if (gl_render_walls)
 		{
+			#ifndef __3DS__
 			if (multithread)
 			{
 				jobQueue.AddJob(RenderJob::WallJob, seg->Subsector, seg);
 			}
 			else
+			#endif
 			{
 				HWWall wall;
 				SetupWall.Clock();
@@ -688,11 +688,13 @@ void HWDrawInfo::DoSubsector(subsector_t * sub)
 	// [RH] Add particles
 	if (gl_render_things && Level->ParticlesInSubsec[sub->Index()] != NO_PARTICLE)
 	{
+		#ifndef __3DS__
 		if (multithread)
 		{
 			jobQueue.AddJob(RenderJob::ParticleJob, sub, nullptr);
 		}
 		else
+		#endif
 		{
 			SetupSprite.Clock();
 			RenderParticles(sub, fakesector);
@@ -714,11 +716,13 @@ void HWDrawInfo::DoSubsector(subsector_t * sub)
 
 		if (gl_render_things && (sector->touching_renderthings || sector->sectorportal_thinglist))
 		{
+			#ifndef __3DS__
 			if (multithread)
 			{
 				jobQueue.AddJob(RenderJob::SpriteJob, sub, nullptr);
 			}
 			else
+			#endif
 			{
 				SetupSprite.Clock();
 				RenderThings(sub, fakesector);
@@ -751,11 +755,13 @@ void HWDrawInfo::DoSubsector(subsector_t * sub)
 				{
 					srf |= SSRF_PROCESSED;
 
+					#ifndef __3DS__
 					if (multithread)
 					{
 						jobQueue.AddJob(RenderJob::FlatJob, sub);
 					}
 					else
+					#endif
 					{
 						HWFlat flat;
 						flat.section = sub->section;
@@ -780,11 +786,13 @@ void HWDrawInfo::DoSubsector(subsector_t * sub)
 				portal = fakesector->GetPortalGroup(sector_t::ceiling);
 				if (portal != nullptr)
 				{
+					#ifndef __3DS__
 					if (multithread)
 					{
 						jobQueue.AddJob(RenderJob::PortalJob, sub, (seg_t *)portal);
 					}
 					else
+					#endif
 					{
 						AddSubsectorToPortal(portal, sub);
 					}
@@ -793,11 +801,13 @@ void HWDrawInfo::DoSubsector(subsector_t * sub)
 				portal = fakesector->GetPortalGroup(sector_t::floor);
 				if (portal != nullptr)
 				{
+					#ifndef __3DS__
 					if (multithread)
 					{
 						jobQueue.AddJob(RenderJob::PortalJob, sub, (seg_t *)portal);
 					}
 					else
+					#endif
 					{
 						AddSubsectorToPortal(portal, sub);
 					}
@@ -861,13 +871,14 @@ void HWDrawInfo::RenderBSP(void *node, bool drawpsprites)
 
 	validcount++;	// used for processing sidedefs only once by the renderer.
 
-#ifdef __3DS__
-	// Old configs may still contain gl_multithread=true. Do not let that restore
-	// the same-core worker and its per-view queue/future overhead.
+	#ifdef __3DS__
+	// Do not instantiate the desktop queue on 3DS: besides avoiding its unsafe
+	// shared-state contract, this removes a 50,000-entry (roughly 600 KiB) pool.
 	multithread = false;
-#else
+	RenderBSPNode(node);
+	Bsp.Unclock();
+	#else
 	multithread = gl_multithread;
-#endif
 	if (multithread)
 	{
 		jobQueue.ReleaseAll();
@@ -887,6 +898,7 @@ void HWDrawInfo::RenderBSP(void *node, bool drawpsprites)
 		RenderBSPNode(node);
 		Bsp.Unclock();
 	}
+	#endif
 	// Process all the sprites on the current portal's back side which touch the portal.
 	if (mCurrentPortal != nullptr) mCurrentPortal->RenderAttached(this);
 

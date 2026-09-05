@@ -42,6 +42,7 @@
 #include "d_player.h"
 #include "g_levellocals.h"
 #include "swrenderer/scene/r_light.h"
+#include "swrenderer/r_swcolormaps.h"
 #include "swrenderer/viewport/r_viewport.h"
 
 EXTERN_CVAR(Bool, r_fullbrightignoresectorcolor)
@@ -205,6 +206,10 @@ namespace swrenderer
 				visibility *= 0.5;
 
 			int shade = LightVisibility::LightLevelToShade(lightlevel, foggy, thread->Viewport.get());
+			#ifdef __3DS__
+			visibility = Apply3DSMap01DistanceFogVisibility(basecolormap,
+				fabs(z), visibility, shade);
+			#endif
 			if (psprite)
 			{
 				visibility = 0;

@@ -44,6 +44,7 @@
 #include "swrenderer/line/r_line.h"
 #include "swrenderer/scene/r_scene.h"
 #include "swrenderer/scene/r_light.h"
+#include "swrenderer/r_swcolormaps.h"
 #include "swrenderer/viewport/r_viewport.h"
 
 namespace swrenderer
@@ -677,8 +678,23 @@ namespace swrenderer
 		CameraLight *cameraLight = CameraLight::Instance();
 		if (cameraLight->FixedColormap() == nullptr && cameraLight->FixedLightLevel() < 0)
 		{
-			lightleft = float(thread->Light->WallVis(wallc.sz1, foggy));
-			lightstep = float((thread->Light->WallVis(wallc.sz2, foggy) - lightleft) / (wallc.sx2 - wallc.sx1));
+			double leftVisibility = thread->Light->WallVis(wallc.sz1, foggy);
+			double rightVisibility = thread->Light->WallVis(wallc.sz2, foggy);
+			#ifdef __3DS__
+			const fixed_t shade = LightVisibility::LightLevelToShade(lightlevel,
+				foggy, thread->Viewport.get());
+			const double leftDistance = sqrt(wallc.tleft.X * wallc.tleft.X +
+				wallc.tleft.Y * wallc.tleft.Y);
+			const double rightDistance = sqrt(wallc.tright.X * wallc.tright.X +
+				wallc.tright.Y * wallc.tright.Y);
+			leftVisibility = Apply3DSMap01DistanceFogVisibility(basecolormap,
+				leftDistance, leftVisibility, shade);
+			rightVisibility = Apply3DSMap01DistanceFogVisibility(basecolormap,
+				rightDistance, rightVisibility, shade);
+			#endif
+			lightleft = static_cast<float>(leftVisibility);
+			lightstep = static_cast<float>((rightVisibility - leftVisibility) /
+				(wallc.sx2 - wallc.sx1));
 		}
 		else
 		{
@@ -692,7 +708,15 @@ namespace swrenderer
 		if (!lit)
 		{
 			basecolormap = GetColorTable(frontsector->Colormap, frontsector->SpecialColors[sector_t::walltop]);
-			foggy = frontsector->Level->fadeto || frontsector->Colormap.FadeColor || (frontsector->Level->flags & LEVEL_HASFADETABLE);
+			#ifdef __3DS__
+			basecolormap = Apply3DSMap01DistanceFog(frontsector, basecolormap);
+			#endif
+			foggy = frontsector->Level->fadeto || frontsector->Colormap.FadeColor ||
+				(frontsector->Level->flags & LEVEL_HASFADETABLE)
+				#ifdef __3DS__
+				|| Is3DSMap01ExteriorSector(frontsector)
+				#endif
+				;
 
 			if (!(lineseg->sidedef->Flags & WALLF_POLYOBJ))
 				lightlevel = lineseg->sidedef->GetLightLevel(foggy, frontsector->lightlevel);
@@ -702,6 +726,9 @@ namespace swrenderer
 		else
 		{
 			basecolormap = GetColorTable(lit->extra_colormap, frontsector->SpecialColors[sector_t::walltop]);
+			#ifdef __3DS__
+			basecolormap = Apply3DSMap01DistanceFog(frontsector, basecolormap);
+			#endif
 			foggy = frontsector->Level->fadeto || basecolormap->Fade || (frontsector->Level->flags & LEVEL_HASFADETABLE);
 			lightlevel = lineseg->sidedef->GetLightLevel(foggy, *lit->p_lightlevel, lit->lightsource != nullptr);
 		}

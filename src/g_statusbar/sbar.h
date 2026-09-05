@@ -427,6 +427,7 @@ public:
 
 	AActor *ValidateInvFirst (int numVisible) const;
 	void DrawCrosshair ();
+	void DrawMessagesOnly (EHudState state);
 
 	// Sizing info for ths status bar.
 	bool Scaled;							// This needs to go away.

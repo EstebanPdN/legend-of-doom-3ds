@@ -989,12 +989,19 @@ namespace swrenderer
 		int texwidth = wallargs.texwidth;
 		int texheight = wallargs.texheight;
 
-		double xmagnitude = fabs(static_cast<int32_t>(texelStepX) * (1.0 / 0x1'0000'0000LL));
-		double ymagnitude = fabs(static_cast<int32_t>(texelStepY) * (1.0 / 0x1'0000'0000LL));
-		double magnitude = MAX(ymagnitude, xmagnitude);
-		double min_lod = -1000.0;
-		double lod = MAX(log2(magnitude) + r_lod_bias, min_lod);
-		bool magnifying = lod < 0.0f;
+		const bool nearestWithoutMipmaps =
+			!wallargs.mipmapped && !r_minfilter && !r_magfilter;
+		double lod = 0.0;
+		bool magnifying = false;
+		if (!nearestWithoutMipmaps)
+		{
+			double xmagnitude = fabs(static_cast<int32_t>(texelStepX) * (1.0 / 0x1'0000'0000LL));
+			double ymagnitude = fabs(static_cast<int32_t>(texelStepY) * (1.0 / 0x1'0000'0000LL));
+			double magnitude = MAX(ymagnitude, xmagnitude);
+			double min_lod = -1000.0;
+			lod = MAX(log2(magnitude) + r_lod_bias, min_lod);
+			magnifying = lod < 0.0f;
+		}
 
 		int mipmap_offset = 0;
 		int mip_width = texwidth;
@@ -1017,7 +1024,8 @@ namespace swrenderer
 		const uint8_t* source;
 		const uint8_t* source2;
 		uint32_t texturefracx;
-		bool filter_nearest = (magnifying && !r_magfilter) || (!magnifying && !r_minfilter);
+		bool filter_nearest = nearestWithoutMipmaps ||
+			(magnifying && !r_magfilter) || (!magnifying && !r_minfilter);
 		if (filter_nearest)
 		{
 			int tx = (xxoffset >> FRACBITS) % mip_width;

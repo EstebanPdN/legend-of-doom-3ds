@@ -146,7 +146,17 @@ checkout_pinned \
   "${ROOT}/platform/3ds/patches/novagl-hardware-safe-earlyz.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-conservative-submit.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-frustum-guard.patch" \
-  "${ROOT}/platform/3ds/patches/novagl-hardware-frame-watchdog.patch"
+  "${ROOT}/platform/3ds/patches/novagl-hardware-frame-watchdog.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-explicit-cache-sync.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-cache-fallback.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-command-safety.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-draw-range-probe.patch"
+checkout_pinned \
+  "${LOD3DS_OPENAL_URL}" "${LOD3DS_OPENAL_REV}" \
+  "${DEPS_ROOT}/openal-soft-3ds" \
+  "${ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch" \
+  "${ROOT}/platform/3ds/patches/openal-soft-3ds-audio-stability.patch" \
+  "${ROOT}/platform/3ds/patches/openal-soft-cmake-empty-deps.patch"
 checkout_pinned \
   "${LOD3DS_MOD_URL}" "${LOD3DS_MOD_REV}" \
   "${DEPS_ROOT}/legend-of-doom" "${ROOT}/platform/3ds/patches/legend-of-doom-3ds.patch"
