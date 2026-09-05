@@ -494,3 +494,39 @@ index 0000000..dbb6b87
 +        }
 +    }
 +}
+diff --git a/actors/monsters/SnakeMonster.zs b/actors/monsters/SnakeMonster.zs
+--- a/actors/monsters/SnakeMonster.zs
++++ b/actors/monsters/SnakeMonster.zs
+@@ -59,7 +59,7 @@
+ 	// Reset Bodies' targets, when ONLY the Head was destroyed
+ 	void RetargetBodies(actor Whom, bool HeadDestroyed = true)
+ 	{
+-		if (HeadDestroyed)
++		if (HeadDestroyed && NumOfBodies.Size() > 0)
+ 		{
+ 			NumOfBodies[0].Destroy();
+ 
+@@ -82,7 +82,7 @@
+ 			let Body = SnakeMonsterBody(NumOfBodies[i]);
+ 			if (Body)
+ 			{
+-				if (i-1 >= 0)
++				if (i > 0)
+ 				{
+ 					if (NumOfBodies[i-1])
+ 					{
+diff --git a/actors/monsters/Ganon.zs b/actors/monsters/Ganon.zs
+--- a/actors/monsters/Ganon.zs
++++ b/actors/monsters/Ganon.zs
+@@ -82,8 +82,11 @@
+     {
+         FCheckPosition fCheckPos;
+         let spawnDest = GetPosition();
++        int tries = 0;
+         while (!CheckPosition(spawnDest.xy, false, fCheckPos) || fCheckPos.CurSector.GetUDMFString("user_spawntype") != "Land")
+         {
++            // Stay put if no valid destination can be found.
++            if (++tries >= 100) return pos;
+             spawnDest = GetPosition();
+         }
+ 

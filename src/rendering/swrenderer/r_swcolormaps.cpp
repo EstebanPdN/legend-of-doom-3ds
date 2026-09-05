@@ -69,9 +69,7 @@ TArray<FSWColormap> SpecialSWColormaps;
 #ifdef __3DS__
 static bool Is3DSMap01IntentionalBlackSector(const sector_t *sector)
 {
-	// MAP01 uses F_SKY1 above several cave/interior sectors as a construction
-	// convenience. Their BLACK floor is the actual opaque darkness behind an
-	// entrance, not outdoor ground that should fade toward the blue horizon.
+	// BLACK-floor caves remain opaque even with sky ceilings.
 	static const FTextureID black = TexMan.CheckForTexture("BLACK",
 		ETextureType::Flat, FTextureManager::TEXMAN_TryAny);
 	return sector != nullptr && black.isValid() &&
@@ -93,10 +91,7 @@ FDynamicColormap *Apply3DSMap01DistanceFog(const sector_t *sector,
 	{
 		return colormap;
 	}
-	// Build and cache the ordinary software distance-light tables with a pale
-	// horizon colour instead of black. The explicit start/end visibility curve
-	// below drives these tables; relying on Doom's original light falloff alone
-	// never guaranteed that geometry reached the fog colour before BSP culling.
+	// Cache horizon colormaps; the explicit visibility curve controls fading.
 	return GetSpecialLights(colormap->Color,
 		MAKERGB(Map01DistanceFogRed, Map01DistanceFogGreen,
 			Map01DistanceFogBlue),
@@ -120,11 +115,7 @@ double Apply3DSMap01DistanceFogVisibility(const FSWColormap *colormap,
 		return ordinaryVisibility;
 	}
 
-	// Smoothstep has zero slope at both ends. Surfaces therefore enter the fog
-	// without a visible lighting seam and arrive at the final fog colour before
-	// the BSP/line/sprite cutoff. This is the same start/end separation used by
-	// render-distance fog systems: the hard rejection is hidden behind an opaque
-	// interval rather than being asked to perform the visual transition itself.
+	// Smoothstep reaches opaque fog before the distance cutoff.
 	double amount = clamp((viewDistance - Map01DistanceFogStart) /
 		(Map01DistanceFogEnd - Map01DistanceFogStart), 0.0, 1.0);
 	amount = amount * amount * (3.0 - 2.0 * amount);

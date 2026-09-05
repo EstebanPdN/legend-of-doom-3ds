@@ -63,6 +63,7 @@
 #include <3ds.h>
 #ifdef LOD3DS_HYBRID_PERFORMANCE
 #include <citro2d.h>
+#include "common/platform/3ds/present_pixels.h"
 
 extern "C"
 {
@@ -332,10 +333,7 @@ namespace
 
 	void ConfigureHybridBgraTexture()
 	{
-		// DCanvas is BGRA in memory. A GX RGBA8 upload therefore exposes those
-		// four bytes to the texture unit as A/R/G/B. Rebuild display RGB from
-		// sampled G/B/A. This exact order is also used by the physically proven
-		// presenter in the other local 3DS ports.
+		// Map uploaded BGRA bytes to RGB through sampled G/B/A.
 		C3D_TexEnv *env = C3D_GetTexEnv(0);
 		C3D_TexEnvInit(env);
 		C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_CONSTANT, GPU_PREVIOUS);
@@ -416,12 +414,10 @@ namespace
 		}
 		hybridC2DReady = true;
 		C2D_Prepare();
-		// The game-side cap is independently selectable on the touch screen.
-		// Keep the presenter itself able to reach the LCD refresh rate.
+		// Allow presentation up to the LCD refresh rate.
 		C3D_FrameRate(60.0f);
 
-		// With GX_CMDLIST_FLUSH, citro3d does not clean the entire linear heap.
-		// Locate Citro2D's small dynamic vertex area and flush only that range.
+		// Flush Citro2D vertices explicitly with GX_CMDLIST_FLUSH.
 		C3D_BufInfo *buffers = C3D_GetBufInfo();
 		if (buffers != nullptr && buffers->bufCount > 0)
 		{
@@ -624,17 +620,9 @@ bool I_PolyPresentDirect3DS(const uint8_t *pixels, int pitch, int width,
 		return false;
 	}
 
-	const size_t sourceRowBytes = static_cast<size_t>(width) * sizeof(uint32_t);
-	const size_t uploadRowBytes = HybridTextureWidth * sizeof(uint32_t);
-	for (int row = 0; row < height; ++row)
-	{
-		std::memcpy(reinterpret_cast<uint8_t *>(hybridUpload) + row * uploadRowBytes,
-			pixels + row * pitch, sourceRowBytes);
-	}
-	// The GX transfer uses the fixed 512-pixel stride. Clean through the last
-	// active row, including its unused padding, before the PICA reads it.
-	GSPGPU_FlushDataCache(hybridUpload,
-		static_cast<size_t>(HybridTextureWidth) * height * sizeof(uint32_t));
+	const size_t uploadBytes = lod3ds::CopyPresentPixels(hybridUpload,
+		HybridTextureWidth, pixels, pitch, width, height);
+	if (R_FAILED(GSPGPU_FlushDataCache(hybridUpload, uploadBytes))) return false;
 
 	if (!C3D_FrameBegin(0)) return false;
 	C3D_SyncDisplayTransfer(hybridUpload,
@@ -656,8 +644,7 @@ bool I_PolyPresentDirect3DS(const uint8_t *pixels, int pitch, int width,
 	};
 	C2D_TargetClear(hybridTarget, C2D_Color32(0, 0, 0, 255));
 	C2D_SceneBegin(hybridTarget);
-	// Citro2D snapshots the active TEV state while queuing the image. Configure
-	// the BGRA swizzle before the draw, not after it.
+	// Set BGRA swizzle before Citro2D snapshots the draw state.
 	ConfigureHybridBgraTexture();
 	C2D_DrawImage(image, &params, nullptr);
 	C2D_Flush();

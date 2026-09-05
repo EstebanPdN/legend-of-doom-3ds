@@ -11,7 +11,7 @@ The port is based on GZDoom 4.7.1 and uses the freely redistributable Freedoom: 
 ## Project status
 
 > [!WARNING]
-> This port is under active development and it is not a playable release yet.
+> This port is experimental. v0.31 is a cleanup candidate; performance and gameplay validation on physical New 3DS remain required.
 
 The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL. The recovery profile renders at 320×200 on the CPU and presents it to the 400×240 top screen without using PICA200 command lists. The accelerated NovaGL path remains experimental.
 
@@ -19,7 +19,7 @@ The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Ninte
 
 * New 3DS support
 * Dual-screen support
-* CIA and 3DSX support (planned feature)
+* CIA and 3DSX packages
 * Circle Pad, C-Stick and touch controls
 * Full-width 400×240 presentation from a 320×200 game canvas
 
@@ -31,10 +31,10 @@ https://discord.gg/SMW49UMkw
 
 ## Installation
 
-There is currently no supported public download.
+Candidate downloads are published under [GitHub Releases](https://github.com/EstebanPdN/legend-of-doom-3ds/releases). See the [v0.31 review](platform/3ds/CODE-REVIEW-v031.es.md) for changes and known limits.
 
-When a release exists, the CIA will be installable through FBI and will not need an external game-data directory. 
-The 3DSX package will include a matching SD ZIP that expands to:
+The CIA is installable through FBI and embeds its matching game data. 
+The 3DSX package includes a matching SD ZIP that expands to:
 
 ```text
 sdmc:/3ds/legend-of-doom/

@@ -1,5 +1,10 @@
 # Nintendo 3DS build
 
+Current cleanup candidate: **v0.31**. See the [code review](CODE-REVIEW-v031.es.md)
+for fixes, remaining bottlenecks and validation limits. Hybrid gameplay defaults
+to 320×192, with 200×120 and 400×240 selectable; frame rendering is uncapped.
+The version-by-version notes below are historical.
+
 The supported hardware profile is New Nintendo 3DS/New Nintendo 2DS XL. The CIA embeds Freedoom, Legend of Doom and the matching GZDoom data in RomFS, so it is complete when installed by QR. The 3DSX keeps those resources in `sdmc:/3ds/legend-of-doom/data/`.
 
 Version 0.13's `hardware-hybrid` profile is the performance build. It keeps

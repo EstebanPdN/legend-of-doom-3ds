@@ -41,9 +41,7 @@ void PeekThreadedErrorPane();
 #endif
 
 #ifdef __3DS__
-// The performance profile creates these workers with libctru so the second
-// one can actually run on New 3DS core 2. The launch command still chooses
-// between the physically verified single-core baseline and the two-core path.
+// Hybrid workers use libctru affinity for CPU0/CPU2.
 CVAR(Int, r_multithreaded, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 #else
 CVAR(Int, r_multithreaded, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
@@ -194,10 +192,7 @@ void DrawerThreads::WorkerMain3DS(void *argument)
 
 bool DrawerThreads::StartThreads3DS(int numThreads)
 {
-	// std::thread in devkitARM is created on core 0. Use libctru directly so
-	// the second raster worker is born on application-accessible New 3DS core 2.
-	// Core 1 remains reserved for the OpenAL/NDSP mixer and core 3 is unavailable
-	// to normal applications.
+	// Use CPU0/CPU2 for rasterization; reserve CPU1 for audio.
 	constexpr size_t WorkerStackBytes = 64 * 1024;
 	s32 priority = 0x30;
 	if (R_FAILED(svcGetThreadPriority(&priority, CUR_THREAD_HANDLE)))
@@ -253,18 +248,20 @@ void DrawerThreads::StartThreads()
 	else if (r_multithreaded != 1)
 		num_threads = r_multithreaded;
 
+	#ifdef __3DS__
+	// Only CPU0 and CPU2 are available to raster workers.
+	num_threads = clamp(num_threads, 1, 2);
+	#endif
+
 	if (num_threads != (int)threads.size())
 	{
 		StopThreads();
 
 		#ifdef __3DS__
-		// Only the New 3DS hybrid profile requests two workers. If core 2 is not
-		// available (for example, a restrictive 3DSX launcher), fall back to the
-		// exact one-core execution contract instead of hanging on a missing task.
+		// Fall back to one worker when CPU2 is unavailable.
 		if (!StartThreads3DS(num_threads))
 		{
-			// Make the fallback persistent. Otherwise every draw queue would tear
-			// down its working core-0 thread and retry inaccessible core 2.
+			// Persist fallback to avoid retrying CPU2 for every queue.
 			r_multithreaded = 0;
 			if (!StartThreads3DS(1))
 				I_FatalError("Unable to create Nintendo 3DS renderer worker thread.");
