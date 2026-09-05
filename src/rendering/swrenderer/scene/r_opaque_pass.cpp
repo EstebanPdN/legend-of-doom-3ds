@@ -162,6 +162,11 @@ namespace
 	}
 
 	#else
+	bool Map01RootDistanceCullActive(swrenderer::RenderThread *)
+	{
+		return false;
+	}
+
 	bool Map01ExteriorDistanceCullCandidate(const sector_t *)
 	{
 		return false;

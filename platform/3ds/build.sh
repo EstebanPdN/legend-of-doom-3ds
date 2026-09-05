@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "${ROOT}/platform/3ds/tools/validate-patches.py"
 VERSION="$(tr -d '\r\n' < "${ROOT}/platform/3ds/version.txt")"
 DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
 DEVKITARM="${DEVKITARM:-${DEVKITPRO}/devkitARM}"
@@ -424,6 +425,12 @@ cmake -E copy "${ROOT}/platform/3ds/assets/menu-top.png" \
 cmake -E copy "${ROOT}/platform/3ds/assets/menu-story.png" \
   "${MOD_PACKAGE_SOURCE}/graphics/ZSTORY.png"
 "${HOST_GZDOOM_BUILD}/tools/zipdir/zipdir" -df "${MOD_PK3}" "${MOD_PACKAGE_SOURCE}"
+if [[ -n "${LOD3DS_SCRIPT_VALIDATOR:-}" ]]; then
+  python3 "${ROOT}/platform/3ds/tools/validate-game-scripts.py" \
+    --engine "${LOD3DS_SCRIPT_VALIDATOR}" \
+    --iwad "${FREEDOOM_SOURCE}/freedoom2.wad" --mod "${MOD_PK3}"
+fi
+
 
 cmake -E remove_directory "${STAGE}"
 SD_APP="${STAGE}/3ds/legend-of-doom"

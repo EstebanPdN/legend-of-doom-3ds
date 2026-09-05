@@ -438,7 +438,7 @@ new file mode 100644
 index 0000000..dbb6b87
 --- /dev/null
 +++ b/actors/LegendPauseMenu.zs
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,55 @@
 +class ListMenuItemResume : ListMenuItemTextItem
 +{
 +    override bool Activate()

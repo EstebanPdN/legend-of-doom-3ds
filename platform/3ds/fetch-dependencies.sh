@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "${ROOT}/platform/3ds/tools/validate-patches.py"
 BUILD_ROOT="${LOD3DS_BUILD_ROOT:-${ROOT}/build-3ds}"
 DEPS_ROOT="${BUILD_ROOT}/_deps"
 DOWNLOADS="${DEPS_ROOT}/downloads"

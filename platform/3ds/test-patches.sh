@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "${ROOT}/platform/3ds/tools/validate-patches.py"
 # shellcheck source=dependencies.sh
 source "${ROOT}/platform/3ds/dependencies.sh"
 
