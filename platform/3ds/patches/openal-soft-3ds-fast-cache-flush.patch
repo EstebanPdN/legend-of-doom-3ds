@@ -1,0 +1,20 @@
+diff --git a/alc/backends/ndsp_driver.cpp b/alc/backends/ndsp_driver.cpp
+--- a/alc/backends/ndsp_driver.cpp
++++ b/alc/backends/ndsp_driver.cpp
+@@ -72,7 +72,15 @@ void mixerThreadEntry(void *const arg)
+                 continue;
+ 
+             stream->mRender(stream->mUserptr, buf.data_pcm16, stream->mFramesPerBuffer);
+-            DSP_FlushDataCache(buf.data_pcm16, flush_bytes);
++            /* DSP_FlushDataCache becomes slow and jittery after reserving
++             * system-core time. CPU->DSP transfer only needs a cache clean;
++             * the process-cache SVC performs it without a DSP service round trip.
++             * Keep the service call as a compatibility fallback if the SVC
++             * is unavailable or rejected by the active launcher/exheader. */
++            const Result flush_result = svcStoreProcessDataCache(CUR_PROCESS_HANDLE,
++                static_cast<u32>(reinterpret_cast<uintptr_t>(buf.data_pcm16)), flush_bytes);
++            if(R_FAILED(flush_result))
++                DSP_FlushDataCache(buf.data_pcm16, flush_bytes);
+             ndspChnWaveBufAdd(NdspChannelId, &buf);
+             filled = true;
+         }

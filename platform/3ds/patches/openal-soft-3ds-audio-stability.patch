@@ -1,0 +1,42 @@
+diff --git a/alc/backends/ndsp.cpp b/alc/backends/ndsp.cpp
+--- a/alc/backends/ndsp.cpp
++++ b/alc/backends/ndsp.cpp
+@@ -113,7 +113,7 @@ auto NdspBackend::reset() -> bool
+     mDevice->mSampleRate = std::clamp(mDevice->mSampleRate, 8000u, 48000u);
+ 
+     mFrameStep = mDevice->channelsFromFmt();
+-    mDevice->mBufferSize = mDevice->mUpdateSize * 4u;
++    mDevice->mBufferSize = mDevice->mUpdateSize * 8u;
+ 
+     mStream = alcNdspOpen(mFrameStep, mDevice->mSampleRate, mDevice->mUpdateSize,
+         &NdspBackend::renderCallback, this);
+diff --git a/alc/backends/ndsp_driver.cpp b/alc/backends/ndsp_driver.cpp
+--- a/alc/backends/ndsp_driver.cpp
++++ b/alc/backends/ndsp_driver.cpp
+@@ -29,7 +29,7 @@
+ 
+ namespace {
+     constexpr int NdspChannelId{0};
+-    constexpr int NumWaveBuffers{4};
++    constexpr int NumWaveBuffers{8};
+ } // namespace
+ 
+ struct AlcNdspStream {
+@@ -72,7 +72,16 @@ void mixerThreadEntry(void *const arg)
+                 continue;
+ 
+             stream->mRender(stream->mUserptr, buf.data_pcm16, stream->mFramesPerBuffer);
+-            DSP_FlushDataCache(buf.data_pcm16, flush_bytes);
++            /* CPU->DSP transfer needs a clean, not a blocking service round
++             * trip. The direct process-cache SVC avoids enough jitter to keep
++             * the small NDSP queue fed while the game saturates its CPU cores.
++             * Retain libctru's DSP service call for launchers that reject the
++             * SVC so audio compatibility never depends on that fast path. */
++            const Result flush_result = svcStoreProcessDataCache(CUR_PROCESS_HANDLE,
++                static_cast<u32>(reinterpret_cast<uintptr_t>(buf.data_pcm16)),
++                flush_bytes);
++            if(R_FAILED(flush_result))
++                DSP_FlushDataCache(buf.data_pcm16, flush_bytes);
+             ndspChnWaveBufAdd(NdspChannelId, &buf);
+             filled = true;
+         }

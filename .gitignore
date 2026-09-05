@@ -27,6 +27,7 @@ __pycache__/
 /build2
 /build_vc2019-64
 /build_vc2019-32
+/legend-of-doom-*-qr.png
 /build-3ds/
 /build-3ds-*/
 *.3dsx

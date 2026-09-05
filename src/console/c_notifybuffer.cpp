@@ -145,16 +145,18 @@ void FNotifyBuffer::Draw()
 				color = PrintColors[notify.PrintLevel];
 
 			int scale = active_con_scaletext(twod, generic_ui);
-			if (!center)
-				DrawText(twod, font, color, 0, line, notify.Text,
-					DTA_VirtualWidth, twod->GetWidth() / scale,
-					DTA_VirtualHeight, twod->GetHeight() / scale,
-					DTA_KeepRatio, true,
-					DTA_Alpha, alpha, TAG_DONE);
-			else
-				DrawText(twod, font, color, (twod->GetWidth() -
-					font->StringWidth (notify.Text) * scale) / 2 / scale,
-					line, notify.Text,
+			const int textX = center ? (twod->GetWidth() -
+				font->StringWidth(notify.Text) * scale) / 2 / scale : 0;
+			#ifdef __3DS__
+			// A one-pixel black shadow keeps pickup notices legible over bright
+			// skies, waterfalls and dungeon floors without changing their color.
+			DrawText(twod, font, CR_BLACK, textX + 1, line + 1, notify.Text,
+				DTA_VirtualWidth, twod->GetWidth() / scale,
+				DTA_VirtualHeight, twod->GetHeight() / scale,
+				DTA_KeepRatio, true,
+				DTA_Alpha, alpha, TAG_DONE);
+			#endif
+			DrawText(twod, font, color, textX, line, notify.Text,
 					DTA_VirtualWidth, twod->GetWidth() / scale,
 					DTA_VirtualHeight, twod->GetHeight() / scale,
 					DTA_KeepRatio, true,

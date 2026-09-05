@@ -49,6 +49,7 @@
 #include "doomstat.h"
 #include "v_palette.h"
 #include "colormatcher.h"
+#include "texturemanager.h"
 #include "r_data/colormaps.h"
 #include "r_swcolormaps.h"
 #include "v_video.h"
@@ -64,6 +65,65 @@ bool NormalLightHasFixedLights;
 FSWColormap realcolormaps;
 FSWColormap realfbcolormaps; //[SP] For fullbright use
 TArray<FSWColormap> SpecialSWColormaps;
+
+#ifdef __3DS__
+static bool Is3DSMap01IntentionalBlackSector(const sector_t *sector)
+{
+	// BLACK-floor caves remain opaque even with sky ceilings.
+	static const FTextureID black = TexMan.CheckForTexture("BLACK",
+		ETextureType::Flat, FTextureManager::TEXMAN_TryAny);
+	return sector != nullptr && black.isValid() &&
+		sector->GetTexture(sector_t::floor) == black;
+}
+
+bool Is3DSMap01ExteriorSector(const sector_t *sector)
+{
+	return sector != nullptr && sector->Level != nullptr &&
+		sector->Level->MapName.CompareNoCase("MAP01") == 0 &&
+		sector->GetTexture(sector_t::ceiling) == skyflatnum &&
+		!Is3DSMap01IntentionalBlackSector(sector);
+}
+
+FDynamicColormap *Apply3DSMap01DistanceFog(const sector_t *sector,
+	FDynamicColormap *colormap)
+{
+	if (!Is3DSMap01ExteriorSector(sector) || colormap == nullptr)
+	{
+		return colormap;
+	}
+	// Cache horizon colormaps; the explicit visibility curve controls fading.
+	return GetSpecialLights(colormap->Color,
+		MAKERGB(Map01DistanceFogRed, Map01DistanceFogGreen,
+			Map01DistanceFogBlue),
+		colormap->Desaturate);
+}
+
+bool Is3DSMap01DistanceFogColormap(const FSWColormap *colormap)
+{
+	return colormap != nullptr &&
+		colormap->Fade.r == Map01DistanceFogRed &&
+		colormap->Fade.g == Map01DistanceFogGreen &&
+		colormap->Fade.b == Map01DistanceFogBlue;
+}
+
+double Apply3DSMap01DistanceFogVisibility(const FSWColormap *colormap,
+	double viewDistance, double ordinaryVisibility, fixed_t shade)
+{
+	if (!Is3DSMap01DistanceFogColormap(colormap) ||
+		viewDistance <= Map01DistanceFogStart)
+	{
+		return ordinaryVisibility;
+	}
+
+	// Smoothstep reaches opaque fog before the distance cutoff.
+	double amount = clamp((viewDistance - Map01DistanceFogStart) /
+		(Map01DistanceFogEnd - Map01DistanceFogStart), 0.0, 1.0);
+	amount = amount * amount * (3.0 - 2.0 * amount);
+	const double explicitVisibility = FIXED2DBL(shade) -
+		amount * static_cast<double>(NUMCOLORMAPS - 1);
+	return MIN(ordinaryVisibility, explicitVisibility);
+}
+#endif
 
 //==========================================================================
 //

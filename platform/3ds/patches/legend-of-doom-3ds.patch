@@ -118,6 +118,20 @@ diff --git a/actors/weapons/ZeldaWeapon.zs b/actors/weapons/ZeldaWeapon.zs
 index 029f40d..fbd3247 100644
 --- a/actors/weapons/ZeldaWeapon.zs
 +++ b/actors/weapons/ZeldaWeapon.zs
+@@ -16,11 +16,11 @@ class ZeldaWeapon : Weapon abstract
+         ShieldReady:
+             SLDW A 0 A_OverlayFlags(OverlayID(), PSPF_ADDWEAPON | PSPF_ADDBOB, 1);
+-            SLDW A 1 A_OverlayOffset(OverlayID(), 32, 170);
++            SLDW A 1 A_OverlayOffset(OverlayID(), 51, 170);
+             SLDW A 1;
+             Wait;
+ 
+         BigShieldReady:
+             SLDH A 0 A_OverlayFlags(OverlayID(), PSPF_ADDWEAPON | PSPF_ADDBOB, 1);
+-            SLDH A 1 A_OverlayOffset(OverlayID(), 32, 170);
++            SLDH A 1 A_OverlayOffset(OverlayID(), 51, 170);
+             SLDH A 1;
+             Wait;
 @@ -35,15 +35,13 @@ class ZeldaWeapon : Weapon abstract
 
                  if (!player) return;
@@ -136,7 +150,15 @@ index 029f40d..fbd3247 100644
                  }
              }
              Goto Ready;
-@@ -60,16 +58,13 @@ class ZeldaWeapon : Weapon abstract
+@@ -56,20 +54,21 @@ class ZeldaWeapon : Weapon abstract
+     action void A_RaiseShield()
+     {
+         A_WeaponReady();
++
++        // Keep the ready weapon and shield together as one centered group on
++        // the 3DS wide top screen. Attack-state offsets remain authoritative.
++        A_WeaponOffset(35, 32);
+ 
          A_SpawnItemEx("SHEELD", 30, 0, 15, flags: SXF_SETTARGET);
 
          // Draw shield overlay when weapon is not firing.
@@ -157,3 +179,354 @@ index 029f40d..fbd3247 100644
 
          let isReady =
              players[consoleplayer].AttackDown == false ||
+diff --git a/MENUDEF b/MENUDEF
+index c7c6d33..4f27467 100644
+--- a/MENUDEF
++++ b/MENUDEF
+@@ -1,48 +1,119 @@
+ DEFAULTLISTMENU
+ {
+-	// Font "ZeldFNT", "Untranslated"
+-	Font "BigFont", "White"
+-	Selector "M_SKULL1", -25, -10
+-	Linespacing 16
++	// Font "ZeldFNT", "Untranslated"
++	Font "NewSmallFont", "White"
++	Selector "M_SKULL1", -25, -5
++	Linespacing 16
+ }
+ 
+ LISTMENU "MainMenu"
+ {
+-	StaticPatch 110, 25, "M_DOOM"
+-	Position 125, 100
++	Position 125, 76
++	Font "NewSmallFont", "White"
++	Linespacing 16
+ 
+-    TextItem "$MNU_NEWGAME", "n", "PlayerclassMenu"
++    TextItem "NEW GAME", "n", "PlayerclassMenu"
+-    ifOption(SwapMenu)
+-    {
+-        TextItem  "$MNU_LOADGAME", "l", "LoadGameMenu", 0
+-        TextItem  "$MNU_SAVEGAME", "s", "SaveGameMenu",0
+-        TextItem  "$MNU_OPTIONS","o", "OptionsMenu", 0
+-    }
+-    else
+-    {
+-        TextItem  "$MNU_OPTIONS","o", "OptionsMenu", 0
+-        TextItem  "$MNU_LOADGAME", "l", "LoadGameMenu", 0
+-        TextItem  "$MNU_SAVEGAME", "s", "SaveGameMenu", 0
+-    }
+-    ifOption(ReadThis)
+-    {
+-        TextItem  "$MNU_INFO","r", "ReadThisMenu", 0
+-    }
++    TextItem "OPTIONS", "o", "LegendOptionsMenu", 0
++    TextItem "LOAD GAME", "l", "LoadGameMenu", 0
++    TextItem "SAVE GAME", "s", "SaveGameMenu", 0
+-    TextItem  "$MNU_QUITGAME", "q", "QuitMenu", 0
++    TextItem  "QUIT GAME", "q", "QuitMenu", 0
+ }
+ 
++LISTMENU "LegendPauseMenu"
++{
++    Position 125, 60
++    Font "NewSmallFont", "White"
++    Linespacing 16
++
++    Resume "RESUME GAME", "r", "None"
++    TextItem "NEW GAME", "n", "PlayerclassMenu"
++    TextItem "OPTIONS", "o", "LegendOptionsMenu", 0
++    TextItem "LOAD GAME", "l", "LoadGameMenu", 0
++    TextItem "SAVE GAME", "s", "SaveGameMenu", 0
++    TextItem "QUIT GAME", "q", "QuitMenu", 0
++}
++
++OPTIONVALUE "LegendRenderScale"
++{
++    5, "0.5"
++    8, "0.8"
++    10, "1.0"
++}
++
++OPTIONVALUE "LegendCameraInput"
++{
++    0, "C-STICK"
++    1, "TOUCH"
++    2, "BOTH"
++}
++
++OPTIONMENU "LegendOptionsMenu"
++{
++    Class "LegendSplitOptionMenu"
++    Title "OPTIONS"
++    Submenu "VOLUME", "LegendSoundOptions"
++    Submenu "DISPLAY", "LegendDisplayOptions"
++    Submenu "CONTROLLER", "LegendControllerOptions"
++    Submenu "DEVELOPER", "LegendDeveloperOptions"
++}
++
++OPTIONMENU "LegendSoundOptions"
++{
++    Class "LegendSplitOptionMenu"
++    Title "VOLUME"
++    Slider "MASTER VOLUME", "snd_mastervolume", 0, 1, 0.05, -1
++    Slider "MUSIC VOLUME", "snd_musicvolume", 0, 1, 0.05, -1
++    Slider "SOUND EFFECTS", "snd_sfxvolume", 0, 1, 0.05, -1
++}
++
++OPTIONMENU "LegendDisplayOptions"
++{
++    Class "LegendSplitOptionMenu"
++    Title "DISPLAY"
++    Option "RENDER", "lod3ds_render_scale", "LegendRenderScale"
++    Option "TOP HUD", "lod3ds_top_hud", "OnOff"
++    Option "AIM CROSS", "crosshairon", "OnOff"
++    Option "MAP COLLISIONS", "lod3ds_map_collisions", "OnOff"
++}
++
++OPTIONMENU "LegendControllerOptions"
++{
++    Class "LegendSplitOptionMenu"
++    Title "CONTROLLER"
++    Slider "CAM SENSITIVITY", "lod3ds_cstick_sensitivity", 0.25, 2.0, 0.05, -1
++    Option "CAMERA INPUT", "lod3ds_camera_mode", "LegendCameraInput"
++    Option "SPRINT WITH X", "lod3ds_sprint_x", "OnOff"
++    Submenu "CONTROLS", "LegendControlsMenu"
++}
++
++OPTIONMENU "LegendControlsMenu"
++{
++    Class "LegendControlsReferenceMenu"
++    Title "CONTROLS"
++}
++
++OPTIONMENU "LegendDeveloperOptions"
++{
++    Class "LegendSplitOptionMenu"
++    Title "DEVELOPER"
++    Option "SHOW FPS", "vid_fps", "OnOff"
++    Command "QUICK DUMP", "lod3ds_dump"
++    Command "FULL DUMP", "lod3ds_fulldump"
++    Option "OVERLAY WITH SELECT", "lod3ds_select_overlay", "OnOff"
++}
++
+ ListMenu "SkillMenu"
+ {
+-	Font "BigFont", "White"
++	Font "NewSmallFont", "White"
+-    StaticText 74, 16, "$MNU_CHOOSESKILL"
++    StaticText 74, 16, "CHOOSE SKILL LEVEL"
+     Position 160, 44
+     centermenu
+ }
+ 
+ ListMenu "EpisodeMenu"
+ {
+-	NetgameMessage "$NEWGAME"
+-	Position 85, 63
+-	StaticText 95, 38, "Choose Adventure"
+-	// items will be filled in by MAPINFO
++    NetgameMessage "$NEWGAME"
++    Position 85, 63
++    StaticText 95, 38, "CHOOSE ADVENTURE"
++    // items will be filled in by MAPINFO
+ }
+diff --git a/ZMAPINFO b/ZMAPINFO
+index c3ad34f..852fc07 100644
+--- a/ZMAPINFO
++++ b/ZMAPINFO
+@@ -10,7 +10,7 @@ GameInfo
+     CursorPic = "Cursor"
+-	DrawReadThis = false
++    DrawReadThis = false
+     DimColor = "Black"
+-    DimAmount = 0.95
++    DimAmount = 0.72
+-	BorderFlat = "Black"
+-	QuitMessages = "Leave Hyrule in darkness?", "Let Ganon's rule unfold?", "Doom the princess?"
++    BorderFlat = "Black"
++    QuitMessages = "Leave Hyrule in darkness?", "Let Ganon's rule unfold?", "Doom the princess?"
+ 
+@@ -215,45 +215,45 @@ skill baby
+ {
+-	AutoUseHealth
+-	AmmoFactor = 2
+-	DamageFactor = 0.5
+-	EasyBossBrain
+-	SpawnFilter = Baby
+-	Name = "Easiest"
+-	Key = "i"
++    AutoUseHealth
++    AmmoFactor = 2
++    DamageFactor = 0.5
++    EasyBossBrain
++    SpawnFilter = Baby
++    Name = "EASIEST"
++    Key = "i"
+ }
+ 
+ skill easy
+ {
+-	EasyBossBrain
+-	SpawnFilter = Easy
+-	Name = "Easy"
+-	Key = "h"
++    EasyBossBrain
++    SpawnFilter = Easy
++    Name = "EASY"
++    Key = "h"
+ }
+ 
+ skill normal
+ {
+-	SpawnFilter = Normal
+-	Key = "h"
+-	Name = "Normal"
+-	DefaultSkill
++    SpawnFilter = Normal
++    Key = "h"
++    Name = "NORMAL"
++    DefaultSkill
+ }
+ 
+ skill hard
+ {
+-	SpawnFilter = Hard
+-	Name = "Hard"
+-	Key = "u"
++    SpawnFilter = Hard
++    Name = "HARD"
++    Key = "u"
+ }
+ 
+ skill nightmare
+ {
+-	AmmoFactor = 2
+-	FastMonsters
+-	InstantReaction
+-	DisableCheats
+-	RespawnTime = 12
+-	SpawnFilter = Nightmare
+-	Name = "Impossible"
+-	MustConfirm
+-	Key = "n"
++    AmmoFactor = 2
++    FastMonsters
++    InstantReaction
++    DisableCheats
++    RespawnTime = 12
++    SpawnFilter = Nightmare
++    Name = "IMPOSSIBLE"
++    MustConfirm
++    Key = "n"
+ }
+diff --git a/ZSCRIPT b/ZSCRIPT
+index f9342af..b4b976f 100644
+--- a/ZSCRIPT
++++ b/ZSCRIPT
+@@ -1,5 +1,6 @@
+ version "4.7.1"
+ 
++#include "actors/LegendPauseMenu.zs"
+ // Player and misc items
+ #include "actors/Common.zs"
+ #include "actors/Decorations.zs"
+diff --git a/actors/LegendPauseMenu.zs b/actors/LegendPauseMenu.zs
+new file mode 100644
+index 0000000..dbb6b87
+--- /dev/null
++++ b/actors/LegendPauseMenu.zs
+@@ -0,0 +1,55 @@
++class ListMenuItemResume : ListMenuItemTextItem
++{
++    override bool Activate()
++    {
++        let current = Menu.GetCurrentMenu();
++        if (current != null)
++            current.Close();
++
++        return true;
++    }
++}
++
++class LegendSplitOptionMenu : OptionMenu
++{
++    override bool UseSplitOptionLayout() { return true; }
++    override bool UseCompactSplitSliders() { return true; }
++    override int GetSplitLabelLeft() { return screen.GetWidth() / 8; }
++    override int GetSplitValueLeft() { return screen.GetWidth() * 49 / 100; }
++    override int GetSplitValueRight() { return screen.GetWidth() * 7 / 8; }
++}
++
++class LegendControlsReferenceMenu : LegendSplitOptionMenu
++{
++    override void Drawer()
++    {
++        // Measure the normal caption position without drawing CONTROLS, then
++        // lift the INPUT/ACTION table ten pixels so SELECT remains visible.
++        int y = max(0, DrawCaption(mDesc.mTitle, 0, false) - 10 * CleanYfac_1);
++        int rowHeight = OptionMenuSettings.mLinespacing * CleanYfac_1;
++        int inputRight = screen.GetWidth() / 2 - 8 * CleanXfac_1;
++        int actionLeft = screen.GetWidth() / 2 + 8 * CleanXfac_1;
++        static const String inputs[] = {
++            "CIRCLE PAD", "C-STICK / TOUCH", "A", "R", "L", "X", "Y",
++            "DPAD LEFT / RIGHT", "ZL / ZR", "DPAD DOWN", "DPAD UP",
++            "START", "SELECT"
++        };
++        static const String actions[] = {
++            "MOVE / STRAFE", "LOOK", "USE / INTERACT", "ATTACK",
++            "ALT ATTACK", "SPRINT AT FULL LIFE", "JUMP", "CHANGE WEAPON",
++            "CHANGE ITEM", "USE ITEM", "MAP", "PAUSE", "MENU / OVERLAY"
++        };
++
++        int inputHeaderX = inputRight - Menu.OptionWidth("INPUT") * CleanXfac_1;
++        Menu.DrawOptionText(inputHeaderX, y, OptionMenuSettings.mFontColorHeader, "INPUT");
++        Menu.DrawOptionText(actionLeft, y, OptionMenuSettings.mFontColorHeader, "ACTION");
++        y += rowHeight;
++        for (int row = 0; row < 13; row++)
++        {
++            int inputX = inputRight - Menu.OptionWidth(inputs[row]) * CleanXfac_1;
++            Menu.DrawOptionText(inputX, y, OptionMenuSettings.mFontColor, inputs[row]);
++            Menu.DrawOptionText(actionLeft, y, OptionMenuSettings.mFontColorValue, actions[row]);
++            y += rowHeight;
++        }
++    }
++}
+diff --git a/actors/monsters/SnakeMonster.zs b/actors/monsters/SnakeMonster.zs
+--- a/actors/monsters/SnakeMonster.zs
++++ b/actors/monsters/SnakeMonster.zs
+@@ -59,7 +59,7 @@
+ 	// Reset Bodies' targets, when ONLY the Head was destroyed
+ 	void RetargetBodies(actor Whom, bool HeadDestroyed = true)
+ 	{
+-		if (HeadDestroyed)
++		if (HeadDestroyed && NumOfBodies.Size() > 0)
+ 		{
+ 			NumOfBodies[0].Destroy();
+ 
+@@ -82,7 +82,7 @@
+ 			let Body = SnakeMonsterBody(NumOfBodies[i]);
+ 			if (Body)
+ 			{
+-				if (i-1 >= 0)
++				if (i > 0)
+ 				{
+ 					if (NumOfBodies[i-1])
+ 					{
+diff --git a/actors/monsters/Ganon.zs b/actors/monsters/Ganon.zs
+--- a/actors/monsters/Ganon.zs
++++ b/actors/monsters/Ganon.zs
+@@ -82,8 +82,11 @@
+     {
+         FCheckPosition fCheckPos;
+         let spawnDest = GetPosition();
++        int tries = 0;
+         while (!CheckPosition(spawnDest.xy, false, fCheckPos) || fCheckPos.CurSector.GetUDMFString("user_spawntype") != "Land")
+         {
++            // Stay put if no valid destination can be found.
++            if (++tries >= 100) return pos;
+             spawnDest = GetPosition();
+         }
+ 

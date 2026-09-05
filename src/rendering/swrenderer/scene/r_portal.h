@@ -39,6 +39,9 @@ namespace swrenderer
 	
 		void RenderPlanePortals();
 		void RenderLinePortals();
+		#ifdef __3DS__
+		bool HasLinePortals() const { return WallPortals.Size() != 0; }
+		#endif
 
 		void AddLinePortal(line_t *linedef, int x1, int x2, const short *topclip, const short *bottomclip);
 

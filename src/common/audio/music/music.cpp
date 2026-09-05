@@ -298,6 +298,11 @@ void S_ResumeMusic ()
 	}
 }
 
+bool S_IsMusicPaused ()
+{
+	return MusicPaused;
+}
+
 //==========================================================================
 //
 // S_UpdateSound

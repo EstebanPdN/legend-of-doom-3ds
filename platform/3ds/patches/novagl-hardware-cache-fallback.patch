@@ -1,0 +1,62 @@
+diff --git a/src/NovaGL.c b/src/NovaGL.c
+index 5ecdce3..26c5e72 100644
+--- a/src/NovaGL.c
++++ b/src/NovaGL.c
+@@ -942,9 +942,11 @@ void novaSwapBuffers(void) {
+     if (g.app_target) nova_present_app(g.render_target_top);
+ 
+     if (log_stage) nova_hw_stage("swap-before-frame-end", C3D_GetCmdBufUsage());
+-    /* All CPU->GPU ranges and every command-list segment are flushed
+-     * explicitly. Avoid citro3d's fallback flush of the entire linear heap. */
+-    C3D_FrameEnd(GX_CMDLIST_FLUSH);
++    /* Keep Citro3D's whole-linear-heap fallback flush until every indirect
++     * PICA source range has been proven on physical hardware.  The explicit
++     * range flushes remain useful, but declaring the frame fully flushed here
++     * made the first MAP01 command list wedge on a New 3DS. */
++    C3D_FrameEnd(0);
+     if (log_stage) nova_hw_stage("swap-after-frame-end", 0.0f);
+     /* VBlank pacing quantizes the frame rate to 60/N: a 45ms frame stalls
+      * until the 4th impulse and reads as a hard 15 FPS. Engines that pace
+@@ -1029,6 +1031,6 @@ void nova_fini(void) {
+     // кадр и ждём GPU.
+     nova_wait_tag("[W] swap-end>");
+-    C3D_FrameEnd(GX_CMDLIST_FLUSH);
++    C3D_FrameEnd(0);
+     nova_wait_tag("[W] swap-queue>");
+     nova_render_queue_wait_idle();
+     nova_wait_tag("[W] swap-queue<");
+diff --git a/src/utils.c b/src/utils.c
+index 61527cc..02d26ec 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -437,6 +437,19 @@ void nova_emergency_reclaim(void) {
+ }
+ 
+ void nova_render_queue_wait_idle(void) {
++#if defined(__3DS__) && defined(NOVAGL_HARDWARE_STAGE_LOG) && NOVAGL_HARDWARE_STAGE_LOG
++    if (s_hw_watchdog_enabled && g.frame_index == 0) {
++        gxCmdQueue_s *q = &__C3D_Context.gxQueue;
++        /* gxCmdQueueWait's timeout is nanoseconds.  Keep this boundary finite
++         * so a bad first-frame command produces gpu-diagnostic.log instead of
++         * leaving the loading animation on screen forever. */
++        if (!gxCmdQueueWait(q, (s64)2000000000LL))
++            nova_hw_abort("render-queue-timeout");
++        gxCmdQueueStop(q);
++        gxCmdQueueClear(q);
++        return;
++    }
++#endif
+     C3Di_RenderQueueWaitDone();
+ }
+ 
+@@ -497,6 +510,9 @@ void nova_midframe_drain_force(void) {
+     nova_batch_flush();
+     nova_wait_tag("[W] drain>");
+-    C3D_FrameEnd(GX_CMDLIST_FLUSH);
++    /* Preserve Citro3D's conservative full-linear fallback at every frame
++     * retirement.  Explicit per-range synchronization is retained, but it is
++     * not yet sufficient by itself on physical New 3DS hardware. */
++    C3D_FrameEnd(0);
+     /* Stay outside a frame while deleting deferred render targets. */
+     nova_render_queue_wait_idle();
+     nova_fbo_gc_collect_all();

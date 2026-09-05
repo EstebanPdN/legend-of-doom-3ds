@@ -167,17 +167,26 @@ namespace swrenderer
 		const FSoftwareTextureSpan* span;
 		if (bgra)
 		{
-			double xmagnitude = fabs(static_cast<int32_t>(texelStepX)* (1.0 / 0x1'0000'0000LL));
-			double ymagnitude = fabs(static_cast<int32_t>(texelStepY)* (1.0 / 0x1'0000'0000LL));
-			double magnitude = MAX(ymagnitude, xmagnitude);
-			double min_lod = -1000.0;
-			double lod = MAX(log2(magnitude) + r_lod_bias, min_lod);
-			bool magnifying = lod < 0.0f;
+			const bool mipmapped = r_mipmap && tex->Mipmapped() &&
+				texwidth > 1 && texheight > 1;
+			const bool nearestWithoutMipmaps =
+				!mipmapped && !r_minfilter && !r_magfilter;
+			double lod = 0.0;
+			bool magnifying = false;
+			if (!nearestWithoutMipmaps)
+			{
+				double xmagnitude = fabs(static_cast<int32_t>(texelStepX)* (1.0 / 0x1'0000'0000LL));
+				double ymagnitude = fabs(static_cast<int32_t>(texelStepY)* (1.0 / 0x1'0000'0000LL));
+				double magnitude = MAX(ymagnitude, xmagnitude);
+				double min_lod = -1000.0;
+				lod = MAX(log2(magnitude) + r_lod_bias, min_lod);
+				magnifying = lod < 0.0f;
+			}
 
 			int mipmap_offset = 0;
 			int mip_width = texwidth;
 			int mip_height = texheight;
-			if (r_mipmap && tex->Mipmapped() && mip_width > 1 && mip_height > 1)
+			if (mipmapped)
 			{
 				int level = (int)lod;
 				while (level > 0 && mip_width > 1 && mip_height > 1)
@@ -192,7 +201,8 @@ namespace swrenderer
 			const uint32_t* pixels = tex->GetPixelsBgra() + mipmap_offset;
 			fixed_t xoffset = (texelX >> 16)* mip_width;
 
-			bool filter_nearest = (magnifying && !r_magfilter) || (!magnifying && !r_minfilter);
+			bool filter_nearest = nearestWithoutMipmaps ||
+				(magnifying && !r_magfilter) || (!magnifying && !r_minfilter);
 			if (filter_nearest)
 			{
 				xoffset = MAX(MIN(xoffset, (mip_width << FRACBITS) - 1), 0);

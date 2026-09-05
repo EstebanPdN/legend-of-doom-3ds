@@ -1,3 +1,55 @@
+diff --git a/alc/backends/ndsp.cpp b/alc/backends/ndsp.cpp
+index ef1858d7..7a234411 100644
+--- a/alc/backends/ndsp.cpp
++++ b/alc/backends/ndsp.cpp
+@@ -60,6 +60,7 @@ struct NdspBackend final : BackendBase {
+ 
+     AlcNdspStream *mStream{nullptr};
+     unsigned mFrameStep{};
++    bool mNdspInitialized{false};
+ };
+ 
+ NdspBackend::~NdspBackend()
+@@ -67,6 +68,9 @@ NdspBackend::~NdspBackend()
+     if(mStream)
+         alcNdspClose(mStream);
+     mStream = nullptr;
++    if(mNdspInitialized)
++        alcNdspExit();
++    mNdspInitialized = false;
+ }
+ 
+ void NdspBackend::renderCallback(void *const userptr, short *const dst, unsigned const frames)
+@@ -89,6 +93,14 @@ void NdspBackend::open(std::string_view name)
+ 
+ auto NdspBackend::reset() -> bool
+ {
++    if(!mNdspInitialized)
++    {
++        if(!alcNdspInit())
++            throw al::backend_exception{al::backend_error::DeviceError,
++                "Failed to initialize NDSP (is the DSP firmware dumped?)"};
++        mNdspInitialized = true;
++    }
++
+     if(mStream)
+         alcNdspClose(mStream);
+     mStream = nullptr;
+@@ -135,11 +147,9 @@ auto NdspBackendFactory::getFactory() -> BackendFactory&
+ 
+ auto NdspBackendFactory::init() -> bool
+ {
+-    if(!alcNdspInit())
+-    {
+-        WARN("Failed to initialize NDSP (is the DSP firmware dumped?)");
+-        return false;
+-    }
++    // Initialization belongs to the backend lifetime. Leaving libctru's NDSP
++    // worker alive after the device was destroyed lets it run on a freed stack
++    // during process teardown.
+     return true;
+ }
+ 
 diff --git a/alc/backends/ndsp_driver.cpp b/alc/backends/ndsp_driver.cpp
 index ff1e4220..a66b4892 100644
 --- a/alc/backends/ndsp_driver.cpp

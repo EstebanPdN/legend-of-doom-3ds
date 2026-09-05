@@ -32,14 +32,16 @@
 #include "polyrenderer/drawers/poly_triangle.h"
 #include <chrono>
 
+#ifdef __3DS__
+#include <3ds.h>
+#endif
+
 #ifdef WIN32
 void PeekThreadedErrorPane();
 #endif
 
 #ifdef __3DS__
-// libstdc++ workers created by std::thread stay on the application core on
-// 3DS. A single worker therefore adds queue/mutex hand-offs without adding
-// CPU throughput. New 3DS core 2 needs an explicit libctru thread instead.
+// Hybrid workers use libctru affinity for CPU0/CPU2.
 CVAR(Int, r_multithreaded, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 #else
 CVAR(Int, r_multithreaded, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
@@ -181,6 +183,44 @@ void DrawerThreads::WorkerMain(DrawerThread *thread)
 	}
 }
 
+#ifdef __3DS__
+void DrawerThreads::WorkerMain3DS(void *argument)
+{
+	auto *thread = static_cast<DrawerThread *>(argument);
+	thread->owner->WorkerMain(thread);
+}
+
+bool DrawerThreads::StartThreads3DS(int numThreads)
+{
+	// Use CPU0/CPU2 for rasterization; reserve CPU1 for audio.
+	constexpr size_t WorkerStackBytes = 64 * 1024;
+	s32 priority = 0x30;
+	if (R_FAILED(svcGetThreadPriority(&priority, CUR_THREAD_HANDLE)))
+		priority = 0x30;
+	priority = clamp<s32>(priority, 0x18, 0x3f);
+
+	threads.resize(numThreads);
+	for (int i = 0; i < numThreads; ++i)
+	{
+		auto *thread = &threads[i];
+		thread->owner = this;
+		thread->core = i;
+		thread->num_cores = numThreads;
+		thread->numa_node = 0;
+		thread->num_numa_nodes = 1;
+		const int processor = (i == 0) ? 0 : 2;
+		thread->thread = threadCreate(WorkerMain3DS, thread,
+			WorkerStackBytes, priority, processor, false);
+		if (thread->thread == nullptr)
+		{
+			StopThreads();
+			return false;
+		}
+	}
+	return true;
+}
+#endif
+
 void DrawerThreads::StartThreads()
 {
 	std::unique_lock<std::mutex> lock(threads_mutex);
@@ -208,9 +248,26 @@ void DrawerThreads::StartThreads()
 	else if (r_multithreaded != 1)
 		num_threads = r_multithreaded;
 
+	#ifdef __3DS__
+	// Only CPU0 and CPU2 are available to raster workers.
+	num_threads = clamp(num_threads, 1, 2);
+	#endif
+
 	if (num_threads != (int)threads.size())
 	{
 		StopThreads();
+
+		#ifdef __3DS__
+		// Fall back to one worker when CPU2 is unavailable.
+		if (!StartThreads3DS(num_threads))
+		{
+			// Persist fallback to avoid retrying CPU2 for every queue.
+			r_multithreaded = 0;
+			if (!StartThreads3DS(1))
+				I_FatalError("Unable to create Nintendo 3DS renderer worker thread.");
+		}
+		return;
+		#else
 
 		threads.resize(num_threads);
 
@@ -246,6 +303,7 @@ void DrawerThreads::StartThreads()
 				I_SetThreadNumaNode(thread->thread, 0);
 			}
 		}
+		#endif
 	}
 }
 
@@ -256,7 +314,18 @@ void DrawerThreads::StopThreads()
 	lock.unlock();
 	start_condition.notify_all();
 	for (auto &thread : threads)
+	{
+		#ifdef __3DS__
+		if (thread.thread != nullptr)
+		{
+			threadJoin(thread.thread, U64_MAX);
+			threadFree(thread.thread);
+			thread.thread = nullptr;
+		}
+		#else
 		thread.thread.join();
+		#endif
+	}
 	threads.clear();
 	lock.lock();
 	shutdown_flag = false;

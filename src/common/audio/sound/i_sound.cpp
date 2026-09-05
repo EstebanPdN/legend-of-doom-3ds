@@ -48,6 +48,10 @@
 #include "stats.h"
 #include <zmusic.h>
 
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
+
 
 EXTERN_CVAR (Float, snd_sfxvolume)
 EXTERN_CVAR(Float, snd_musicvolume)
@@ -267,6 +271,9 @@ void I_InitSound ()
 	if (nosound)
 	{
 		GSnd = new NullSoundRenderer;
+		#ifdef __3DS__
+		I_3DSSetAudioReady(false);
+		#endif
 		return;
 	}
 	#ifdef __3DS__
@@ -296,11 +303,17 @@ void I_InitSound ()
 		Printf (TEXTCOLOR_RED"Sound init failed. Using nosound.\n");
 	}
 	snd_sfxvolume.Callback ();
+	#ifdef __3DS__
+	I_3DSSetAudioReady(GSnd != nullptr && !GSnd->IsNull());
+	#endif
 }
 
 
 void I_CloseSound ()
 {
+	#ifdef __3DS__
+	I_3DSSetAudioReady(false);
+	#endif
 	// Free all loaded samples. Beware that the sound engine may already have been deleted.
 	if (soundEngine) soundEngine->UnloadAllSounds();
 

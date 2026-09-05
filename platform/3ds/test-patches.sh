@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "${ROOT}/platform/3ds/tools/validate-patches.py"
 # shellcheck source=dependencies.sh
 source "${ROOT}/platform/3ds/dependencies.sh"
 
@@ -65,9 +66,14 @@ verify_patch_stack novagl "${LOD3DS_NOVAGL_URL}" "${LOD3DS_NOVAGL_REV}" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-safe-earlyz.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-conservative-submit.patch" \
   "${ROOT}/platform/3ds/patches/novagl-hardware-frustum-guard.patch" \
-  "${ROOT}/platform/3ds/patches/novagl-hardware-frame-watchdog.patch"
+  "${ROOT}/platform/3ds/patches/novagl-hardware-frame-watchdog.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-explicit-cache-sync.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-cache-fallback.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-command-safety.patch" \
+  "${ROOT}/platform/3ds/patches/novagl-hardware-draw-range-probe.patch"
 verify_patch_stack openal-soft-3ds "${LOD3DS_OPENAL_URL}" "${LOD3DS_OPENAL_REV}" \
   "${ROOT}/platform/3ds/patches/openal-soft-3ds-core1.patch" \
+  "${ROOT}/platform/3ds/patches/openal-soft-3ds-audio-stability.patch" \
   "${ROOT}/platform/3ds/patches/openal-soft-cmake-empty-deps.patch"
 verify_patch_stack legend-of-doom "${LOD3DS_MOD_URL}" "${LOD3DS_MOD_REV}" \
   "${ROOT}/platform/3ds/patches/legend-of-doom-3ds.patch"

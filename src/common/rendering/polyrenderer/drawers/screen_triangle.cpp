@@ -89,7 +89,7 @@ static void DrawSpan(int y, int x0, int x1, const TriDrawTriangleArgs* args, Pol
 		while (x0 < x1)
 		{
 			int xstart = x0;
-			while (!discard[x0] && x0 < x1) x0++;
+			while (x0 < x1 && !discard[x0]) x0++;
 
 			if (xstart < x0)
 			{
@@ -101,7 +101,7 @@ static void DrawSpan(int y, int x0, int x1, const TriDrawTriangleArgs* args, Pol
 					WriteStencil(y, xstart, x0, thread);
 			}
 
-			while (discard[x0] && x0 < x1) x0++;
+			while (x0 < x1 && discard[x0]) x0++;
 		}
 	}
 }
@@ -126,7 +126,7 @@ static void DepthTestSpan(int y, int x0, int x1, const TriDrawTriangleArgs* args
 	{
 		int xstart = x;
 
-		while (zbufferLine[x] >= w[x] + depthbias && x < xend)
+		while (x < xend && zbufferLine[x] >= w[x] + depthbias)
 			x++;
 
 		if (x > xstart)
@@ -134,7 +134,7 @@ static void DepthTestSpan(int y, int x0, int x1, const TriDrawTriangleArgs* args
 			DrawSpan(y, xstart, x, args, thread);
 		}
 
-		while (zbufferLine[x] < w[x] + depthbias && x < xend)
+		while (x < xend && zbufferLine[x] < w[x] + depthbias)
 			x++;
 	}
 }
@@ -149,7 +149,7 @@ static void DepthStencilTestSpan(int y, int x0, int x1, const TriDrawTriangleArg
 	while (x < xend)
 	{
 		int xstart = x;
-		while (stencilLine[x] == stencilTestValue && x < xend)
+		while (x < xend && stencilLine[x] == stencilTestValue)
 			x++;
 
 		if (x > xstart)
@@ -157,7 +157,7 @@ static void DepthStencilTestSpan(int y, int x0, int x1, const TriDrawTriangleArg
 			DepthTestSpan(y, xstart, x, args, thread);
 		}
 
-		while (stencilLine[x] != stencilTestValue && x < xend)
+		while (x < xend && stencilLine[x] != stencilTestValue)
 			x++;
 	}
 }
@@ -172,7 +172,7 @@ static void StencilTestSpan(int y, int x0, int x1, const TriDrawTriangleArgs* ar
 	while (x < xend)
 	{
 		int xstart = x;
-		while (stencilLine[x] == stencilTestValue && x < xend)
+		while (x < xend && stencilLine[x] == stencilTestValue)
 			x++;
 
 		if (x > xstart)
@@ -181,7 +181,7 @@ static void StencilTestSpan(int y, int x0, int x1, const TriDrawTriangleArgs* ar
 			DrawSpan(y, xstart, x, args, thread);
 		}
 
-		while (stencilLine[x] != stencilTestValue && x < xend)
+		while (x < xend && stencilLine[x] != stencilTestValue)
 			x++;
 	}
 }

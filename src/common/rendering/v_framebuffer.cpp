@@ -93,17 +93,28 @@ void DFrameBuffer::SetSize(int width, int height)
 
 void DFrameBuffer::Update()
 {
+	ApplyPendingVirtualSize();
+}
+
+void DFrameBuffer::ApplyPendingVirtualSize()
+{
 	int initialWidth = GetClientWidth();
 	int initialHeight = GetClientHeight();
 	int clientWidth = ViewportScaledWidth(initialWidth, initialHeight);
 	int clientHeight = ViewportScaledHeight(initialWidth, initialHeight);
+	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
+	if (clientWidth < 40) clientWidth = 40;
+	if (clientHeight < 24) clientHeight = 24;
+	#else
 	if (clientWidth < VID_MIN_WIDTH) clientWidth = VID_MIN_WIDTH;
 	if (clientHeight < VID_MIN_HEIGHT) clientHeight = VID_MIN_HEIGHT;
+	#endif
 	if (clientWidth > 0 && clientHeight > 0 && (GetWidth() != clientWidth || GetHeight() != clientHeight))
 	{
 		SetVirtualSize(clientWidth, clientHeight);
 		V_OutputResized(clientWidth, clientHeight);
-		mVertexData->OutputResized(clientWidth, clientHeight);
+		if (mVertexData != nullptr)
+			mVertexData->OutputResized(clientWidth, clientHeight);
 	}
 }
 
@@ -314,4 +325,3 @@ DEFINE_ACTION_FUNCTION(_Screen, PaletteColor)
 	else index = GPalette.BaseColors[index];
 	ACTION_RETURN_INT(index);
 }
-

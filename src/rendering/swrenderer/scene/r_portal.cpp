@@ -59,6 +59,7 @@
 #include "swrenderer/segments/r_drawsegment.h"
 #include "swrenderer/plane/r_visibleplane.h"
 #include "swrenderer/plane/r_visibleplanelist.h"
+#include "swrenderer/plane/r_skyplane.h"
 #include "swrenderer/things/r_visiblesprite.h"
 #include "swrenderer/scene/r_opaque_pass.h"
 #include "swrenderer/scene/r_translucent_pass.h"
@@ -67,6 +68,10 @@
 #include "swrenderer/viewport/r_viewport.h"
 #include "r_memory.h"
 #include "swrenderer/r_renderthread.h"
+
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
 
 CVAR(Int, r_portal_recursions, 4, CVAR_ARCHIVE)
 #if 0
@@ -122,6 +127,18 @@ namespace swrenderer
 
 		for (VisiblePlane *pl = planes->PopFirstPortalPlane(); pl != nullptr; pl = planes->PopFirstPortalPlane())
 		{
+			#ifdef __3DS__
+			// MAP01's F_SKY1 sectors point at a full remote SkyViewpoint scene. Keep
+			// that geometry disabled, but let the ordinary cylindrical SKYWW texture
+			// (blue sky and clouds) paint its sky planes and background gaps.
+			if (IsMap01ExteriorSkyLevel(Thread) && pl->portal != nullptr &&
+				pl->portal->mType == PORTS_SKYVIEWPOINT)
+			{
+				I_3DSRecordSkyViewpointPortalSkip();
+				continue;
+			}
+			#endif
+
 			if (pl->right < pl->left || !r_skyboxes || numskyboxes == MAX_SKYBOX_PLANES || pl->portal == nullptr)
 			{
 				pl->Render(Thread, OPAQUE, false, false);

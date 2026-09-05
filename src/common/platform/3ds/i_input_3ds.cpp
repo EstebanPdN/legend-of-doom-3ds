@@ -1,7 +1,25 @@
 #include "i_input_3ds.h"
 
 #include "d_eventbase.h"
+#include "c_cvars.h"
 #include "keydef.h"
+
+#include <algorithm>
+
+CUSTOM_CVAR(Float, lod3ds_cstick_sensitivity, 1.0f,
+	CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.25f) self = 0.25f;
+	else if (self > 2.0f) self = 2.0f;
+}
+
+CUSTOM_CVAR(Int, lod3ds_camera_mode, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0) self = 0;
+	else if (self > 2) self = 2;
+}
+
+CVAR(Bool, lod3ds_sprint_x, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
 namespace
 {
@@ -59,7 +77,7 @@ void I_3DSHandleTouchEvent(const SDL_Event &event, bool guiCapture)
 		break;
 
 	case SDL_FINGERMOTION:
-		if (!guiCapture)
+		if (!guiCapture && I_3DSTouchLookEnabled())
 		{
 			TouchRemainderX += event.tfinger.dx * TouchWidth * TouchGain;
 			TouchRemainderY += event.tfinger.dy * TouchHeight * TouchGain;
@@ -70,4 +88,24 @@ void I_3DSHandleTouchEvent(const SDL_Event &event, bool guiCapture)
 	default:
 		break;
 	}
+}
+
+bool I_3DSCStickLookEnabled()
+{
+	return lod3ds_camera_mode != 1;
+}
+
+bool I_3DSTouchLookEnabled()
+{
+	return lod3ds_camera_mode != 0;
+}
+
+float I_3DSCStickSensitivity()
+{
+	return std::clamp(static_cast<float>(lod3ds_cstick_sensitivity), 0.25f, 2.0f);
+}
+
+bool I_3DSSprintWithXEnabled()
+{
+	return lod3ds_sprint_x;
 }

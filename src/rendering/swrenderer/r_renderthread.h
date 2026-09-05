@@ -62,6 +62,9 @@ namespace swrenderer
 		int X1 = 0;
 		int X2 = MAXWIDTH;
 		bool MainThread = false;
+		#ifdef __3DS__
+		bool SkyBackgroundFilled = false;
+		#endif
 
 		std::unique_ptr<RenderMemory> FrameMemory;
 		std::unique_ptr<RenderOpaquePass> OpaquePass;

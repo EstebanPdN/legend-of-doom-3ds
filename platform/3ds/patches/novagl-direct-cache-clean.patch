@@ -1,0 +1,53 @@
+diff --git a/src/utils.c b/src/utils.c
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -13,6 +13,30 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <limits.h>
++
++/* CPU-written linear buffers only need their dirty cache lines cleaned before
++ * PICA/GX reads them. GSPGPU_FlushDataCache performs synchronous IPC to the
++ * GSP sysmodule, adding latency and competing with GX retirement on core 1.
++ * PR 26 of zelda-tmc-3ds measured that round trip at roughly 0.33 ms/call on
++ * Old 3DS. Use the direct clean-only SVC and retain the original service call
++ * for 3DSX launchers/exheaders that do not permit syscall 0x53. */
++static int s_nova_cache_clean_mode; /* 0 unprobed, 1 direct, 2 fallback */
++
++Result nova_clean_data_cache(const void *address, u32 size) {
++    if (!address || size == 0) return 0;
++    if (s_nova_cache_clean_mode != 2) {
++        Result result = svcStoreProcessDataCache(CUR_PROCESS_HANDLE,
++            (u32)(uintptr_t)address, size);
++        if (R_SUCCEEDED(result)) {
++            s_nova_cache_clean_mode = 1;
++            return result;
++        }
++        s_nova_cache_clean_mode = 2;
++    }
++
++    /* Parentheses intentionally bypass utils.h's function-like macro. */
++    return (GSPGPU_FlushDataCache)(address, size);
++}
+ 
+ /* Exported by the pinned Citro3D 1.7.1 library (declared in its internal.h).
+  * Unlike C3D_FrameBegin, this performs the GX-queue fence without opening a
+diff --git a/src/utils.h b/src/utils.h
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -7,6 +7,15 @@
+ #include <stdint.h>
+ #include "context.h"
+ 
++/* Route every existing CPU->PICA/GX clean through the direct process-cache
++ * SVC without duplicating changes across NovaGL's upload paths. The original
++ * GSP service remains a runtime fallback inside nova_clean_data_cache. */
++Result nova_clean_data_cache(const void *address, u32 size);
++#ifndef NOVAGL_KEEP_GSP_CACHE_FLUSH
++#define GSPGPU_FlushDataCache(address, size) \
++    nova_clean_data_cache((address), (u32)(size))
++#endif
++
+ /* Do not use isfinite() in NovaGL's hot files.  The 3DS build intentionally
+  * enables -ffast-math, whose -ffinite-math-only sub-option allows GCC to fold
+  * isfinite(x) to true even when x came from game data.  Inspecting the IEEE-754

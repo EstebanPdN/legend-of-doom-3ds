@@ -11,45 +11,60 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class HardwareStartupContractTests(unittest.TestCase):
-    def test_main_does_not_start_video_or_loading_framebuffer_early(self):
+    def test_early_animation_starts_only_after_sdl_owns_video(self):
         source = (ROOT / "src/common/platform/posix/sdl/i_main.cpp").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("SDL_InitSubSystem(SDL_INIT_VIDEO)", source)
-        self.assertNotIn("I_3DSLoadingScreenStart();", source)
+        video = source.index("SDL_InitSubSystem(SDL_INIT_VIDEO)")
+        animation = source.index("I_3DSLoadingScreenStart();")
+        self.assertLess(video, animation)
+        self.assertIn("CPU-writable RGBA8 scanout", source)
 
-    def test_loading_screen_entry_points_are_log_only_noops(self):
+    def test_loading_screen_uses_embedded_bounded_animation(self):
         source = (ROOT / "src/common/platform/3ds/diagnostics_3ds.cpp").read_text(
             encoding="utf-8"
         )
-        startup_log = source[source.index("void I_3DSStartupLog(") :]
-        startup_log = startup_log[: startup_log.index("void I_3DSLoadingScreenStart()")]
-        self.assertNotIn("DrawLoadingScreen(", startup_log)
-
         start = source[source.index("void I_3DSLoadingScreenStart()") :]
         start = start[: start.index("void I_3DSLoadingScreenFinish()")]
-        self.assertNotIn("DrawLoadingScreen(", start)
-
         finish = source[source.index("void I_3DSLoadingScreenFinish()") :]
         finish = finish[: finish.index("void I_3DSFrameTelemetryBegin()")]
-        self.assertNotIn("DrawLoadingScreen(", finish)
+        frames = (
+            ROOT / "src/common/platform/3ds/triforce_frames.inc"
+        ).read_text(encoding="utf-8")
+        self.assertIn("DrawTriforceAnimationFrame(0)", start)
+        self.assertIn("threadCreate(TriforceAnimationMain", start)
+        self.assertIn("threadJoin(LoadingAnimationThread", finish)
+        self.assertIn("TriforceAnimationFrames = 33", frames)
+        self.assertIn("TriforceAnimationWidth = 96", frames)
 
-    def test_initial_lcd_scanout_is_not_swapped_outside_citro3d(self):
+    def test_initial_lcd_scanout_is_not_mutated_during_sdl_video_setup(self):
         source = (
             ROOT / "src/common/platform/posix/sdl/sdlglvideo.cpp"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("ClearInitialScanout", source)
-        self.assertNotIn("gfxScreenSwapBuffers", source)
         self.assertNotIn("GX_MemoryFill", source)
+        constructor = source[source.index("SDLVideo::SDLVideo ()") :]
+        constructor = constructor[: constructor.index("SDLVideo::~SDLVideo ()")]
+        self.assertNotIn("gfxScreenSwapBuffers", constructor)
+
+        # The CPU frame presenter is allowed to use the libctru framebuffer
+        # already owned by SDL, but it must remain the only explicit swap site.
+        direct = source[source.index("bool I_PolyPresentDirect3DS(") :]
+        direct = direct[: direct.index("void I_PolyPresentDeinit()")]
+        outside_direct = source.replace(direct, "")
+        self.assertEqual(direct.count("gfxScreenSwapBuffers"), 1)
+        self.assertNotIn("gfxScreenSwapBuffers", outside_direct)
 
     def test_manifest_records_hardware_safe_policy(self):
         build = (ROOT / "platform/3ds/build.sh").read_text(encoding="utf-8")
         self.assertIn(
-            "early_loading_screen=disabled-hardware-vram-safety", build
+            "early_loading_screen=sdl-owned-rgba8-triforce-animation-96x96-33frames",
+            build,
         )
         self.assertIn(
-            "initial_scanout=owned-exclusively-by-citro3d", build
+            "printf owned-by-sdl-libctru || printf owned-exclusively-by-citro3d",
+            build,
         )
 
     def test_new3ds_memory_budget_is_explicit_and_bounded(self):
@@ -67,9 +82,12 @@ class HardwareStartupContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("__ctru_linear_heap_size = 32 * 1024 * 1024", memory)
+        self.assertIn("void __system_allocateHeaps(void)", memory)
+        self.assertIn("ConventionalHeapAddressCapacity == 96 * 1024 * 1024", memory)
         self.assertIn("SystemModeExt: 124MB", rsf)
+        self.assertIn("SystemMode: 64MB", rsf)
         self.assertIn("nova_init_ex(NOVA_CMD_BUF_SIZE, 2 * 1024 * 1024", video)
-        self.assertIn("static const unsigned int BUFFER_SIZE = 100000", vertices)
+        self.assertIn("static const unsigned int BUFFER_SIZE = 65536", vertices)
 
     def test_early_z_cannot_submit_an_unbound_first_frame_command_list(self):
         patch = (

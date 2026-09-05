@@ -55,6 +55,9 @@ public:
 
 	void SetVSync(bool vsync) override;
 	void Draw2D() override;
+	#ifdef __3DS__
+	void CaptureNativeMenuBase() override;
+	#endif
 
 	struct DeleteList
 	{
@@ -75,6 +78,12 @@ private:
 	std::unique_ptr<PolyDepthStencil> mDepthStencil;
 	std::unique_ptr<PolyCommandBuffer> mDrawCommands;
 	RenderMemory mFrameMemory;
+	#ifdef __3DS__
+	std::vector<uint8_t> mNativeMenuBase;
+	int mNativeMenuBasePitch = 0;
+	int mNativeMenuBaseWidth = 0;
+	int mNativeMenuBaseHeight = 0;
+	#endif
 
 	struct ScreenQuadVertex
 	{

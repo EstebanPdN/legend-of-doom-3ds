@@ -342,6 +342,13 @@ FVector4 V_CalcBlend(sector_t* viewsector, PalEntry* modulateColor)
 	if (player)
 	{
 		V_AddPlayerBlend(player, blend, 0.5, 175);
+		#ifdef __3DS__
+		// Keep a restrained, persistent death cue after the ordinary damage
+		// flash has decayed. It is intentionally translucent so the scene and
+		// the respawn prompt remain readable.
+		if (player->playerstate == PST_DEAD)
+			V_AddBlend(0.8f, 0.0f, 0.0f, 0.16f, blend);
+		#endif
 	}
 
 	if (players[consoleplayer].camera != NULL)
@@ -376,4 +383,3 @@ void V_DrawBlend(sector_t* viewsector)
 	const PalEntry bcolor(255, uint8_t(blend.X), uint8_t(blend.Y), uint8_t(blend.Z));
 	Dim(drawer, bcolor, blend.W, 0, 0, drawer->GetWidth(), drawer->GetHeight());
 }
-
