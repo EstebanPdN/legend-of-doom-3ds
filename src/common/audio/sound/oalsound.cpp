@@ -52,6 +52,7 @@ FModule OpenALModule{"OpenAL"};
 
 #include "oalload.h"
 
+#ifndef NO_OPENAL
 static constexpr ALfloat PlatformOutputGain = 1.0f;
 #ifdef __3DS__
 // The bundled mono MP3 tracks peak between roughly -16 and -12 dBFS. A 3x
@@ -60,6 +61,7 @@ static constexpr ALfloat PlatformOutputGain = 1.0f;
 static constexpr ALfloat PlatformMusicGain = 3.0f;
 #else
 static constexpr ALfloat PlatformMusicGain = 1.0f;
+#endif
 #endif
 
 #ifdef __3DS__
