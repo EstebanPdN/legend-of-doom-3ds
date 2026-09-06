@@ -49,6 +49,7 @@
 #include "rendering/r_sky.h"
 #include "s_music.h"
 #include "version.h"
+#include "types.h"
 #include "aim_crosshair.inc"
 
 EXTERN_CVAR(Int, vid_maxfps)
