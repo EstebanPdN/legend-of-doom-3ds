@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 "${ROOT}/platform/3ds/tools/validate-patches.py"
 python3 "${ROOT}/platform/3ds/tools/validate-banner.py" "${ROOT}/platform/3ds/assets/banner.cgfx"
+python3 "${ROOT}/platform/3ds/tools/validate-banner-audio.py" "${ROOT}/platform/3ds/assets/banner.wav"
 VERSION="$(tr -d '\r\n' < "${ROOT}/platform/3ds/version.txt")"
 DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
 DEVKITARM="${DEVKITARM:-${DEVKITPRO}/devkitARM}"
