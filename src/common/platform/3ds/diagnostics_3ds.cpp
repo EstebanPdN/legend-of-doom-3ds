@@ -1527,15 +1527,15 @@ void DrawBottomHeartsAndCounters(unsigned char *framebuffer, AActor *owner)
 	constexpr int HeartSideX = 239;
 	constexpr int SideWidth = 64;
 	const unsigned columns = hearts <= 6u ? std::min(3u, std::max(1u, hearts)) :
-		(hearts <= 12u ? std::min(4u, hearts) : std::min(5u, hearts));
-	const int heartWidth = hearts <= 6u ? 14 : (hearts <= 12u ? 11 : 9);
-	const int heartHeight = hearts <= 6u ? 16 : (hearts <= 12u ? 12 : 9);
+		(hearts <= 16u ? std::min(4u, hearts) : std::min(5u, hearts));
+	const int heartWidth = hearts <= 6u ? 14 : (hearts <= 16u ? 11 : 9);
+	const int heartHeight = hearts <= 6u ? 16 : (hearts <= 16u ? 12 : 9);
 	const int heartGap = hearts <= 6u ? 4 : 3;
-	const int heartRowGap = hearts <= 6u ? 4 : (hearts <= 12u ? 3 : 2);
+	const int heartRowGap = hearts <= 6u ? 4 : (hearts <= 16u ? 3 : 2);
 	const int rowWidth = static_cast<int>(columns) * heartWidth +
 		(static_cast<int>(columns) - 1) * heartGap;
 	const int heartStartX = HeartSideX + (SideWidth - rowWidth) / 2;
-	constexpr int HeartStartY = 37;
+	const int HeartStartY = hearts > 6u && hearts <= 16u ? 31 : 37;
 	for (unsigned index = 0; index < hearts; ++index)
 	{
 		const int points = std::min(8, remainingHealth);
@@ -1545,8 +1545,10 @@ void DrawBottomHeartsAndCounters(unsigned char *framebuffer, AActor *owner)
 		else if (points >= 5) heart = &HeartThreeQuarter;
 		else if (points >= 3) heart = &HeartHalf;
 		else if (points >= 1) heart = &HeartQuarter;
+		const unsigned rowCount = std::min(columns, hearts - index / columns * columns);
+		const int rowOffset = static_cast<int>(columns - rowCount) * (heartWidth + heartGap) / 2;
 		DrawEmbeddedBottomImageSized(framebuffer,
-			heartStartX + static_cast<int>(index % columns) * (heartWidth + heartGap),
+			heartStartX + rowOffset + static_cast<int>(index % columns) * (heartWidth + heartGap),
 			HeartStartY + static_cast<int>(index / columns) * (heartHeight + heartRowGap),
 			*heart, heartWidth, heartHeight);
 	}

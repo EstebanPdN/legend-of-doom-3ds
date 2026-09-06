@@ -38,6 +38,9 @@
 #include "events.h"
 #include "actorinlines.h"
 #include "g_game.h"
+#ifdef __3DS__
+#include "am_map.h"
+#endif
 
 extern gamestate_t wipegamestate;
 extern uint8_t globalfreeze, globalchangefreeze;
@@ -58,7 +61,11 @@ bool P_CheckTickerPaused ()
 	if ( !netgame
 		 && gamestate != GS_TITLELEVEL
 		 && ((menuactive != MENU_Off && menuactive != MENU_OnNoPause) ||
-			 ConsoleState == c_down || ConsoleState == c_falling)
+			 ConsoleState == c_down || ConsoleState == c_falling
+			#ifdef __3DS__
+			|| automapactive
+			#endif
+			)
 		 && !demoplayback
 		 && !demorecording
 		 && players[consoleplayer].viewz != NO_VALUE
