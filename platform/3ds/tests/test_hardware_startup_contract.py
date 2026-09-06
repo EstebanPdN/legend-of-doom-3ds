@@ -85,7 +85,7 @@ class HardwareStartupContractTests(unittest.TestCase):
         self.assertIn("void __system_allocateHeaps(void)", memory)
         self.assertIn("ConventionalHeapAddressCapacity == 96 * 1024 * 1024", memory)
         self.assertIn("SystemModeExt: 124MB", rsf)
-        self.assertIn("SystemMode: 64MB", rsf)
+        self.assertIn("SystemMode: 96MB", rsf)
         self.assertIn("nova_init_ex(NOVA_CMD_BUF_SIZE, 2 * 1024 * 1024", video)
         self.assertIn("static const unsigned int BUFFER_SIZE = 65536", vertices)
 

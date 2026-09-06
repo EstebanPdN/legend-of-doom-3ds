@@ -415,6 +415,7 @@ THREEDSX="${DIST}/${ARTIFACT_STEM}.3dsx"
   "Legend of Doom for Nintendo 3DS" \
   "Esteban PDN / DeTwelve Games" \
   "${ROOT}/platform/3ds/assets/icon-48.png" "${SMDH}"
+python3 "${ROOT}/platform/3ds/tools/cia-memory.py" smdh "${SMDH}"
 "${THREEDSXTOOL}" "${GAME_BUILD}/gzdoom.elf" "${THREEDSX}" --smdh="${SMDH}"
 
 MOD_PK3="${BUILD_ROOT}/LegendOfDoom.pk3"
@@ -675,6 +676,7 @@ if [[ "${LOD3DS_SKIP_CIA:-0}" != "1" && -n "${MAKEROM_PATH}" && -n "${BANNERTOOL
     -elf "${GAME_BUILD}/gzdoom.elf" \
     -icon "${SMDH}" \
     -banner "${GAME_BUILD}/legend-of-doom-3ds.bnr"
+  python3 "${ROOT}/platform/3ds/tools/cia-memory.py" verify "${CIA}"
 else
   printf 'CIA packaging skipped; set MAKEROM and BANNERTOOL or install them in PATH.\n'
 fi

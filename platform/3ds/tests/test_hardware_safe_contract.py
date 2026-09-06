@@ -166,11 +166,11 @@ class HardwareSafeContractTests(unittest.TestCase):
             (0x03154000, 4 * 1024 * 1024),
         )
 
-    def test_cia_uses_the_physical_console_bootable_fallback(self):
+    def test_cia_legacy_fallback_has_script_compiler_headroom(self):
         rsf = (ROOT / "platform/3ds/cia/legend-of-doom-3ds.rsf").read_text(
             encoding="utf-8"
         )
-        self.assertIn("SystemMode: 64MB", rsf)
+        self.assertIn("SystemMode: 96MB", rsf)
         self.assertIn("SystemModeExt: 124MB", rsf)
 
     def test_safe_renderer_has_a_contiguous_startup_reserve(self):
