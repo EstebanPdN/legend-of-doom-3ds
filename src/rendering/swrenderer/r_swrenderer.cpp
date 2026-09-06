@@ -32,6 +32,9 @@
 **
 */
 
+#include <cstring>
+#include <vector>
+
 #include "swrenderer/scene/r_scene.h"
 #include "swrenderer/viewport/r_viewport.h"
 #include "swrenderer/things/r_playersprite.h"
