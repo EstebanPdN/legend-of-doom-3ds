@@ -32,6 +32,8 @@
 **
 */
 
+#include "swrenderer/distance_fog_math.h"
+#include "swrenderer/r_swcolormaps.h"
 #include <stddef.h>
 #include "r_spritedrawer.h"
 #include "swrenderer/r_renderthread.h"
@@ -104,7 +106,20 @@ namespace swrenderer
 		{
 			if (calclighting)
 			{
-				SetLight(lightpos, light.GetLightLevel(), light.GetFoggy(), thread->Viewport.get());
+				float columnLight = lightpos;
+				#ifdef __3DS__
+				if (Is3DSMap01DistanceFogColormap(light.GetBaseColormap()))
+				{
+					const double distance = WallSurfaceDistance(WallC.tleft.X, WallC.tleft.Y,
+						WallC.tright.X, WallC.tright.Y, viewport->CenterX,
+						viewport->viewwindow.FocalTangent, x);
+					const fixed_t shade = LightVisibility::LightLevelToShade(light.GetLightLevel(),
+						light.GetFoggy(), viewport);
+					columnLight = Apply3DSMap01DistanceFogVisibility(light.GetBaseColormap(),
+						distance, lightpos, shade);
+				}
+				#endif
+				SetLight(columnLight, light.GetLightLevel(), light.GetFoggy(), viewport);
 			}
 
 			float w = 1.0f / wpos;

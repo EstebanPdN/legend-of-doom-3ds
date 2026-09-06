@@ -450,6 +450,7 @@ cmake -E copy "${OPENAL_SOURCE}/COPYING" "${SD_LICENSES}/OpenAL-Soft-COPYING.txt
 cmake -E copy "${OPENAL_SOURCE}/fmt-11.2.0/LICENSE" "${SD_LICENSES}/fmt-LICENSE.txt"
 cmake -E copy "${OPENAL_SOURCE}/gsl/LICENSE" "${SD_LICENSES}/Microsoft-GSL-LICENSE.txt"
 cmake -E copy "${MINIMP3_SOURCE}/LICENSE" "${SD_LICENSES}/minimp3-LICENSE.txt"
+cmake -E copy "${ROOT}/src/common/audio/sound/thirdparty/stb_vorbis.LICENSE" "${SD_LICENSES}/stb_vorbis-LICENSE.txt"
 cmake -E copy "${NOVAGL_SOURCE}/README.md" "${SD_LICENSES}/NovaGL-README-MIT-NOTICE.md"
 cmake -E copy "${GAME_BUILD}/gzdoom.pk3" "${SD_DATA}/gzdoom.pk3"
 cmake -E copy "${GAME_BUILD}/game_support.pk3" "${SD_DATA}/game_support.pk3"

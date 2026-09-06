@@ -47,6 +47,7 @@
 #include "playsim/d_player.h"
 #include "r_videoscale.h"
 #include "rendering/r_sky.h"
+#include "rendering/swrenderer/r_swcolormaps.h"
 #include "s_music.h"
 #include "version.h"
 #include "types.h"
@@ -4147,8 +4148,9 @@ void WriteDiagnosticDump(EDiagnosticDumpMode mode)
 		static_cast<unsigned long long>(
 			SkyViewpointPortalPlanesSkipped.load(std::memory_order_relaxed)));
 	std::fprintf(manifest,
-		"draw_distance.max_units=2048 fade_start_units=1536 bsp_subtrees_culled=%llu "
+		"draw_distance.max_units=%.0f fade_start_units=%.0f bsp_subtrees_culled=%llu "
 		"lines_culled=%llu sprites_culled=%llu fog_pixels=%llu\n",
+		Map01DistanceFogEnd, Map01DistanceFogStart,
 		static_cast<unsigned long long>(
 			DrawDistanceBspSubtreesCulled.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(

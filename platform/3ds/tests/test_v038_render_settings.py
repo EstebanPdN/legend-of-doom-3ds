@@ -50,7 +50,7 @@ int main() {
   float value=5.26f; change_scale(value); assert(value==5.5f);
   value=0; change_scale(value); assert(value==5);
   value=20; change_scale(value); assert(value==10);
-  value=std::numeric_limits<float>::quiet_NaN(); change_scale(value); assert(value==8);
+  value=std::numeric_limits<float>::quiet_NaN(); change_scale(value); assert(value==7);
   for (int level=0; level<=2; ++level) {
     int value=level; change_distance(value);
     assert(Map01DistanceFogEnd==1536+level*512);

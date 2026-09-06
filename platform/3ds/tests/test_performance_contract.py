@@ -106,14 +106,14 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertNotIn("I_3DSRecordDrawDistanceBspCull();", opaque)
         self.assertIn("pl->portal->mType == PORTS_SKYVIEWPOINT", portals)
         self.assertIn("I_3DSRecordSkyViewpointPortalSkip();", portals)
-        self.assertIn("Map01DistanceFogStart = 1536.0", colormaps)
-        self.assertIn("Map01DistanceFogEnd = 2048.0", colormaps)
+        self.assertIn("Map01DistanceFogStart = 1152.0", colormaps)
+        self.assertIn("Map01DistanceFogEnd = 1536.0", colormaps)
         self.assertIn(
-            "amount = amount * amount * (3.0 - 2.0 * amount)", colormaps
+            "amount * amount * (3.0 - 2.0 * amount)", (ROOT / "src/rendering/swrenderer/distance_fog_math.h").read_text()
         )
         self.assertIn('CheckForTexture("BLACK",', colormaps)
         self.assertIn("!Is3DSMap01IntentionalBlackSector(sector)", colormaps)
-        for source in (walls, flats, sprites):
+        for source in ((ROOT / "src/rendering/swrenderer/drawers/r_draw_rgba.cpp").read_text(), flats, sprites):
             self.assertIn("Apply3DSMap01DistanceFogVisibility", source)
 
     def test_native_menu_canvas_and_transparent_death_filter(self):
@@ -127,7 +127,7 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertIn("sysCallbacks.IsSpecialUI()", scale)
         self.assertIn("min_width = 400;", scale)
         self.assertIn("min_height = 240;", scale)
-        self.assertIn("CUSTOM_CVAR(Float, lod3ds_render_scale, 8", scale)
+        self.assertIn("CUSTOM_CVAR(Float, lod3ds_render_scale, 7", scale)
         self.assertIn("return lod3ds_render_scale;", scale)
         self.assertNotIn("I_3DSSetGameplayResolutionTenths", scale)
         self.assertIn("player->playerstate == PST_DEAD", blend)

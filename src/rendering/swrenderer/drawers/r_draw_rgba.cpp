@@ -32,6 +32,8 @@
 **---------------------------------------------------------------------------
 **
 */
+#include "swrenderer/distance_fog_math.h"
+#include "swrenderer/r_swcolormaps.h"
 #include <stddef.h>
 
 #include "templates.h"
@@ -892,6 +894,10 @@ namespace swrenderer
 
 		wallcolargs.SetTextureFracBits(wallargs.fracbits);
 
+		#ifdef __3DS__
+		const bool distanceFog = !wallargs.fixedlight &&
+			Is3DSMap01DistanceFogColormap(wallargs.BaseColormap());
+		#endif
 		float curlight = wallargs.lightpos;
 		float lightstep = wallargs.lightstep;
 		int shade = wallargs.Shade();
@@ -925,7 +931,18 @@ namespace swrenderer
 			int y2 = dwal[x];
 			if (y2 > y1)
 			{
-				wallcolargs.SetLight(curlight, shade);
+				float columnLight = curlight;
+				#ifdef __3DS__
+				if (distanceFog)
+				{
+					const auto &wall = wallargs.WallC;
+					const double distance = WallSurfaceDistance(wall.tleft.X, wall.tleft.Y,
+						wall.tright.X, wall.tright.Y, wallargs.CenterX, wallargs.FocalTangent, x);
+					columnLight = Apply3DSMap01DistanceFogVisibility(wallargs.BaseColormap(),
+						distance, curlight, shade);
+				}
+				#endif
+				wallcolargs.SetLight(columnLight, shade);
 				if (haslights)
 					SetLights(wallcolargs, x, y1, wallargs);
 				else

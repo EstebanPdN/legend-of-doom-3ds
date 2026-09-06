@@ -680,18 +680,6 @@ namespace swrenderer
 		{
 			double leftVisibility = thread->Light->WallVis(wallc.sz1, foggy);
 			double rightVisibility = thread->Light->WallVis(wallc.sz2, foggy);
-			#ifdef __3DS__
-			const fixed_t shade = LightVisibility::LightLevelToShade(lightlevel,
-				foggy, thread->Viewport.get());
-			const double leftDistance = sqrt(wallc.tleft.X * wallc.tleft.X +
-				wallc.tleft.Y * wallc.tleft.Y);
-			const double rightDistance = sqrt(wallc.tright.X * wallc.tright.X +
-				wallc.tright.Y * wallc.tright.Y);
-			leftVisibility = Apply3DSMap01DistanceFogVisibility(basecolormap,
-				leftDistance, leftVisibility, shade);
-			rightVisibility = Apply3DSMap01DistanceFogVisibility(basecolormap,
-				rightDistance, rightVisibility, shade);
-			#endif
 			lightleft = static_cast<float>(leftVisibility);
 			lightstep = static_cast<float>((rightVisibility - leftVisibility) /
 				(wallc.sx2 - wallc.sx1));
