@@ -34,6 +34,9 @@ bool I_PolyPresentDirect3DS(const uint8_t *pixels, int pitch, int width,
 	int height, int x, int y, int outputWidth, int outputHeight);
 #endif
 void I_PolyPresentDeinit();
+#ifdef __3DS__
+void I_PolyWaitForPresent3DS();
+#endif
 
 
 // Pause a bit.

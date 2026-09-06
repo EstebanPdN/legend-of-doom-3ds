@@ -662,7 +662,7 @@ if [[ "${LOD3DS_SKIP_CIA:-0}" != "1" && -n "${MAKEROM_PATH}" && -n "${BANNERTOOL
   cmake -E copy "${FREEDOOM_SOURCE}/freedoom2.wad" "${CIA_ROMFS_DATA}/freedoom2.wad"
   cmake -E copy "${BUILD_MANIFEST}" "${CIA_ROMFS}/BUILD-MANIFEST.txt"
   "${BANNERTOOL_PATH}" makebanner \
-    -i "${ROOT}/platform/3ds/assets/banner.png" \
+    -ci "${ROOT}/platform/3ds/assets/banner.cgfx" \
     -a "${ROOT}/platform/3ds/assets/banner.wav" \
     -o "${GAME_BUILD}/legend-of-doom-3ds.bnr"
   "${MAKEROM_PATH}" -f cia -o "${CIA}" \

@@ -466,6 +466,19 @@ namespace
 	#endif
 }
 
+#ifdef __3DS__
+#ifdef LOD3DS_HYBRID_PERFORMANCE
+extern "C" void C3Di_RenderQueueWaitDone(void);
+#endif
+
+void I_PolyWaitForPresent3DS()
+{
+#ifdef LOD3DS_HYBRID_PERFORMANCE
+	if (hybridPresenterReady) C3Di_RenderQueueWaitDone();
+#endif
+}
+#endif
+
 void I_PolyPresentInit()
 {
 	assert(Priv::softpolyEnabled);

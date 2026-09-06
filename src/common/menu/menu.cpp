@@ -692,6 +692,12 @@ bool M_Responder (event_t *ev)
 			ch = ev->data1;
 			switch (ch)
 			{
+#ifdef __3DS__
+			case KEY_PAD_START:
+				if (gamestate == GS_LEVEL && !keyup) M_ClearMenus();
+				return true;
+#endif
+
 			case KEY_JOY1:
 			case KEY_JOY3:
 			case KEY_JOY15:
