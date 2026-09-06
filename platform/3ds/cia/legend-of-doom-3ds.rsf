@@ -28,10 +28,8 @@ AccessControlInfo:
     - DirectSdmc
     - DirectSdmcWrite
   MemoryType: Application
-  # Keep a bootable legacy fallback. On New 3DS, SystemModeExt below takes
-  # precedence; the runtime heap allocator handles either resource limit and
-  # never requests more than libctru's 96 MiB virtual heap window.
-  SystemMode: 64MB
+  # Legacy launch flags must still grant enough memory to compile scripts.
+  SystemMode: 96MB
   IdealProcessor: 0
   AffinityMask: 1
   Priority: 16
@@ -46,8 +44,7 @@ AccessControlInfo:
   CanShareDeviceMemory: true
   RunnableOnSleep: false
   SpecialMemoryArrange: true
-  # This port is intentionally New 3DS-only. Prefer the full New 3DS arena;
-  # SystemMode above remains a bootable fallback if a launcher ignores this.
+  # Prefer the full New 3DS arena.
   SystemModeExt: 124MB
   CpuSpeed: 804MHz
   EnableL2Cache: true
