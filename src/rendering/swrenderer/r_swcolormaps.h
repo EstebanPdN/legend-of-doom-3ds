@@ -36,8 +36,8 @@ FDynamicColormap *GetSpecialLights (PalEntry lightcolor, PalEntry fadecolor, int
 void SetDefaultColormap (const char *name);
 
 #ifdef __3DS__
-constexpr double Map01DistanceFogStart = 1536.0;
-constexpr double Map01DistanceFogEnd = 2048.0;
+extern double Map01DistanceFogStart;
+extern double Map01DistanceFogEnd;
 constexpr uint8_t Map01DistanceFogRed = 104;
 constexpr uint8_t Map01DistanceFogGreen = 154;
 constexpr uint8_t Map01DistanceFogBlue = 178;

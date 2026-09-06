@@ -130,6 +130,15 @@ CUSTOM_CVAR(Float, r_model_distance_cull, 1024, 0/*CVAR_ARCHIVE | CVAR_GLOBALCON
 
 namespace
 {
+	double Map01CullDistanceSquared()
+	{
+		#ifdef __3DS__
+		return Map01DistanceFogEnd * Map01DistanceFogEnd;
+		#else
+		return line_distance_cull;
+		#endif
+	}
+
 	bool LineIsOutsideDistance(const DVector2 &viewpoint, const DVector2 &start,
 		const DVector2 &end, double distanceSquared)
 	{
@@ -152,7 +161,7 @@ namespace
 			sector != nullptr &&
 			(sector->GetTexture(sector_t::ceiling) == skyflatnum ||
 				sector->ValidatePortal(sector_t::ceiling) != nullptr) &&
-			line_distance_cull < 1e15 && thread->Portal->CurrentPortalUniq == 0 &&
+			thread->Portal->CurrentPortalUniq == 0 &&
 			thread->Clip3D->CurrentSkybox == 0;
 	}
 
@@ -706,7 +715,7 @@ namespace swrenderer
 			if (Map01RootDistanceCullActive(Thread) &&
 				Map01ExteriorDistanceCullCandidate(frontsector) &&
 				LineIsOutsideDistance(viewpointPos, line->v1->fPos(),
-				line->v2->fPos(), line_distance_cull))
+				line->v2->fPos(), Map01CullDistanceSquared()))
 			{
 				#ifdef __3DS__
 				I_3DSRecordDrawDistanceLineCull();
@@ -1101,7 +1110,7 @@ namespace swrenderer
 		double distanceSquared = (thing->Pos() - Thread->Viewport->viewpoint.Pos).LengthSquared();
 		if (Map01RootDistanceCullActive(Thread) &&
 			Map01ExteriorDistanceCullCandidate(thing->Sector) &&
-			distanceSquared > sprite_distance_cull)
+			distanceSquared > Map01CullDistanceSquared())
 		{
 			#ifdef __3DS__
 			I_3DSRecordDrawDistanceSpriteCull();

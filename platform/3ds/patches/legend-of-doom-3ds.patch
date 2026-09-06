@@ -183,7 +183,7 @@ diff --git a/MENUDEF b/MENUDEF
 index c7c6d33..4f27467 100644
 --- a/MENUDEF
 +++ b/MENUDEF
-@@ -1,48 +1,119 @@
+@@ -1,48 +1,113 @@
  DEFAULTLISTMENU
  {
 -	// Font "ZeldFNT", "Untranslated"
@@ -243,13 +243,6 @@ index c7c6d33..4f27467 100644
 +    TextItem "QUIT GAME", "q", "QuitMenu", 0
 +}
 +
-+OPTIONVALUE "LegendRenderScale"
-+{
-+    5, "0.5"
-+    8, "0.8"
-+    10, "1.0"
-+}
-+
 +OPTIONVALUE "LegendCameraInput"
 +{
 +    0, "C-STICK"
@@ -280,7 +273,8 @@ index c7c6d33..4f27467 100644
 +{
 +    Class "LegendSplitOptionMenu"
 +    Title "DISPLAY"
-+    Option "RENDER", "lod3ds_render_scale", "LegendRenderScale"
++    RenderScaleSlider "RENDER", "lod3ds_render_scale", 5, 10, 0.5, -1
++    RenderDistanceSlider "DISTANCE", "lod3ds_render_distance", 0, 2, 1, -1
 +    Option "TOP HUD", "lod3ds_top_hud", "OnOff"
 +    Option "AIM CROSS", "crosshairon", "OnOff"
 +    Option "MAP COLLISIONS", "lod3ds_map_collisions", "OnOff"
@@ -438,7 +432,7 @@ new file mode 100644
 index 0000000..dbb6b87
 --- /dev/null
 +++ b/actors/LegendPauseMenu.zs
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,73 @@
 +class ListMenuItemResume : ListMenuItemTextItem
 +{
 +    override bool Activate()
@@ -460,14 +454,36 @@ index 0000000..dbb6b87
 +    override int GetSplitValueRight() { return screen.GetWidth() * 76 / 100; }
 +}
 +
++class OptionMenuItemRenderScaleSlider : OptionMenuItemSlider
++{
++    override int Draw(OptionMenuDescriptor desc, int y, int indent, bool selected)
++    {
++        mLabel = String.format("RENDER %.2f", GetSliderValue() / 10.0);
++        return Super.Draw(desc, y, indent, selected);
++    }
++}
++
++class OptionMenuItemRenderDistanceSlider : OptionMenuItemSlider
++{
++    override void SetSliderValue(double val)
++    {
++        Super.SetSliderValue(int(val + 0.5));
++    }
++
++    override int Draw(OptionMenuDescriptor desc, int y, int indent, bool selected)
++    {
++        static const String levels[] = { "LOW", "NORMAL", "HIGH" };
++        mLabel = "DIST. " .. levels[clamp(int(GetSliderValue()), 0, 2)];
++        return Super.Draw(desc, y, indent, selected);
++    }
++}
++
 +class LegendControlsReferenceMenu : LegendSplitOptionMenu
 +{
 +    override void Drawer()
 +    {
-+        // Measure the normal caption position without drawing CONTROLS, then
-+        // lift the INPUT/ACTION table ten pixels so SELECT remains visible.
-+        int y = max(0, DrawCaption(mDesc.mTitle, 0, false) - 10 * CleanYfac_1);
-+        int rowHeight = OptionMenuSettings.mLinespacing * CleanYfac_1;
++        int y = 8 * CleanYfac_1;
++        int rowHeight = 13 * CleanYfac_1;
 +        int inputRight = screen.GetWidth() / 2 - 8 * CleanXfac_1;
 +        int actionLeft = screen.GetWidth() / 2 + 8 * CleanXfac_1;
 +        static const String inputs[] = {
@@ -481,10 +497,6 @@ index 0000000..dbb6b87
 +            "CHANGE ITEM", "USE ITEM", "MAP", "PAUSE", "MENU / OVERLAY"
 +        };
 +
-+        int inputHeaderX = inputRight - Menu.OptionWidth("INPUT") * CleanXfac_1;
-+        Menu.DrawOptionText(inputHeaderX, y, OptionMenuSettings.mFontColorHeader, "INPUT");
-+        Menu.DrawOptionText(actionLeft, y, OptionMenuSettings.mFontColorHeader, "ACTION");
-+        y += rowHeight;
 +        for (int row = 0; row < 13; row++)
 +        {
 +            int inputX = inputRight - Menu.OptionWidth(inputs[row]) * CleanXfac_1;

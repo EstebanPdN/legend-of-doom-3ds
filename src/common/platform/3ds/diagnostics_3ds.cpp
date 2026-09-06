@@ -54,7 +54,8 @@
 
 EXTERN_CVAR(Int, vid_maxfps)
 EXTERN_CVAR(Bool, vid_fps)
-EXTERN_CVAR(Int, lod3ds_render_scale)
+EXTERN_CVAR(Float, lod3ds_render_scale)
+EXTERN_CVAR(Int, lod3ds_render_distance)
 EXTERN_CVAR(Bool, lod3ds_top_hud)
 EXTERN_CVAR(Bool, crosshairon)
 
@@ -564,7 +565,7 @@ FOverlayColor DimMenuColor(FOverlayColor color, unsigned brightness)
 	};
 }
 
-void DrawMenuBottomScreen(unsigned char *framebuffer, unsigned brightness = 255u)
+void DecodeMenuBottomScreen(unsigned char *framebuffer, unsigned brightness)
 {
 	size_t cursor = 0;
 	unsigned pixel = 0;
@@ -627,6 +628,19 @@ struct FEmbeddedBottomImage
 
 #define BOTTOM_IMAGE(name) \
 	FEmbeddedBottomImage{ name##Width, name##Height, name##PixelCount, name##Data, sizeof(name##Data) }
+
+void DrawMenuBottomScreen(unsigned char *framebuffer, unsigned brightness = 255u)
+{
+	static std::vector<unsigned char> cached;
+	static unsigned cachedBrightness = ~0u;
+	if (cached.empty() || cachedBrightness != brightness)
+	{
+		cached.resize(BottomScreenWidth * BottomScreenHeight * 4u);
+		DecodeMenuBottomScreen(cached.data(), brightness);
+		cachedBrightness = brightness;
+	}
+	std::memcpy(framebuffer, cached.data(), cached.size());
+}
 
 void DrawEmbeddedBottomImage(unsigned char *framebuffer, int x, int y,
 	const FEmbeddedBottomImage &image)
@@ -2121,11 +2135,12 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 	// screen. This keeps SmallFont, sliders, Link and spacing consistent instead
 	// of mixing them with the former bespoke 5x7 menu renderer.
 
+	const bool optionMenu = CurrentMenu != nullptr && CurrentMenu->IsKindOf("OptionMenu");
 	auto isMenuPixel = [&](int sourceX, int sourceY)
 	{
 		const unsigned char *menu = menuPixels + sourceY * pitchBytes + sourceX * 4;
 		const unsigned char *base = basePixels + sourceY * pitchBytes + sourceX * 4;
-		if (CurrentMenu != nullptr && CurrentMenu->IsKindOf("OptionMenu"))
+		if (optionMenu)
 			return menu[0] != 0 || menu[1] != 0 || menu[2] != 0;
 		const int difference =
 			std::abs(static_cast<int>(menu[0]) - NativeMenuDimChannel(base[0], brightness)) +
@@ -2151,9 +2166,10 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 	}
 	if (maximumX < minimumX || maximumY < minimumY) return;
 
-	const bool optionMenu = CurrentMenu != nullptr && CurrentMenu->IsKindOf("OptionMenu");
 	bool stableListMenu = false;
 	bool splitOptionMenu = false;
+	bool controlsMenu = false;
+	bool optionsRoot = false;
 	if (CurrentMenu != nullptr && CurrentMenu->IsKindOf("ListMenu"))
 	{
 		DListMenuDescriptor *descriptor =
@@ -2172,6 +2188,8 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 		if (descriptor != nullptr)
 		{
 			const FName name = descriptor->mMenuName;
+			controlsMenu = name == FName("LegendControlsMenu");
+			optionsRoot = name == FName("LegendOptionsMenu");
 			splitOptionMenu = name == FName("LegendControllerOptions") ||
 				name == FName("LegendSoundOptions") ||
 				name == FName("LegendDisplayOptions") ||
@@ -2221,20 +2239,20 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 	}
 	const int sourceWidth = maximumX - minimumX + 1;
 	const int sourceHeight = layoutMaximumY - layoutMinimumY + 1;
-	const float maximumTargetHeight = optionMenu ? 202.0f : 224.0f;
-	const float scale = std::min({ NativeMenuRequestedScale,
+	const float maximumTargetHeight = controlsMenu ? 216.0f : (optionMenu ? 202.0f : 224.0f);
+	const float scale = std::min({ controlsMenu ? 1.6f : NativeMenuRequestedScale,
 		304.0f / sourceWidth, maximumTargetHeight / sourceHeight });
 	const float targetWidth = sourceWidth * scale;
 	const float targetHeight = sourceHeight * scale;
 	const float horizontalOffset = stableListMenu ?
 		((minimumX + maximumX - layoutMinimumX - layoutMaximumX) * scale * 0.5f) : 0.0f;
 	const float targetLeft = (BottomScreenWidth - targetWidth) * 0.5f +
-		horizontalOffset;
-	const float targetTop = optionMenu ? 28.0f :
+		horizontalOffset - (optionsRoot ? 8.0f : 0.0f);
+	const float targetTop = controlsMenu ? (240.0f - targetHeight) * 0.5f : optionMenu ? 28.0f :
 		(BottomScreenHeight - targetHeight) * 0.5f;
 
 	int titleBottom = minimumY - 1;
-	if (optionMenu)
+	if (optionMenu && !controlsMenu)
 	{
 		bool titleStarted = false;
 		int emptyRows = 0;
@@ -2273,7 +2291,7 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 			const int sourceX = std::clamp(minimumX + static_cast<int>(
 				(targetX - targetLeft) / scale), minimumX, maximumX);
 			if ((optionMenu && sourceY <= titleBottom) ||
-				(!optionMenu && !isMenuPixel(sourceX, sourceY)))
+				!isMenuPixel(sourceX, sourceY))
 				continue;
 			const unsigned char *menu = menuPixels + sourceY * pitchBytes + sourceX * 4;
 			OverlayPutPixel(framebuffer, targetX, targetY,
@@ -2709,7 +2727,7 @@ EBottomPresentation DesiredBottomPresentation()
 	if (DeveloperOverlayVisible && gamestate == GS_LEVEL)
 		return EBottomPresentation::DeveloperOverlay;
 	if (gamestate == GS_LEVEL) return EBottomPresentation::Gameplay;
-	if (gamestate != GS_DEMOSCREEN || MenuStoryPage)
+	if (gamestate != GS_DEMOSCREEN)
 	{
 		return EBottomPresentation::Blank;
 	}
@@ -2766,14 +2784,18 @@ void DrawBottomOverlay(bool force)
 		{
 			// ZMAPINFO dims the upper menu background by 72%. Match it on the
 			// lower LCD so opening Start/New Game feels like one two-screen UI.
-			DrawMenuBottomScreen(framebuffer,
-				target == EBottomPresentation::MenuDimmed ? 71u : 255u);
-			if (target == EBottomPresentation::Menu && (now / 600u) % 2u == 0u)
+			if (MenuStoryPage)
+				OverlayRect(framebuffer, 0, 0, BottomScreenWidth, BottomScreenHeight, OverlayInk);
+			else
+				DrawMenuBottomScreen(framebuffer,
+					target == EBottomPresentation::MenuDimmed ? 71u : 255u);
+			if (target == EBottomPresentation::Menu && NewSmallFont != nullptr && (now / 600u) % 2u == 0u)
 			{
 				constexpr const char *Prompt = "PRESS START TO BEGIN";
 				constexpr float Scale = 1.28f;
 				const int x = (320 - std::lround(NativeFontTextWidth(NewSmallFont, Prompt) * Scale)) / 2;
-				DrawBottomScaledFontText(framebuffer, NewSmallFont, x, 180,
+				const int y = (240 - std::lround(NewSmallFont->GetHeight() * Scale)) / 2;
+				DrawBottomScaledFontText(framebuffer, NewSmallFont, x, y,
 					Prompt, Scale, OverlayIvory);
 			}
 		}
@@ -3505,7 +3527,8 @@ bool IsAllowedConfigKey(const char *key)
 		"vid_", "gl_", "r_", "snd_", "joy_", "mouse_", "m_"
 	};
 	static const char *const exact[] = {
-		"use_joystick", "cl_capfps", "screenblocks", "fullscreen", "win_w", "win_h"
+		"use_joystick", "cl_capfps", "screenblocks", "fullscreen", "win_w", "win_h",
+		"lod3ds_render_scale", "lod3ds_render_distance"
 	};
 	for (const char *prefix : prefixes)
 	{
@@ -4134,9 +4157,12 @@ void WriteDiagnosticDump(EDiagnosticDumpMode mode)
 			DrawDistanceSpritesCulled.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(
 			DrawDistanceFogPixels.load(std::memory_order_relaxed)));
+	std::fprintf(manifest, "runtime.frame_ms=%.3f fps=%llu render_distance=%d\n",
+		LastFrameMilliseconds, static_cast<unsigned long long>(LastCount),
+		static_cast<int>(lod3ds_render_distance));
 	#if defined(LOD3DS_HYBRID_PERFORMANCE)
 	std::fprintf(manifest, "runtime.resolution_percent=%d width=%d height=%d bilinear=yes\n",
-		I_3DSGameplayResolutionTenths() * 10, I_3DSGameplayResolutionWidth(),
+		static_cast<int>(I_3DSGameplayResolutionTenths() * 10), I_3DSGameplayResolutionWidth(),
 		I_3DSGameplayResolutionHeight());
 	#else
 	std::fprintf(manifest, "runtime.resolution_percent=100 width=320 height=200 bilinear=yes\n");
@@ -4859,8 +4885,8 @@ bool I_3DSDiagnosticTouch(float x, float y)
 		return true;
 	}
 
-	if (gamestate == GS_DEMOSCREEN && menuactive == MENU_Off && !MenuStoryPage &&
-		x >= 0.06f && x <= 0.94f && y >= 0.68f && y <= 0.9f)
+	if (gamestate == GS_DEMOSCREEN && menuactive == MENU_Off &&
+		x >= 0.06f && x <= 0.94f && y >= 0.40f && y <= 0.60f)
 	{
 		M_StartControlPanel(true);
 		M_SetMenu(NAME_Mainmenu, -1);

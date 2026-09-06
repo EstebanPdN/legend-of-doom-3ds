@@ -31,6 +31,8 @@
 */
 
 #include <math.h>
+#include <cmath>
+#include <algorithm>
 #include "c_dispatch.h"
 #include "c_cvars.h"
 #include "v_video.h"
@@ -45,7 +47,7 @@
 #define NUMSCALEMODES countof(vScaleTable)
 extern bool setsizeneeded;
 #if defined(__3DS__)
-EXTERN_CVAR(Int, lod3ds_render_scale)
+EXTERN_CVAR(Float, lod3ds_render_scale)
 #endif
 
 #if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
@@ -114,11 +116,11 @@ namespace
 	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
 	inline uint32_t platform_custom_width(uint32_t, uint32_t)
 	{
-		return 400u * static_cast<uint32_t>(lod3ds_render_scale) / 10u;
+		return static_cast<uint32_t>(400 * lod3ds_render_scale / 10);
 	}
 	inline uint32_t platform_custom_height(uint32_t, uint32_t)
 	{
-		return 240u * static_cast<uint32_t>(lod3ds_render_scale) / 10u;
+		return static_cast<uint32_t>(240 * lod3ds_render_scale / 10);
 	}
 	#else
 	inline uint32_t platform_custom_width(uint32_t, uint32_t)
@@ -210,9 +212,10 @@ CUSTOM_CVAR(Int, vid_scalemode, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 }
 
 #if defined(__3DS__)
-CUSTOM_CVAR(Int, lod3ds_render_scale, 8, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Float, lod3ds_render_scale, 8, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	if (self != 5 && self != 8 && self != 10) self = 8;
+	if (!std::isfinite(static_cast<float>(self))) self = 8;
+	self = std::round(std::clamp(static_cast<float>(self), 5.0f, 10.0f) * 2.0f) / 2.0f;
 	// The menu value must drive the engine's real custom render canvas, not
 	// merely the diagnostic label. Menus still switch to native 400x240 through
 	// refresh_minimums(), then gameplay returns to the selected resolution.
@@ -236,7 +239,7 @@ namespace
 	constexpr int GameplayDisplayHeight = 240;
 }
 
-int I_3DSGameplayResolutionTenths()
+float I_3DSGameplayResolutionTenths()
 {
 	return lod3ds_render_scale;
 }

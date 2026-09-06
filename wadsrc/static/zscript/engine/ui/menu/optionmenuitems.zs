@@ -809,6 +809,8 @@ class OptionMenuSliderBase : OptionMenuItem
 		let current = OptionMenu(Menu.GetCurrentMenu());
 		mDrawX = current != null && current.UseSplitOptionLayout()
 			? current.GetSplitValueLeft() : indent + CursorSpace();
+		if (current != null && current.UseCompactSplitSliders() && mAction == 'lod3ds_cstick_sensitivity')
+			mDrawX += 3 * CleanXfac_1;
 		DrawSlider (mDrawX, y, mMin, mMax, GetSliderValue(), mShowValue, indent, IsGrayed());
 		return indent;
 	}

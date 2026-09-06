@@ -486,7 +486,7 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
   printf 'compiler=%s\n' "$("${DEVKITARM}/bin/arm-none-eabi-g++" --version | head -n 1)"
   printf 'cmake=%s\n' "$(cmake --version | head -n 1)"
 	printf 'runtime_renderer=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf softpoly-core0-core2-pica200-presenter || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf softpoly-sdl-linear-framebuffer || printf novagl-citro3d-pica200))"
-	printf 'internal_resolution=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf 200x120-320x192-400x240-touch-selectable-gameplay-plus-400x240-native-menus || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf 320x200-game-400x240-special-ui || printf 400x240))"
+	printf 'internal_resolution=%s\n' "$([[ "${HYBRID_PERFORMANCE}" == "ON" ]] && printf 200x120-to-400x240-in-5-percent-steps-plus-400x240-native-menus || ([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf 320x200-game-400x240-special-ui || printf 400x240))"
 	printf 'lcd_resolution=400x240\n'
 	printf '3dsx_conventional_heap_bytes=%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf %u "$((92 * 1024 * 1024))" || printf %u "$((64 * 1024 * 1024))")"
 	printf '3dsx_linear_heap_bytes=%u\n' "$([[ "${SAFE_SOFTWARE}" == "ON" ]] && printf %u "$((4 * 1024 * 1024))" || printf %u "$((32 * 1024 * 1024))")"
@@ -599,7 +599,7 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'menu_story=custom-native-400x240-credit-page-byte-exact-source\n'
 	printf 'menu_story_source_sha256=%s\n' "$(sha256_file "${ROOT}/platform/3ds/assets/menu-story.png")"
 	printf 'menu_bottom=custom-native-320x240-before-level\n'
-	printf 'menu_bottom_story=black-on-credit-page\n'
+	printf 'menu_bottom_story=black-with-centered-blinking-press-start\n'
 	printf 'menu_bottom_dim=match-title-menu-72-percent-black\n'
 	printf 'menu_story_filter=source-native-400x240-no-resample\n'
 	printf 'pause_menu=stable-uppercase-engine-actions-shifted-right-10px-with-selector-lowered-5px-and-touch\n'
@@ -611,7 +611,7 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'aim_crosshair=final-canvas-provided-png-70-percent-size-plus-6px-lower-opt-in-all-render-scales\n'
 	printf 'upper_automap=full-canvas-64-world-units-per-pixel-textured-overview-distinct-from-bottom-map\n'
 	printf 'option_alignment=split-labels-left-values-right-plus-compact-sliders-without-numeric-readouts\n'
-	printf 'controls_reference=no-caption-two-column-input-action-newsmallfont-layout-raised-10px\n'
+	printf 'controls_reference=no-caption-no-headers-two-columns-fit-with-8px-horizontal-and-12px-vertical-margins\n'
 	printf 'save_load=top-only-title-readable-pixel-text-independent-black-bottom-white-section-frame-blue-row-selection-touch-list-top-preview-raised-8px-transparent-matched-width-info\n'
 	printf 'save_keyboard=native-3ds-qwerty-confirm-to-save-with-preserved-double-buffered-top-image\n'
 	printf 'hud_messages=acs-dialogue-preserved-when-top-hud-disabled-plus-black-shadowed-pickup-notices\n'
@@ -622,8 +622,8 @@ ARM_SIZE="${DEVKITARM}/bin/arm-none-eabi-size"
 	printf 'dump_progress=quick-full-clean-fullscreen\n'
 	printf 'dump_screen_capture=one-second-delay-ram-snapshot-before-immediate-progress-ui\n'
 	printf 'softpoly_sky=map01-skyww-cloud-texture-no-remote-skyviewpoint-geometry\n'
-	printf 'map01_draw_distance=2048-units-line-sprite-cull-with-full-bsp-plane-traversal\n'
-	printf 'map01_distance_fog=explicit-smoothstep-1536-to-2048-units-black-cave-sectors-excluded\n'
+	printf 'map01_draw_distance=1536-2048-2560-units-low-normal-high-line-sprite-cull-with-full-bsp-plane-traversal\n'
+	printf 'map01_distance_fog=explicit-smoothstep-75-to-100-percent-of-selected-distance-black-cave-sectors-excluded\n'
 	printf 'death_filter=transparent-dark-red-alpha-0.16\n'
 	printf 'ndsp_lifetime=backend-owned-worker-joined-before-device-destruction\n'
 	printf 'software_frame_clear=full-bgra-canvas-four-bytes-per-pixel-each-frame\n'

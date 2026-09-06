@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import subprocess
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ SPEC.loader.exec_module(MODULE)
 class PatchIntegrityTests(unittest.TestCase):
     def test_rejects_v031_truncated_menu(self):
         patch = (ROOT / 'platform/3ds/patches/legend-of-doom-3ds.patch').read_text()
-        broken = patch.replace('@@ -0,0 +1,55 @@', '@@ -0,0 +1,54 @@')
+        broken = re.sub(r'@@ -0,0 \+1,(\d+) @@', lambda m: '@@ -0,0 +1,%d @@' % (int(m[1]) - 1), patch, count=1)
         self.assertNotEqual(patch, broken)
         self.assertTrue(MODULE.validate(broken))
         self.assertEqual(MODULE.validate(patch), [])

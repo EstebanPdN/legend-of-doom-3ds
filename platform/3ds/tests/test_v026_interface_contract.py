@@ -37,8 +37,8 @@ class V026InterfaceContractTests(unittest.TestCase):
 
     def test_render_selector_drives_the_real_canvas(self):
         scale = (ROOT / "src/common/rendering/r_videoscale.cpp").read_text()
-        self.assertIn("return 400u * static_cast<uint32_t>(lod3ds_render_scale) / 10u", scale)
-        self.assertIn("return 240u * static_cast<uint32_t>(lod3ds_render_scale) / 10u", scale)
+        self.assertIn("return static_cast<uint32_t>(400 * lod3ds_render_scale / 10)", scale)
+        self.assertIn("return static_cast<uint32_t>(240 * lod3ds_render_scale / 10)", scale)
         self.assertIn("vid_scale_customwidth = 400 * self / 10", scale)
         self.assertIn("vid_scale_customheight = 240 * self / 10", scale)
 
@@ -91,9 +91,9 @@ class V026InterfaceContractTests(unittest.TestCase):
         self.assertIn("current.GetSplitLabelLeft()", option_items)
         self.assertIn("current.GetSplitValueRight() - width", option_items)
         self.assertIn("class LegendControlsReferenceMenu", patch)
-        self.assertIn("DrawCaption(mDesc.mTitle, 0, false) - 10", patch)
-        self.assertIn('"INPUT"', patch)
-        self.assertIn('"ACTION"', patch)
+        self.assertIn("int rowHeight = 13 * CleanYfac_1", patch)
+        self.assertNotIn('Menu.OptionWidth("INPUT")', patch)
+        self.assertNotIn('mFontColorHeader, "ACTION"', patch)
         self.assertIn('Font "NewSmallFont", "White"', patch)
         self.assertIn("BottomSelectItem(row * 4u + column)", diagnostics)
 

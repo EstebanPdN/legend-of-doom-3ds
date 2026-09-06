@@ -106,8 +106,8 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertNotIn("I_3DSRecordDrawDistanceBspCull();", opaque)
         self.assertIn("pl->portal->mType == PORTS_SKYVIEWPOINT", portals)
         self.assertIn("I_3DSRecordSkyViewpointPortalSkip();", portals)
-        self.assertIn("Map01DistanceFogStart = 1536.0", colormap_header)
-        self.assertIn("Map01DistanceFogEnd = 2048.0", colormap_header)
+        self.assertIn("Map01DistanceFogStart = 1536.0", colormaps)
+        self.assertIn("Map01DistanceFogEnd = 2048.0", colormaps)
         self.assertIn(
             "amount = amount * amount * (3.0 - 2.0 * amount)", colormaps
         )
@@ -127,7 +127,7 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertIn("sysCallbacks.IsSpecialUI()", scale)
         self.assertIn("min_width = 400;", scale)
         self.assertIn("min_height = 240;", scale)
-        self.assertIn("CUSTOM_CVAR(Int, lod3ds_render_scale, 8", scale)
+        self.assertIn("CUSTOM_CVAR(Float, lod3ds_render_scale, 8", scale)
         self.assertIn("return lod3ds_render_scale;", scale)
         self.assertNotIn("I_3DSSetGameplayResolutionTenths", scale)
         self.assertIn("player->playerstate == PST_DEAD", blend)

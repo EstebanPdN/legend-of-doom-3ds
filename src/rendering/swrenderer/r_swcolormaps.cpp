@@ -67,6 +67,15 @@ FSWColormap realfbcolormaps; //[SP] For fullbright use
 TArray<FSWColormap> SpecialSWColormaps;
 
 #ifdef __3DS__
+double Map01DistanceFogStart = 1536.0;
+double Map01DistanceFogEnd = 2048.0;
+CUSTOM_CVAR(Int, lod3ds_render_distance, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	self = clamp(static_cast<int>(self), 0, 2);
+	Map01DistanceFogEnd = 1536.0 + self * 512.0;
+	Map01DistanceFogStart = Map01DistanceFogEnd * 0.75;
+}
+
 static bool Is3DSMap01IntentionalBlackSector(const sector_t *sector)
 {
 	// BLACK-floor caves remain opaque even with sky ceilings.
