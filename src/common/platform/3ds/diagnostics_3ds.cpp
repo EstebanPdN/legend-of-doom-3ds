@@ -52,6 +52,10 @@
 #include "version.h"
 #include "types.h"
 #include "aim_crosshair.inc"
+#ifdef LOD3DS_HYBRID_PERFORMANCE
+#include "stereo_3ds.h"
+EXTERN_CVAR(Bool, lod3ds_stereo)
+#endif
 
 EXTERN_CVAR(Int, vid_maxfps)
 EXTERN_CVAR(Bool, vid_fps)
@@ -638,6 +642,14 @@ void DrawMenuBottomScreen(unsigned char *framebuffer, unsigned brightness = 255u
 	{
 		cached.resize(BottomScreenWidth * BottomScreenHeight * 4u);
 		DecodeMenuBottomScreen(cached.data(), brightness);
+		const auto original = cached;
+		for (int x=0;x<320;++x) for (int y=0;y<240;++y)
+		{
+			const int sx = x < 160 ? static_cast<int>((x+0.5-160.0)/1.05+160.0) : 319-static_cast<int>((319-x+0.5-160.0)/1.05+160.0);
+			const int sy = y < 120 ? static_cast<int>((y+0.5-120.0)/1.05+120.0) : 239-static_cast<int>((239-y+0.5-120.0)/1.05+120.0);
+			std::memcpy(cached.data()+4*(x*240+239-y),
+				original.data()+4*(sx*240+239-sy),4);
+		}
 		cachedBrightness = brightness;
 	}
 	std::memcpy(framebuffer, cached.data(), cached.size());
@@ -961,11 +973,16 @@ void DrawBottomChoiceDialog(unsigned char *framebuffer, const char *heading,
 		(320 - std::lround(NativeFontTextWidth(font, title.GetChars()) * Scale)) / 2,
 		104, title.GetChars(), Scale, OverlayIvory);
 	const FOverlayColor selectedColor{255, 160, 160};
-	DrawBottomScaledFontText(framebuffer, font, 82, 126, left, Scale,
+	const int leftWidth = std::lround(NativeFontTextWidth(font,left)*Scale);
+	const int rightWidth = std::lround(NativeFontTextWidth(font,right)*Scale);
+	constexpr int ChoiceGap = 48;
+	const int leftX = (320-leftWidth-ChoiceGap-rightWidth)/2;
+	const int rightX = leftX+leftWidth+ChoiceGap;
+	DrawBottomScaledFontText(framebuffer, font, leftX, 126, left, Scale,
 		selected == 0 ? selectedColor : OverlayIvory);
-	DrawBottomScaledFontText(framebuffer, font, 210, 126, right, Scale,
+	DrawBottomScaledFontText(framebuffer, font, rightX, 126, right, Scale,
 		selected == 1 ? selectedColor : OverlayIvory);
-	const int arrowX = selected == 0 ? 69 : 197;
+	const int arrowX = (selected == 0 ? leftX : rightX)-13;
 	for (int column = 0; column < 7; ++column)
 		OverlayRect(framebuffer, arrowX + column, 127 + column / 2,
 			1, 7 - (column / 2) * 2, selectedColor);
@@ -3288,11 +3305,11 @@ bool WriteFramebufferBmp(const char *path, const unsigned char *framebuffer, uin
 	return FinishAtomicFile(file, partialPath, path);
 }
 
-bool CaptureScreenSnapshot(gfxScreen_t screen, FScreenSnapshot &snapshot)
+bool CaptureScreenSnapshot(gfxScreen_t screen, FScreenSnapshot &snapshot, gfx3dSide_t eye = GFX_LEFT)
 {
 	uint16_t width = 0;
 	uint16_t height = 0;
-	const unsigned char *framebuffer = gfxGetFramebuffer(screen, GFX_LEFT, &width, &height);
+	const unsigned char *framebuffer = gfxGetFramebuffer(screen, eye, &width, &height);
 	const GSPGPU_FramebufferFormat format = gfxGetScreenFormat(screen);
 	const unsigned bytesPerPixel = gspGetBytesPerPixel(format);
 	if (framebuffer == nullptr || width == 0 || height == 0 || bytesPerPixel == 0)
@@ -3303,6 +3320,8 @@ bool CaptureScreenSnapshot(gfxScreen_t screen, FScreenSnapshot &snapshot)
 	const size_t size = static_cast<size_t>(width) * height * bytesPerPixel;
 	unsigned char *pixels = static_cast<unsigned char *>(linearAlloc(size));
 	if (pixels == nullptr) return false;
+	if (screen == GFX_TOP && gfxIs3D())
+		GSPGPU_InvalidateDataCache(framebuffer, size);
 	std::memcpy(pixels, framebuffer, size);
 
 	snapshot.Width = width;
@@ -3531,7 +3550,7 @@ bool IsAllowedConfigKey(const char *key)
 	};
 	static const char *const exact[] = {
 		"use_joystick", "cl_capfps", "screenblocks", "fullscreen", "win_w", "win_h",
-		"lod3ds_render_scale", "lod3ds_render_distance"
+		"lod3ds_render_scale", "lod3ds_render_distance", "lod3ds_stereo"
 	};
 	for (const char *prefix : prefixes)
 	{
@@ -4043,10 +4062,14 @@ void WriteDiagnosticDump(EDiagnosticDumpMode mode)
 	// Freeze both LCDs in RAM before replacing the ordinary status panel. A
 	// framebuffer copy is sub-millisecond work and uses about 691 KiB total;
 	// all slow FAT writes and BMP conversion happen after progress is visible.
+	I_PolyWaitForPresent3DS();
+	const bool captureStereo = gfxIs3D();
+	FScreenSnapshot rightSnapshot;
 	FScreenSnapshot topSnapshot;
 	FScreenSnapshot bottomSnapshot;
 	CaptureScreenSnapshot(GFX_TOP, topSnapshot);
 	CaptureScreenSnapshot(GFX_BOTTOM, bottomSnapshot);
+	if (captureStereo) CaptureScreenSnapshot(GFX_TOP, rightSnapshot, GFX_RIGHT);
 	DiagnosticProgressActive = true;
 	SetOverlayNotification(full ? "SAVING FULL DUMP" : "SAVING QUICK DUMP", 60000);
 	if (!full) DiagnosticProgressValue = 5;
@@ -4191,6 +4214,11 @@ void WriteDiagnosticDump(EDiagnosticDumpMode mode)
 		envIsHomebrew() ? "3dsx" : "cia", static_cast<unsigned long>(envGetHeapSize()),
 		static_cast<unsigned long>(envGetLinearHeapSize()),
 		static_cast<unsigned long>(HeldButtons), static_cast<double>(osGet3DSliderState()));
+	#ifdef LOD3DS_HYBRID_PERFORMANCE
+	std::fprintf(manifest, "stereo.enabled=%d lcd_3d=%d strength=%.4f eye_pair=%d convergence=%.5f separation=%.5f\n",
+		int(lod3ds_stereo), int(captureStereo), double(lod3ds::Stereo.strength), int(lod3ds::Stereo.ready),
+		lod3ds::Stereo.convergence, lod3ds::Stereo.separation);
+	#endif
 	std::fprintf(manifest, "application_memory_free=%lu application_memory_size=%lu\n",
 		static_cast<unsigned long>(osGetMemRegionFree(MEMREGION_APPLICATION)),
 		static_cast<unsigned long>(osGetMemRegionSize(MEMREGION_APPLICATION)));
@@ -4211,10 +4239,12 @@ void WriteDiagnosticDump(EDiagnosticDumpMode mode)
 
 	// Persist the immutable RAM copies. The resulting images still show the
 	// exact pre-progress frame even though the user can already see this work.
-	const bool topOk = WriteScreenCapture(manifest, directory, topSnapshot, "top");
+	const bool rightOk = !captureStereo || WriteScreenCapture(manifest, directory, rightSnapshot, "top-right");
+	const bool topOk = WriteScreenCapture(manifest, directory, topSnapshot, "top") && rightOk;
 	const bool bottomOk = WriteScreenCapture(manifest, directory, bottomSnapshot, "bottom");
 	topSnapshot.Release();
 	bottomSnapshot.Release();
+	rightSnapshot.Release();
 	if (!full) DiagnosticProgressValue = 30;
 	std::snprintf(DiagnosticProgressStage, sizeof(DiagnosticProgressStage), "SAVING GAME STATE");
 	DrawBottomOverlay(true);
