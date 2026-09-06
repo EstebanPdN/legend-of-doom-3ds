@@ -214,8 +214,13 @@ CUSTOM_CVAR(Int, vid_scalemode, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 #if defined(__3DS__)
 CUSTOM_CVAR(Float, lod3ds_render_scale, 8, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	if (!std::isfinite(static_cast<float>(self))) self = 8;
-	self = std::round(std::clamp(static_cast<float>(self), 5.0f, 10.0f) * 2.0f) / 2.0f;
+	const float normalized = std::isfinite(static_cast<float>(self)) ?
+		std::round(std::clamp(static_cast<float>(self), 5.0f, 10.0f) * 2.0f) / 2.0f : 8.0f;
+	if (self != normalized)
+	{
+		self = normalized;
+		return;
+	}
 	// The menu value must drive the engine's real custom render canvas, not
 	// merely the diagnostic label. Menus still switch to native 400x240 through
 	// refresh_minimums(), then gameplay returns to the selected resolution.

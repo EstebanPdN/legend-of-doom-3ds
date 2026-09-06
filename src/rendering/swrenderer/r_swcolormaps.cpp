@@ -71,7 +71,12 @@ double Map01DistanceFogStart = 1536.0;
 double Map01DistanceFogEnd = 2048.0;
 CUSTOM_CVAR(Int, lod3ds_render_distance, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	self = clamp(static_cast<int>(self), 0, 2);
+	const int normalized = clamp(static_cast<int>(self), 0, 2);
+	if (self != normalized)
+	{
+		self = normalized;
+		return;
+	}
 	Map01DistanceFogEnd = 1536.0 + self * 512.0;
 	Map01DistanceFogStart = Map01DistanceFogEnd * 0.75;
 }
