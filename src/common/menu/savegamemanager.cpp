@@ -33,6 +33,8 @@
 **
 */
 
+#include <cerrno>
+
 #include "menu.h"
 #include "version.h"
 #include "m_png.h"
@@ -82,10 +84,11 @@ FSavegameManagerBase::~FSavegameManagerBase()
 
 int FSavegameManagerBase::RemoveSaveSlot(int index)
 {
+	if (index < 0 || static_cast<unsigned>(index) >= SaveGames.Size() ||
+		SaveGames[index]->bNoDelete) return index;
 	int listindex = SaveGames[0]->bNoDelete ? index - 1 : index;
-	if (listindex < 0) return index;
-
-	remove(SaveGames[index]->Filename.GetChars());
+	if (remove(SaveGames[index]->Filename.GetChars()) != 0 && errno != ENOENT)
+		return index;
 	UnloadSaveData();
 
 	FSaveGameNode *file = SaveGames[index];
