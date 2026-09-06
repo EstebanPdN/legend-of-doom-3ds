@@ -4041,7 +4041,10 @@ int GameMain()
 	R_Shutdown();
 	I_ShutdownGraphics();
 	I_ShutdownInput();
-	M_SaveDefaultsFinal();
+#ifdef __3DS__
+	if (!I_3DSQuitWithoutSavingRequested())
+#endif
+		M_SaveDefaultsFinal();
 	DeleteStartupScreen();
 	delete Args;
 	Args = nullptr;

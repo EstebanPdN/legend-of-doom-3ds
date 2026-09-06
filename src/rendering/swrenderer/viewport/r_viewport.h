@@ -34,6 +34,7 @@ namespace swrenderer
 
 		DCanvas *RenderTarget = nullptr;
 		bool RenderingToCanvas = false;
+		bool RenderingSavePicture = false;
 
 		FViewWindow viewwindow;
 		FRenderViewpoint viewpoint;

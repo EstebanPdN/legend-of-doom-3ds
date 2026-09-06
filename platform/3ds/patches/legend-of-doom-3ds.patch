@@ -455,9 +455,9 @@ index 0000000..dbb6b87
 +{
 +    override bool UseSplitOptionLayout() { return true; }
 +    override bool UseCompactSplitSliders() { return true; }
-+    override int GetSplitLabelLeft() { return screen.GetWidth() / 8; }
-+    override int GetSplitValueLeft() { return screen.GetWidth() * 49 / 100; }
-+    override int GetSplitValueRight() { return screen.GetWidth() * 7 / 8; }
++    override int GetSplitLabelLeft() { return screen.GetWidth() * 24 / 100; }
++    override int GetSplitValueLeft() { return screen.GetWidth() * 55 / 100; }
++    override int GetSplitValueRight() { return screen.GetWidth() * 76 / 100; }
 +}
 +
 +class LegendControlsReferenceMenu : LegendSplitOptionMenu

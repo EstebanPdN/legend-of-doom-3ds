@@ -32,6 +32,10 @@
 **
 */
 
+#ifdef __3DS__
+#include "common/platform/3ds/diagnostics_3ds.h"
+#endif
+
 #include "c_dispatch.h"
 #include "d_gui.h"
 #include "c_buttons.h"
@@ -333,6 +337,9 @@ CCMD (menu_quit)
 
 	DMenu *newmenu = CreateMessageBoxMenu(CurrentMenu, EndString, 0, false, NAME_None, []()
 	{
+#ifdef __3DS__
+		I_3DSQuitWithoutSaving();
+#else
 		if (!netgame)
 		{
 			if (gameinfo.quitSound.IsNotEmpty())
@@ -343,6 +350,7 @@ CCMD (menu_quit)
 		}
 		CleanSWDrawer();
 		ST_Endoom();
+#endif
 	});
 
 

@@ -202,16 +202,32 @@ void DoWriteSavePic(FileWriter *file, ESSType ssformat, uint8_t *scr, int width,
 
 void FSoftwareRenderer::WriteSavePic (player_t *player, FileWriter *file, int width, int height)
 {
+#ifdef __3DS__
+	DCanvas pic(width, height, true);
+	std::memset(pic.GetPixels(), 0, pic.GetPitch() * height * 4);
+	mScene.MainThread()->Viewport->RenderingSavePicture = true;
+#else
 	DCanvas pic(width, height, false);
-
-	// Take a snapshot of the player's view
+#endif
 	mScene.MainThread()->Viewport->viewpoint = r_viewpoint;
 	mScene.MainThread()->Viewport->viewwindow = r_viewwindow;
 	mScene.RenderViewToCanvas(player->mo, &pic, 0, 0, width, height);
 	r_viewpoint = mScene.MainThread()->Viewport->viewpoint;
 	r_viewwindow = mScene.MainThread()->Viewport->viewwindow;
-
+#ifdef __3DS__
+	mScene.MainThread()->Viewport->RenderingSavePicture = false;
+	std::vector<uint8_t> rgb(width * height * 3);
+	for (int y = 0; y < height; ++y)
+		for (int x = 0; x < width; ++x)
+		{
+			const auto *pixel = pic.GetPixels() + (y * pic.GetPitch() + x) * 4;
+			auto *target = rgb.data() + (y * width + x) * 3;
+			target[0] = pixel[2]; target[1] = pixel[1]; target[2] = pixel[0];
+		}
+	DoWriteSavePic(file, SS_RGB, rgb.data(), width, height, r_viewpoint.sector, false);
+#else
 	DoWriteSavePic(file, SS_PAL, pic.GetPixels(), width, height, r_viewpoint.sector, false);
+#endif
 }
 
 void FSoftwareRenderer::DrawRemainingPlayerSprites()

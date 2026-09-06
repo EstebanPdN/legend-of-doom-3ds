@@ -35,6 +35,7 @@
 class MessageBoxMenu : Menu
 {
 	BrokenLines mMessage;
+	String NativeMessageText;
 	voidptr Handler;
 	int mMessageMode;
 	int messageSelection;
@@ -58,6 +59,7 @@ class MessageBoxMenu : Menu
 	{
 		Super.Init(parent);
 		mAction = cmd;
+		NativeMessageText = Stringtable.Localize(message);
 		messageSelection = 0;
 		mMouseLeft = 140;
 		mMouseY = 0x80000000;
