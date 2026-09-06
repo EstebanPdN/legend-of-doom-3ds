@@ -624,6 +624,73 @@ class SaveMenu : LoadSaveMenu
 
 class LoadMenu : LoadSaveMenu
 {
+	// 0: list, 1: actions, 2: confirmation, 3: delete error.
+	int NativeActionStage;
+	int NativeActionChoice;
+	String NativeActionFile;
+
+	private bool NativeSaveEvent(int mkey)
+	{
+		if (mkey == MKEY_Back)
+		{
+			NativeActionStage = NativeActionStage == 2 ? 1 : 0;
+			return true;
+		}
+		if (mkey == MKEY_Up || mkey == MKEY_Down ||
+			mkey == MKEY_Left || mkey == MKEY_Right)
+		{
+			if (NativeActionStage != 3) NativeActionChoice = 1 - NativeActionChoice;
+			return true;
+		}
+		if (mkey != MKEY_Enter) return true;
+		if (NativeActionStage == 3)
+		{
+			NativeActionStage = 0;
+			return true;
+		}
+		if (NativeActionStage == 2 && NativeActionChoice == 1)
+		{
+			NativeActionStage = 1;
+			return true;
+		}
+		if (Selected < 0 || Selected >= manager.SavegameCount() ||
+			manager.GetSavegame(Selected).Filename != NativeActionFile)
+		{
+			NativeActionStage = 0;
+			return true;
+		}
+		if (NativeActionStage == 1)
+		{
+			if (NativeActionChoice == 0) manager.LoadSavegame(Selected);
+			else
+			{
+				NativeActionStage = 2;
+				NativeActionChoice = 1;
+			}
+			return true;
+		}
+
+		int count = manager.SavegameCount();
+		Selected = manager.RemoveSaveSlot(Selected);
+		NativeActionStage = manager.SavegameCount() == count ? 3 : 0;
+		NativeActionChoice = 0;
+		TopItem = max(0, min(TopItem, Selected));
+		UpdateSaveComment();
+		return true;
+	}
+
+	override bool MouseEvent(int type, int x, int y)
+	{
+		if (NativeActionStage != 0) return true;
+		return Super.MouseEvent(type, x, y);
+	}
+
+	override bool OnUIEvent(UIEvent ev)
+	{
+		if (NativeActionStage != 0) return true;
+		return Super.OnUIEvent(ev);
+	}
+
 	//=============================================================================
 	//
 	//
@@ -646,18 +713,28 @@ class LoadMenu : LoadSaveMenu
 
 	override bool MenuEvent (int mkey, bool fromcontroller)
 	{
+		if (NativeActionStage != 0) return NativeSaveEvent(mkey);
 		if (Super.MenuEvent(mkey, fromcontroller)) 
 		{
 			return true;
 		}
-		if (Selected == -1 || manager.SavegameCount() == 0)
+		if (Selected < 0 || Selected >= manager.SavegameCount())
 		{
 			return false;
 		}
 
 		if (mkey == MKEY_Enter)
 		{
-			manager.LoadSavegame(Selected);
+			if (manager.UsesNativeKeyboard())
+			{
+				manager.UnloadSaveData();
+				manager.ExtractSaveData(Selected);
+				UpdateSaveComment();
+				NativeActionFile = manager.GetSavegame(Selected).Filename;
+				NativeActionStage = 1;
+				NativeActionChoice = 0;
+			}
+			else manager.LoadSavegame(Selected);
 			return true;
 		}
 		return false;

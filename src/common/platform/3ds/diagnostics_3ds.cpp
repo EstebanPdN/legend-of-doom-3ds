@@ -185,6 +185,7 @@ unsigned NativeMenuTouchRowCount;
 bool NativeMenuCustomList;
 bool NativeMenuCustomOption;
 bool NativeMenuCustomSave;
+int NativeMenuSaveActionStage;
 
 bool LoadingScreenActive;
 bool LoadingScreenFinished;
@@ -1953,6 +1954,7 @@ bool DrawNativeSaveLoadBottomFrame(unsigned char *framebuffer,
 	(void)height;
 	OverlayRect(framebuffer, 0, 0, BottomScreenWidth, BottomScreenHeight, OverlayInk);
 	NativeMenuCustomSave = true;
+	NativeMenuSaveActionStage = 0;
 
 	// Save/Load owns the complete touch LCD. The title belongs exclusively to
 	// the upper screen; this screen is a clean, roomy slot list.
@@ -1976,6 +1978,34 @@ bool DrawNativeSaveLoadBottomFrame(unsigned char *framebuffer,
 	{
 		OverlayCenteredText(framebuffer, SectionLeft, SectionWidth,
 			116, "NO SAVE GAMES", 2, OverlayIvory);
+		return true;
+	}
+
+	const int actionStage = CurrentMenu->IsKindOf("LoadMenu")
+		? CurrentMenu->IntVar(FName("NativeActionStage")) : 0;
+	NativeMenuSaveActionStage = actionStage;
+	if (actionStage != 0)
+	{
+		const int choice = CurrentMenu->IntVar(FName("NativeActionChoice"));
+		const char *heading = actionStage == 2 ? "Are you sure?" :
+			(actionStage == 3 ? "Could not delete save" : "Choose an action");
+		OverlayCenteredText(framebuffer, SectionLeft, SectionWidth,
+			50, heading, 2, OverlayIvory);
+		const char *labels[] = {
+			actionStage == 2 ? "Yes" : (actionStage == 3 ? "Back" : "Load"),
+			actionStage == 2 ? "No" : "Delete"
+		};
+		const int rows = actionStage == 3 ? 1 : 2;
+		for (int row = 0; row < rows; ++row)
+		{
+			const int rowY = 103 + row * 48;
+			if (row == choice)
+				OverlayRect(framebuffer, SectionLeft + 3, rowY - 10,
+					SectionWidth - 6, 38, OverlayBlue);
+			OverlayCenteredText(framebuffer, SectionLeft, SectionWidth,
+				rowY, labels[row], 2, OverlayIvory);
+			AddNativeMenuTouchRow(rowY - 10, rowY + 28, row);
+		}
 		return true;
 	}
 
@@ -4693,7 +4723,13 @@ bool I_3DSDiagnosticTouch(float x, float y)
 			}
 			else if (NativeMenuCustomSave && CurrentMenu->IsKindOf("LoadSaveMenu"))
 			{
-				CurrentMenu->IntVar(FName("Selected")) = item;
+				const int touchX = static_cast<int>(x * BottomScreenWidth);
+				if (touchX < 15 || touchX >= 305) return true;
+				const int stage = CurrentMenu->IsKindOf("LoadMenu")
+					? CurrentMenu->IntVar(FName("NativeActionStage")) : 0;
+				if (stage != NativeMenuSaveActionStage) return true;
+				CurrentMenu->IntVar(FName(stage != 0 ? "NativeActionChoice" : "Selected")) = item;
+				NativeMenuTouchRowCount = 0;
 				CurrentMenu->CallMenuEvent(MKEY_Enter, true);
 			}
 			return true;
