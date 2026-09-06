@@ -515,7 +515,11 @@ DEFINE_ACTION_FUNCTION(FSavegameManager, GetSavegame)
 
 void FSavegameManagerBase::InsertNewSaveNode()
 {
+#ifdef __3DS__
+	NewSaveNode.SaveTitle = "<New Save>";
+#else
 	NewSaveNode.SaveTitle = GStrings("NEWSAVE");
+#endif
 	NewSaveNode.bNoDelete = true;
 	SaveGames.Insert(0, &NewSaveNode);
 }

@@ -39,6 +39,7 @@
 #include "gamestate.h"
 #include "g_statusbar/sbar.h"
 #include "i_sound.h"
+#include "i_video.h"
 #include "menu/doommenu.h"
 #include "menustate.h"
 #include "playsim/actor.h"
@@ -336,6 +337,33 @@ constexpr FLoadingGlyph LoadingFont[] = {
 	{ 'X', { 17, 17, 10, 4, 10, 17, 17 } },
 	{ 'Y', { 17, 17, 10, 4, 4, 4, 4 } },
 	{ 'Z', { 31, 1, 2, 4, 8, 16, 31 } },
+	{ 'a', { 0, 0, 14, 1, 15, 17, 15 } },
+	{ 'b', { 16, 16, 30, 17, 17, 17, 30 } },
+	{ 'c', { 0, 0, 14, 16, 16, 17, 14 } },
+	{ 'd', { 1, 1, 15, 17, 17, 17, 15 } },
+	{ 'e', { 0, 0, 14, 17, 31, 16, 14 } },
+	{ 'f', { 6, 9, 8, 28, 8, 8, 8 } },
+	{ 'g', { 0, 0, 15, 17, 15, 1, 14 } },
+	{ 'h', { 16, 16, 30, 17, 17, 17, 17 } },
+	{ 'i', { 4, 0, 12, 4, 4, 4, 14 } },
+	{ 'j', { 2, 0, 6, 2, 2, 18, 12 } },
+	{ 'k', { 16, 16, 18, 20, 24, 20, 18 } },
+	{ 'l', { 12, 4, 4, 4, 4, 4, 14 } },
+	{ 'm', { 0, 0, 26, 21, 21, 17, 17 } },
+	{ 'n', { 0, 0, 30, 17, 17, 17, 17 } },
+	{ 'o', { 0, 0, 14, 17, 17, 17, 14 } },
+	{ 'p', { 0, 0, 30, 17, 30, 16, 16 } },
+	{ 'q', { 0, 0, 15, 17, 15, 1, 1 } },
+	{ 'r', { 0, 0, 22, 25, 16, 16, 16 } },
+	{ 's', { 0, 0, 15, 16, 14, 1, 30 } },
+	{ 't', { 8, 8, 28, 8, 8, 9, 6 } },
+	{ 'u', { 0, 0, 17, 17, 17, 19, 13 } },
+	{ 'v', { 0, 0, 17, 17, 17, 10, 4 } },
+	{ 'w', { 0, 0, 17, 17, 21, 21, 10 } },
+	{ 'x', { 0, 0, 17, 10, 4, 10, 17 } },
+	{ 'y', { 0, 0, 17, 17, 15, 1, 14 } },
+	{ 'z', { 0, 0, 31, 2, 4, 8, 31 } },
+	{ '<', { 1, 2, 4, 8, 4, 2, 1 } },
 	{ '%', { 17, 2, 4, 8, 16, 17, 0 } },
 	{ '-', { 0, 0, 0, 31, 0, 0, 0 } },
 	{ '+', { 0, 4, 4, 31, 4, 4, 0 } },
@@ -1520,7 +1548,7 @@ void DrawBottomTabs(unsigned char *framebuffer)
 	constexpr int MapLeft = 31;
 	constexpr int ItemsLeft = 133;
 	constexpr int TabWidth = 100;
-	OverlayRect(framebuffer, 16, 202, 288, 36, OverlayInk);
+	OverlayRect(framebuffer, 16, 202, 219, 36, OverlayInk);
 	OverlayRect(framebuffer, 16, 219, 288, 2, OverlayBlue);
 	constexpr int GlyphWidth = 7;
 	constexpr int GlyphHeight = 10;
@@ -4433,46 +4461,28 @@ void I_3DSLoadingScreenFinish()
 void I_3DSPrepareNativeKeyboardTop()
 {
 	constexpr size_t TopFramebufferBytes = 400u * 240u * 4u;
-	u16 physicalWidth = 0;
-	u16 physicalHeight = 0;
-	unsigned char *first = gfxGetFramebuffer(GFX_TOP, GFX_LEFT,
-		&physicalWidth, &physicalHeight);
-	if (first == nullptr || physicalWidth != 240 || physicalHeight != 400) return;
-
-	std::vector<unsigned char> firstImage(first, first + TopFramebufferBytes);
-	I_3DSCleanDataCache(first, TopFramebufferBytes);
-	gfxScreenSwapBuffers(GFX_TOP, false);
+	I_PolyWaitForPresent3DS();
 	gspWaitForVBlank();
 
-	unsigned char *second = gfxGetFramebuffer(GFX_TOP, GFX_LEFT,
-		&physicalWidth, &physicalHeight);
-	if (second == nullptr || physicalWidth != 240 || physicalHeight != 400) return;
-	std::vector<unsigned char> secondImage(second, second + TopFramebufferBytes);
+	GSPGPU_CaptureInfo capture{};
+	if (R_FAILED(GSPGPU_ImportDisplayCaptureInfo(&capture))) return;
+	const auto &top = capture.screencapture[0];
+	if (top.framebuf0_vaddr == nullptr || (top.format & 7u) != GSP_RGBA8_OES ||
+		top.framebuf_widthbytesize != 240u * 4u) return;
 
-	// The gfx API exposes the next draw buffer, while the scene may live in the
-	// other half of the double buffer. Prefer the copy with actual RGB content;
-	// this avoids preserving a freshly cleared black surface.
-	auto imageScore = [](const std::vector<unsigned char> &image)
+	// Read the displayed GPU result before APT captures it for the keyboard.
+	if (R_FAILED(GSPGPU_InvalidateDataCache(top.framebuf0_vaddr, TopFramebufferBytes))) return;
+	const auto *displayed = reinterpret_cast<const unsigned char *>(top.framebuf0_vaddr);
+	std::vector<unsigned char> image(displayed, displayed + TopFramebufferBytes);
+	for (unsigned buffer = 0; buffer < 2; ++buffer)
 	{
-		uint64_t score = 0;
-		for (size_t offset = 0; offset + 3 < image.size(); offset += 4)
-			score += static_cast<uint64_t>(image[offset + 1]) +
-				image[offset + 2] + image[offset + 3];
-		return score;
-	};
-	const std::vector<unsigned char> &chosen =
-		imageScore(secondImage) > imageScore(firstImage) ? secondImage : firstImage;
-
-	std::memcpy(second, chosen.data(), TopFramebufferBytes);
-	I_3DSCleanDataCache(second, TopFramebufferBytes);
-	gfxScreenSwapBuffers(GFX_TOP, false);
-	gspWaitForVBlank();
-
-	first = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &physicalWidth, &physicalHeight);
-	if (first != nullptr && physicalWidth == 240 && physicalHeight == 400)
-	{
-		std::memcpy(first, chosen.data(), TopFramebufferBytes);
-		I_3DSCleanDataCache(first, TopFramebufferBytes);
+		u16 width = 0, height = 0;
+		auto *pixels = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &width, &height);
+		if (pixels == nullptr || width != 240 || height != 400) return;
+		std::memcpy(pixels, image.data(), TopFramebufferBytes);
+		I_3DSCleanDataCache(pixels, TopFramebufferBytes);
+		gfxScreenSwapBuffers(GFX_TOP, false);
+		gspWaitForVBlank();
 	}
 }
 
