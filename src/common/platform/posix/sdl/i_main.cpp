@@ -436,15 +436,6 @@ int main (int argc, char **argv)
 	// kept building per-surface light lists in the supposedly low-cost profile.
 	Args->AppendArg("+r_dynlights");
 	Args->AppendArg("0");
-	// MAP01's original isometric layout contains dense connected geometry more
-	// than ten thousand map units away. Exterior geometry fades from 1536 to
-	// 2048 units and is rejected only after reaching the horizon colour. Mixed
-	// and interior BSP subtrees remain intact so doors and enclosed floors do
-	// not acquire holes merely because the player is standing outdoors.
-	Args->AppendArg("+r_line_distance_cull");
-	Args->AppendArg("2048");
-	Args->AppendArg("+r_sprite_distance_cull");
-	Args->AppendArg("2048");
 	Args->AppendArg("+gl_light_sprites");
 	Args->AppendArg("0");
 	Args->AppendArg("+gl_light_particles");

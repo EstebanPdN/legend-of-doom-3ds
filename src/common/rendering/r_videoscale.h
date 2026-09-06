@@ -38,7 +38,7 @@ int ViewportScaledWidth(int width, int height);
 int ViewportScaledHeight(int width, int height);
 float ViewportPixelAspect();
 #if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
-int I_3DSGameplayResolutionTenths();
+float I_3DSGameplayResolutionTenths();
 int I_3DSGameplayResolutionWidth();
 int I_3DSGameplayResolutionHeight();
 #endif
