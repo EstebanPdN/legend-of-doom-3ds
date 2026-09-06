@@ -159,6 +159,22 @@ namespace swrenderer
 #endif
 
 		auto viewport = Thread->Viewport.get();
+		#ifdef __3DS__
+		if (Is3DSMap01DistanceFogColormap(drawerargs.BaseColormap()) && x2 - x1 >= 16)
+		{
+			const double depth = viewport->PlaneDepth(y, planeheight);
+			const double left = viewport->ScreenToViewX(x1, depth);
+			const double right = viewport->ScreenToViewX(x2, depth);
+			const double nearest = left * right <= 0 ? 0 : std::min(std::abs(left), std::abs(right));
+			const double minimum = std::hypot(depth, nearest);
+			const double maximum = std::hypot(depth, std::max(std::abs(left), std::abs(right)));
+			if (maximum > Map01DistanceFogStart && minimum < Map01DistanceFogEnd)
+			{
+				for (int x = x1; x <= x2; x += 16) RenderLine(y, x, std::min(x + 15, x2));
+				return;
+			}
+		}
+		#endif
 
 		double curxfrac = basexfrac + xstepscale * (x1 - minx);
 		double curyfrac = baseyfrac + ystepscale * (x1 - minx);
@@ -200,7 +216,8 @@ namespace swrenderer
 				foggy, viewport);
 			#ifdef __3DS__
 			visibility = Apply3DSMap01DistanceFogVisibility(
-				drawerargs.BaseColormap(), distance, visibility,
+				drawerargs.BaseColormap(), std::hypot(distance,
+					viewport->ScreenToViewX((x1 + x2) / 2, distance)), visibility,
 				LightVisibility::LightLevelToShade(lightlevel, foggy, viewport));
 			#endif
 			drawerargs.SetLight(static_cast<float>(visibility), lightlevel,

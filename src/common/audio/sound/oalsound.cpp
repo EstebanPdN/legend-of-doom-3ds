@@ -32,6 +32,18 @@
 **
 */
 
+#ifdef __3DS__
+#include "pcm_wave.h"
+#include <climits>
+#include <cstdlib>
+#define STB_VORBIS_NO_STDIO
+#define STB_VORBIS_NO_PUSHDATA_API
+#include "thirdparty/stb_vorbis.c"
+#undef L
+#undef C
+#undef R
+#endif
+
 #include <functional>
 #include <chrono>
 
@@ -1113,18 +1125,51 @@ SoundHandle OpenALSoundRenderer::LoadSoundRaw(uint8_t *sfxdata, int length, int 
 
 SoundHandle OpenALSoundRenderer::LoadSound(uint8_t *sfxdata, int length)
 {
+	uint32_t loop_start = 0, loop_end = ~0u;
+	zmusic_bool startass = false, endass = false;
+
+	FindLoopTags(sfxdata, length, &loop_start, &startass, &loop_end, &endass);
+#ifdef __3DS__
+	auto loadPcm = [&](uint8_t *data, int bytes, int rate, int channels, int bits)
+	{
+		const uint32_t frames = bytes / (channels * bits / 8);
+		uint32_t start = startass ? loop_start : Scale(loop_start, rate, 1000);
+		uint32_t end = endass || loop_end == ~0u ? loop_end : Scale(loop_end, rate, 1000);
+		if (start > frames) start = 0;
+		if (end > frames) end = frames;
+		return LoadSoundRaw(data, bytes, rate, channels, bits,
+			end > start ? int(start) : -1, end > start ? int(end) : -1);
+	};
+	PcmWave wave;
+	if (length > 0 && ReadPcmWave(sfxdata, size_t(length), wave))
+		return loadPcm(const_cast<uint8_t *>(wave.samples), int(wave.bytes),
+			wave.rate, wave.channels, wave.bits);
+	if (length >= 4 && std::memcmp(sfxdata, "OggS", 4) == 0)
+	{
+		short *samples = nullptr;
+		int channels = 0, rate = 0;
+		const int frames = stb_vorbis_decode_memory(sfxdata, length, &channels, &rate, &samples);
+		SoundHandle handle = { nullptr };
+		if (frames > 0 && (channels == 1 || channels == 2) && rate > 0 &&
+			frames <= INT_MAX / channels / 2)
+			handle = loadPcm(reinterpret_cast<uint8_t *>(samples), frames * channels * 2,
+				rate, channels, 16);
+		free(samples);
+		return handle;
+	}
+#endif
+
 	SoundHandle retval = { NULL };
 	ALenum format = AL_NONE;
 	ChannelConfig chans;
 	SampleType type;
 	int srate;
-	uint32_t loop_start = 0, loop_end = ~0u;
-	zmusic_bool startass = false, endass = false;
-
-	FindLoopTags(sfxdata, length, &loop_start, &startass, &loop_end, &endass);
 	auto decoder = CreateDecoder(sfxdata, length, true);
 	if (!decoder)
+	{
+		Printf("Unable to decode sound (%d bytes).\n", length);
 		return retval;
+	}
 
 	SoundDecoder_GetInfo(decoder, &srate, &chans, &type);
 	int samplesize = 1;
@@ -1160,6 +1205,7 @@ SoundHandle OpenALSoundRenderer::LoadSound(uint8_t *sfxdata, int length)
 	data.resize(total);
 	if (total == 0)
 	{
+		SoundDecoder_Close(decoder);
 		return retval;
 	}
 	SoundDecoder_Close(decoder);

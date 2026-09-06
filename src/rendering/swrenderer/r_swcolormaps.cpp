@@ -52,6 +52,7 @@
 #include "texturemanager.h"
 #include "r_data/colormaps.h"
 #include "r_swcolormaps.h"
+#include "distance_fog_math.h"
 #include "v_video.h"
 #include "templates.h"
 #include "r_utility.h"
@@ -67,9 +68,9 @@ FSWColormap realfbcolormaps; //[SP] For fullbright use
 TArray<FSWColormap> SpecialSWColormaps;
 
 #ifdef __3DS__
-double Map01DistanceFogStart = 1536.0;
-double Map01DistanceFogEnd = 2048.0;
-CUSTOM_CVAR(Int, lod3ds_render_distance, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+double Map01DistanceFogStart = 1152.0;
+double Map01DistanceFogEnd = 1536.0;
+CUSTOM_CVAR(Int, lod3ds_render_distance, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
 	const int normalized = clamp(static_cast<int>(self), 0, 2);
 	if (self != normalized)
@@ -123,19 +124,10 @@ bool Is3DSMap01DistanceFogColormap(const FSWColormap *colormap)
 double Apply3DSMap01DistanceFogVisibility(const FSWColormap *colormap,
 	double viewDistance, double ordinaryVisibility, fixed_t shade)
 {
-	if (!Is3DSMap01DistanceFogColormap(colormap) ||
-		viewDistance <= Map01DistanceFogStart)
-	{
-		return ordinaryVisibility;
-	}
-
-	// Smoothstep reaches opaque fog before the distance cutoff.
-	double amount = clamp((viewDistance - Map01DistanceFogStart) /
-		(Map01DistanceFogEnd - Map01DistanceFogStart), 0.0, 1.0);
-	amount = amount * amount * (3.0 - 2.0 * amount);
-	const double explicitVisibility = FIXED2DBL(shade) -
-		amount * static_cast<double>(NUMCOLORMAPS - 1);
-	return MIN(ordinaryVisibility, explicitVisibility);
+	if (!Is3DSMap01DistanceFogColormap(colormap)) return ordinaryVisibility;
+	const double amount = DistanceFogAmount(viewDistance,
+		Map01DistanceFogStart, Map01DistanceFogEnd);
+	return FIXED2DBL(shade) - amount * static_cast<double>(NUMCOLORMAPS - 1);
 }
 #endif
 

@@ -1,0 +1,4 @@
+stb_vorbis.c: https://github.com/nothings/stb
+Revision: 2c980bb59875b0d32144a71867fbdebb2f77cd20
+Unmodified upstream file. MIT/public-domain license included at end of file.
+Used for 3DS sound effects; MP3 remains handled by ZMusic.

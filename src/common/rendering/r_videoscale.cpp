@@ -212,10 +212,10 @@ CUSTOM_CVAR(Int, vid_scalemode, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 }
 
 #if defined(__3DS__)
-CUSTOM_CVAR(Float, lod3ds_render_scale, 8, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Float, lod3ds_render_scale, 7, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
 	const float normalized = std::isfinite(static_cast<float>(self)) ?
-		std::round(std::clamp(static_cast<float>(self), 5.0f, 10.0f) * 2.0f) / 2.0f : 8.0f;
+		std::round(std::clamp(static_cast<float>(self), 5.0f, 10.0f) * 2.0f) / 2.0f : 7.0f;
 	if (self != normalized)
 	{
 		self = normalized;

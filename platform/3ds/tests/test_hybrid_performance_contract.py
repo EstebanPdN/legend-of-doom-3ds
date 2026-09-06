@@ -41,7 +41,7 @@ class HybridPerformanceContractTests(unittest.TestCase):
         self.assertIn("(i == 0) ? 0 : 2", drawer)
         self.assertIn("PlatformMinimumWidth = 40", scale)
         self.assertIn("PlatformMinimumHeight = 24", scale)
-        self.assertIn("CUSTOM_CVAR(Float, lod3ds_render_scale, 8", scale)
+        self.assertIn("CUSTOM_CVAR(Float, lod3ds_render_scale, 7", scale)
         self.assertIn("std::round(std::clamp(static_cast<float>(self), 5.0f, 10.0f) * 2.0f) / 2.0f", scale)
 
     def test_presenter_is_one_bounded_texture_not_novagl_world(self):
