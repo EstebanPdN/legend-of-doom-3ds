@@ -59,11 +59,6 @@
 #include "swrenderer/r_renderthread.h"
 #include "swrenderer/things/r_playersprite.h"
 #include <chrono>
-#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
-#include "common/platform/3ds/stereo_3ds.h"
-#include "am_map.h"
-#include "c_console.h"
-#endif
 
 #ifdef WIN32
 void PeekThreadedErrorPane();
@@ -180,72 +175,6 @@ namespace swrenderer
 			MainThread()->Viewport->viewpoint.camera->renderflags |= RF_INVISIBLE;
 		}
 
-		#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
-		auto viewport = MainThread()->Viewport.get();
-		auto &pair = lod3ds::Stereo;
-		const float strength = renderPlayerSprites && !viewport->RenderingToCanvas &&
-			gamestate == GS_LEVEL && menuactive == MENU_Off && ConsoleState == c_up &&
-			!automapactive && !paused && !netgame && !origviewpoint.showviewer ?
-			I_3DSStereoStrength() : 0.f;
-		if (strength > 0 && viewport->RenderTarget->IsBgra() && pair.Begin(
-			viewport->RenderTarget->GetWidth(), viewport->RenderTarget->GetHeight(),
-			viewport->RenderTarget->GetPitch(), strength))
-		{
-			const double focal = viewport->FocalLengthX;
-			const double rayBound = std::hypot(1.0, viewport->CenterX / focal);
-			double nearestSquared = 192.0*192.0;
-			const auto position = origviewpoint.Pos.XY();
-			for (const auto &line : origviewpoint.ViewLevel->lines)
-			{
-				const auto a = line.v1->fPos(), delta = line.v2->fPos() - a;
-				const double length2 = delta.LengthSquared();
-				if (length2 == 0) continue;
-				const auto relative = position - a;
-				const double t = std::clamp((relative.X*delta.X + relative.Y*delta.Y) / length2, 0.0, 1.0);
-				nearestSquared = std::min(nearestSquared, (relative - delta*t).LengthSquared());
-			}
-			double convergence = std::min(96.0, std::sqrt(nearestSquared) / (2*rayBound));
-			const double verticalRay = std::max(std::abs(viewport->CenterY),
-				std::abs(pair.height-viewport->CenterY)) / viewport->FocalLengthY;
-			const auto sector = origviewpoint.sector;
-			const double verticalClearance = std::min(
-				std::abs(origviewpoint.Pos.Z-sector->floorplane.ZatPoint(origviewpoint.Pos)),
-				std::abs(sector->ceilingplane.ZatPoint(origviewpoint.Pos)-origviewpoint.Pos.Z));
-			convergence = std::min(convergence, verticalClearance / (2*std::max(.01,verticalRay)));
-			auto actors = origviewpoint.ViewLevel->GetThinkerIterator<AActor>();
-			while (auto other = actors.Next())
-			{
-				if (other == origviewpoint.camera || (other->renderflags & RF_INVISIBLE)) continue;
-				const auto delta = other->Pos().XY()-position;
-				const double forward = delta.X*origviewpoint.Cos + delta.Y*origviewpoint.Sin;
-				if (forward > 0 && forward < 192 && delta.LengthSquared() < 192*192)
-					convergence = std::min(convergence, forward*.25);
-			}
-			const double shift = 4.0 * strength * pair.width / 400.0;
-			const double halfSeparation = shift * convergence / focal;
-			pair.convergence = convergence;
-			pair.separation = 2*halfSeparation;
-			auto pixels = viewport->RenderTarget->GetPixels();
-			for (int eye=0; eye<2; ++eye)
-			{
-				viewport->viewpoint = origviewpoint;
-				const double offset = eye == 0 ? -halfSeparation : halfSeparation;
-				viewport->viewpoint.Pos.X += origviewpoint.Sin * offset;
-				viewport->viewpoint.Pos.Y -= origviewpoint.Cos * offset;
-				viewport->viewpoint.sector = origviewpoint.ViewLevel->PointInRenderSubsector(viewport->viewpoint.Pos)->sector;
-				std::memset(pixels, 0, size_t(pair.pitch)*pair.height*4);
-				RenderThreadSlices();
-				DrawerThreads::WaitForWorkers();
-				viewport->viewpoint = origviewpoint;
-				pair.ShiftWorld(pixels, eye == 0 ? -shift : shift);
-				RenderPSprites();
-				DrawerThreads::WaitForWorkers();
-				pair.Capture(pixels, eye == 0);
-			}
-			viewport->viewpoint.camera->renderflags = savedflags;
-			return;
-		}
-		#endif
 		RenderThreadSlices();
 
 		// Mirrors fail to restore the original viewpoint -- we need it for the HUD weapon to draw correctly.

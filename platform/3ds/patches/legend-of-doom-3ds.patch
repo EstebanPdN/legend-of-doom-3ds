@@ -183,7 +183,7 @@ diff --git a/MENUDEF b/MENUDEF
 index c7c6d33..4f27467 100644
 --- a/MENUDEF
 +++ b/MENUDEF
-@@ -1,48 +1,114 @@
+@@ -1,48 +1,113 @@
  DEFAULTLISTMENU
  {
 -	// Font "ZeldFNT", "Untranslated"
@@ -275,7 +275,6 @@ index c7c6d33..4f27467 100644
 +    Title "DISPLAY"
 +    RenderScaleSlider "RENDER", "lod3ds_render_scale", 5, 10, 0.5, -1
 +    RenderDistanceSlider "DISTANCE", "lod3ds_render_distance", 0, 2, 1, -1
-+    Option "STEREOSCOPIC 3D", "lod3ds_stereo", "OnOff"
 +    Option "TOP HUD", "lod3ds_top_hud", "OnOff"
 +    Option "AIM CROSS", "crosshairon", "OnOff"
 +    Option "MAP COLLISIONS", "lod3ds_map_collisions", "OnOff"
