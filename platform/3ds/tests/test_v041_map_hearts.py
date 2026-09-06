@@ -37,7 +37,7 @@ void DrawEmbeddedBottomImageSized(unsigned char*,int x,int y,const FEmbeddedBott
 extern "C" void layout(int maximum,int current,int*out) {
  rects=out;count=0;AActor actor{current,maximum}; AActor *owner=&actor;unsigned char *framebuffer=nullptr;
 '''+body+'''
- out[0]=count;out[1]=faceY;out[2]=std::max(157,faceY+69);out[3]=heartsBottom;
+ out[0]=count;out[1]=faceY;out[2]=counterStartY;out[3]=heartsBottom;
 }
 bool netgame,demoplayback,demorecording,automapactive;int gamestate,wipegamestate,menuactive,ConsoleState,consoleplayer=0;
 constexpr int GS_TITLELEVEL=2, MENU_Off=0, MENU_OnNoPause=2,c_up=0,c_down=1,c_falling=2, NO_VALUE=-999;
@@ -90,7 +90,9 @@ extern "C" int check(int map,int menu,int console,int network,int playback,int r
             count,face,counters,bottom=meta
             self.assertEqual(count,hearts)
             self.assertGreaterEqual(face,bottom+6)
-            self.assertGreaterEqual(counters,face+55+14)
+            self.assertGreaterEqual(counters,face+55+6)
+            self.assertLessEqual(abs((face-bottom)-(counters-face-55)),1)
+            self.assertEqual(counters,max(157,max(76,bottom+6)+69))
             self.assertLessEqual(counters+36+11,218)
             rows={}
             for x,y,w,h,fill in rects:

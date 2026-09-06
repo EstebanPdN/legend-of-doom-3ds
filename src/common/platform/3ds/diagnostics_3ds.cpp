@@ -1555,7 +1555,10 @@ void DrawBottomHeartsAndCounters(unsigned char *framebuffer, AActor *owner)
 	const int heartRows = static_cast<int>((hearts + columns - 1u) / columns);
 	const int heartsBottom = HeartStartY + heartRows * heartHeight +
 		std::max(0, heartRows - 1) * heartRowGap;
-	const int faceY = std::max(76, heartsBottom + 6);
+	constexpr int FaceWidth = 46;
+	constexpr int FaceHeight = 55;
+	const int counterStartY = std::max(157, heartsBottom + 75);
+	const int faceY = heartsBottom + (counterStartY - heartsBottom - FaceHeight) / 2;
 
 	FGameTexture *face = StatusBar != nullptr && StatusBar->CPlayer != nullptr &&
 		StatusBar->CPlayer->mo != nullptr ?
@@ -1570,8 +1573,6 @@ void DrawBottomHeartsAndCounters(unsigned char *framebuffer, AActor *owner)
 		const FTextureID faceTexture = TexMan.CheckForTexture(faceName.GetChars(),
 			ETextureType::Any, FTextureManager::TEXMAN_TryAny);
 		if (faceTexture.isValid()) face = TexMan.GetGameTexture(faceTexture, true);
-		constexpr int FaceWidth = 46;
-		constexpr int FaceHeight = 55;
 		DrawBottomGameTextureSized(framebuffer,
 			SideX + (SideWidth - FaceWidth) / 2 - 3, faceY,
 			face, FaceWidth, FaceHeight);
@@ -1583,7 +1584,6 @@ void DrawBottomHeartsAndCounters(unsigned char *framebuffer, AActor *owner)
 		const char *Inventory;
 		int Y;
 	};
-	const int counterStartY = std::max(157, faceY + 69);
 	const FCounter Counters[] = {
 		{ &CounterRupee, "ZeldaRupee", counterStartY },
 		{ &CounterKey, "ZeldaKey", counterStartY + 18 },
