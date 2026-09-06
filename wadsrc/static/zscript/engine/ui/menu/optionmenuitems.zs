@@ -712,6 +712,7 @@ class OptionMenuSliderBase : OptionMenuItem
 	int mShowValue;
 	int mDrawX;
 	int mSliderShort;
+	int mSliderCellWidth;
 	CVar mGrayCheck;
 
 	protected void Init(String label, double min, double max, double step, int showval, Name command = 'none', CVar graycheck = NULL)
@@ -754,7 +755,7 @@ class OptionMenuSliderBase : OptionMenuItem
 	private void DrawSliderElement (int color, int x, int y, String str, bool grayed = false)
 	{
 		int overlay = grayed? Color(96, 48, 0, 0) : 0;
-		screen.DrawText (ConFont, color, x, y, str, DTA_CellX, 16 * CleanXfac_1, DTA_CellY, 16 * CleanYfac_1, DTA_ColorOverlay, overlay);
+		screen.DrawText (ConFont, color, x, y, str, DTA_CellX, mSliderCellWidth * CleanXfac_1, DTA_CellY, 16 * CleanYfac_1, DTA_ColorOverlay, overlay);
 	}
 
 	protected void DrawSlider (int x, int y, double min, double max, double cur, int fracdigits, int indent, bool grayed = false)
@@ -776,6 +777,7 @@ class OptionMenuSliderBase : OptionMenuItem
 		}
 
 		let current = OptionMenu(Menu.GetCurrentMenu());
+		mSliderCellWidth = current != null && current.UseCompactSplitSliders() ? 12 : 16;
 		mSliderShort = (current != null && current.UseCompactSplitSliders()) ||
 			right + maxlen > screen.GetWidth();
 
@@ -788,7 +790,7 @@ class OptionMenuSliderBase : OptionMenuItem
 		{
 			// On 320x200 we need a shorter slider
 			DrawSliderElement(Font.FindFontColor(gameinfo.mSliderBackColor), x, cy, "\x10\x11\x11\x11\x11\x11\x12", grayed);
-			DrawSliderElement(Font.FindFontColor(gameinfo.mSliderColor), x + int((5 + ((ccur * 38) / range)) * 2 * CleanXfac_1), cy, "\x13", grayed);
+			DrawSliderElement(Font.FindFontColor(gameinfo.mSliderColor), x + int((5 + ((ccur * 38) / range)) * mSliderCellWidth / 8.0 * CleanXfac_1), cy, "\x13", grayed);
 			right -= 5*8*CleanXfac;
 		}
 
@@ -846,8 +848,8 @@ class OptionMenuSliderBase : OptionMenuItem
 			lm.ReleaseFocus();
 		}
 
-		int slide_left = mDrawX+16*CleanXfac_1;
-		int slide_right = slide_left + (10*16*CleanXfac_1 >> mSliderShort);	// 10 char cells with 16 pixels each.
+		int slide_left = mDrawX + mSliderCellWidth * CleanXfac_1;
+		int slide_right = slide_left + (10 * mSliderCellWidth * CleanXfac_1 >> mSliderShort);	// 10 char cells with 16 pixels each.
 
 		if (type == Menu.MOUSE_Click)
 		{

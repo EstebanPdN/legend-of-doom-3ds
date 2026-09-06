@@ -75,7 +75,8 @@ namespace swrenderer
 			sector != nullptr &&
 			(sector->GetTexture(sector_t::ceiling) == skyflatnum ||
 				sector->ValidatePortal(sector_t::ceiling) != nullptr) &&
-			!viewport->RenderingToCanvas && viewport->RenderTarget != nullptr &&
+			(!viewport->RenderingToCanvas || viewport->RenderingSavePicture) &&
+			viewport->RenderTarget != nullptr &&
 			viewport->RenderTarget->IsBgra();
 	}
 	#endif
@@ -377,7 +378,8 @@ namespace swrenderer
 		if (Thread->SkyBackgroundFilled ||
 			Thread->Portal->CurrentPortalUniq != 0 ||
 			Thread->Clip3D->CurrentSkybox != 0 || viewport == nullptr ||
-			viewport->RenderingToCanvas || viewport->RenderTarget == nullptr ||
+			(viewport->RenderingToCanvas && !viewport->RenderingSavePicture) ||
+			viewport->RenderTarget == nullptr ||
 			!viewport->RenderTarget->IsBgra())
 		{
 			return;

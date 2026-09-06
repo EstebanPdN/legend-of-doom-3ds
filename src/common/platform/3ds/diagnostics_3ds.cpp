@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "gitinfo.h"
+#include "engineerrors.h"
 #include "c_dispatch.h"
 #include "c_cvars.h"
 #include "common/fonts/v_font.h"
@@ -186,6 +187,7 @@ bool NativeMenuCustomList;
 bool NativeMenuCustomOption;
 bool NativeMenuCustomSave;
 int NativeMenuSaveActionStage;
+bool NativeMenuChoiceDialog;
 
 bool LoadingScreenActive;
 bool LoadingScreenFinished;
@@ -896,6 +898,62 @@ void DrawBottomCenteredFontText(unsigned char *framebuffer, FFont *font,
 	DrawBottomFontText(framebuffer, font,
 		x + (width - NativeFontTextWidth(font, text, scale)) / 2,
 		y, text, scale, color);
+}
+
+void DrawBottomScaledFontText(unsigned char *framebuffer, FFont *font,
+	int x, int y, const char *text, float scale, FOverlayColor color)
+{
+	if (font == nullptr) return;
+	float pen = 0.0f;
+	for (const unsigned char *c = reinterpret_cast<const unsigned char *>(text); *c; ++c)
+	{
+		int advance = font->GetSpaceWidth();
+		auto *glyph = font->GetChar(*c, CR_UNTRANSLATED, &advance);
+		if (glyph != nullptr && glyph->GetTexture() != nullptr)
+		{
+			FBitmap bitmap = glyph->GetTexture()->GetBgraBitmap(nullptr);
+			for (int py = 0; bitmap.GetPixels() != nullptr && py < bitmap.GetHeight(); ++py)
+			for (int px = 0; px < bitmap.GetWidth(); ++px)
+			{
+				const auto *pixel = bitmap.GetPixels() + py * bitmap.GetPitch() + px * 4;
+				if (pixel[3] < 32) continue;
+				const unsigned shade = std::max({pixel[0], pixel[1], pixel[2]});
+				const FOverlayColor ink{
+					static_cast<unsigned char>(color.Red * shade / 255u),
+					static_cast<unsigned char>(color.Green * shade / 255u),
+					static_cast<unsigned char>(color.Blue * shade / 255u)};
+				const int left = std::lround((pen + px) * scale);
+				const int top = std::lround(py * scale);
+				OverlayRect(framebuffer, x + left, y + top,
+					std::lround((pen + px + 1) * scale) - left,
+					std::lround((py + 1) * scale) - top, ink);
+			}
+		}
+		pen += advance + font->GetDefaultKerning();
+	}
+}
+
+void DrawBottomChoiceDialog(unsigned char *framebuffer, const char *heading,
+	const char *left, const char *right, int selected)
+{
+	constexpr float Scale = 1.28f;
+	FFont *font = SmallFont != nullptr ? SmallFont : NewSmallFont;
+	OverlayRect(framebuffer, 0, 0, 320, 240, OverlayInk);
+	FString title = heading;
+	title.ToUpper();
+	DrawBottomScaledFontText(framebuffer, font,
+		(320 - std::lround(NativeFontTextWidth(font, title.GetChars()) * Scale)) / 2,
+		104, title.GetChars(), Scale, OverlayIvory);
+	const FOverlayColor selectedColor{255, 160, 160};
+	DrawBottomScaledFontText(framebuffer, font, 82, 126, left, Scale,
+		selected == 0 ? selectedColor : OverlayIvory);
+	DrawBottomScaledFontText(framebuffer, font, 210, 126, right, Scale,
+		selected == 1 ? selectedColor : OverlayIvory);
+	const int arrowX = selected == 0 ? 69 : 197;
+	for (int column = 0; column < 7; ++column)
+		OverlayRect(framebuffer, arrowX + column, 127 + column / 2,
+			1, 7 - (column / 2) * 2, selectedColor);
+	NativeMenuChoiceDialog = true;
 }
 
 int BottomInventoryAmount(AActor *owner, const char *type)
@@ -1987,25 +2045,11 @@ bool DrawNativeSaveLoadBottomFrame(unsigned char *framebuffer,
 	if (actionStage != 0)
 	{
 		const int choice = CurrentMenu->IntVar(FName("NativeActionChoice"));
-		const char *heading = actionStage == 2 ? "Are you sure?" :
-			(actionStage == 3 ? "Could not delete save" : "Choose an action");
-		OverlayCenteredText(framebuffer, SectionLeft, SectionWidth,
-			50, heading, 2, OverlayIvory);
-		const char *labels[] = {
-			actionStage == 2 ? "Yes" : (actionStage == 3 ? "Back" : "Load"),
-			actionStage == 2 ? "No" : "Delete"
-		};
-		const int rows = actionStage == 3 ? 1 : 2;
-		for (int row = 0; row < rows; ++row)
-		{
-			const int rowY = 103 + row * 48;
-			if (row == choice)
-				OverlayRect(framebuffer, SectionLeft + 3, rowY - 10,
-					SectionWidth - 6, 38, OverlayBlue);
-			OverlayCenteredText(framebuffer, SectionLeft, SectionWidth,
-				rowY, labels[row], 2, OverlayIvory);
-			AddNativeMenuTouchRow(rowY - 10, rowY + 28, row);
-		}
+		DrawBottomChoiceDialog(framebuffer,
+			actionStage == 2 ? "ARE YOU SURE?" :
+			(actionStage == 3 ? "COULD NOT DELETE SAVE" : "CHOOSE AN ACTION"),
+			actionStage == 2 ? "YES" : (actionStage == 3 ? "BACK" : "LOAD"),
+			actionStage == 2 ? "NO" : (actionStage == 3 ? "BACK" : "DELETE"), choice);
 		return true;
 	}
 
@@ -2055,6 +2099,15 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 	NativeMenuCustomList = false;
 	NativeMenuCustomOption = false;
 	NativeMenuCustomSave = false;
+	NativeMenuChoiceDialog = false;
+	if (CurrentMenu != nullptr && CurrentMenu->IsKindOf("MessageBoxMenu") &&
+		CurrentMenu->IntVar(FName("mMessageMode")) == 0)
+	{
+		DrawBottomChoiceDialog(framebuffer,
+			CurrentMenu->StringVar(FName("NativeMessageText")).GetChars(), "YES", "NO",
+			CurrentMenu->IntVar(FName("messageSelection")));
+		return;
+	}
 	if (DrawNativeSaveLoadBottomFrame(framebuffer, menuPixels,
 		pitchBytes, width, height)) return;
 	if (gamestate == GS_DEMOSCREEN)
@@ -2071,6 +2124,8 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 	{
 		const unsigned char *menu = menuPixels + sourceY * pitchBytes + sourceX * 4;
 		const unsigned char *base = basePixels + sourceY * pitchBytes + sourceX * 4;
+		if (CurrentMenu != nullptr && CurrentMenu->IsKindOf("OptionMenu"))
+			return menu[0] != 0 || menu[1] != 0 || menu[2] != 0;
 		const int difference =
 			std::abs(static_cast<int>(menu[0]) - NativeMenuDimChannel(base[0], brightness)) +
 			std::abs(static_cast<int>(menu[1]) - NativeMenuDimChannel(base[1], brightness)) +
@@ -2097,7 +2152,7 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 
 	const bool optionMenu = CurrentMenu != nullptr && CurrentMenu->IsKindOf("OptionMenu");
 	bool stableListMenu = false;
-	bool sliderOptionMenu = false;
+	bool splitOptionMenu = false;
 	if (CurrentMenu != nullptr && CurrentMenu->IsKindOf("ListMenu"))
 	{
 		DListMenuDescriptor *descriptor =
@@ -2116,19 +2171,31 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 		if (descriptor != nullptr)
 		{
 			const FName name = descriptor->mMenuName;
-			sliderOptionMenu = name == FName("LegendControllerOptions") ||
-				name == FName("LegendSoundOptions");
+			splitOptionMenu = name == FName("LegendControllerOptions") ||
+				name == FName("LegendSoundOptions") ||
+				name == FName("LegendDisplayOptions") ||
+				name == FName("LegendDeveloperOptions");
 		}
+	}
+
+	if (splitOptionMenu)
+	{
+		minimumX = 84;
+		maximumX = 315;
 	}
 
 	// Main and pause previously jumped whenever the selector changed rows,
 	// because its sprite altered the automatically detected vertical bounds.
 	// Measure the stable text column for layout while still drawing the cursor
 	// pixels that extend beyond those bounds.
+	int layoutMinimumX = minimumX;
+	int layoutMaximumX = maximumX;
 	int layoutMinimumY = minimumY;
 	int layoutMaximumY = maximumY;
 	if (stableListMenu)
 	{
+		int textMinimumX = width;
+		int textMaximumX = -1;
 		int textMinimumY = height;
 		int textMaximumY = -1;
 		const int textColumnLeft = width * 2 / 5;
@@ -2137,12 +2204,16 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 			for (int sourceX = textColumnLeft; sourceX <= maximumX; ++sourceX)
 			{
 				if (!isMenuPixel(sourceX, sourceY)) continue;
+				textMinimumX = std::min(textMinimumX, sourceX);
+				textMaximumX = std::max(textMaximumX, sourceX);
 				textMinimumY = std::min(textMinimumY, sourceY);
 				textMaximumY = std::max(textMaximumY, sourceY);
 			}
 		}
 		if (textMaximumY >= textMinimumY)
 		{
+			layoutMinimumX = textMinimumX;
+			layoutMaximumX = textMaximumX;
 			layoutMinimumY = textMinimumY;
 			layoutMaximumY = textMaximumY;
 		}
@@ -2154,8 +2225,8 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 		304.0f / sourceWidth, maximumTargetHeight / sourceHeight });
 	const float targetWidth = sourceWidth * scale;
 	const float targetHeight = sourceHeight * scale;
-	const float horizontalOffset = stableListMenu ? 10.0f :
-		(sliderOptionMenu ? 10.0f : 0.0f);
+	const float horizontalOffset = stableListMenu ?
+		((minimumX + maximumX - layoutMinimumX - layoutMaximumX) * scale * 0.5f) : 0.0f;
 	const float targetLeft = (BottomScreenWidth - targetWidth) * 0.5f +
 		horizontalOffset;
 	const float targetTop = optionMenu ? 28.0f :
@@ -2200,7 +2271,8 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 		{
 			const int sourceX = std::clamp(minimumX + static_cast<int>(
 				(targetX - targetLeft) / scale), minimumX, maximumX);
-			if ((optionMenu && sourceY <= titleBottom) || !isMenuPixel(sourceX, sourceY))
+			if ((optionMenu && sourceY <= titleBottom) ||
+				(!optionMenu && !isMenuPixel(sourceX, sourceY)))
 				continue;
 			const unsigned char *menu = menuPixels + sourceY * pitchBytes + sourceX * 4;
 			OverlayPutPixel(framebuffer, targetX, targetY,
@@ -2687,7 +2759,7 @@ void DrawBottomOverlay(bool force)
 	if (gamestate != GS_LEVEL)
 	{
 		const EBottomPresentation target = desired;
-		if (!force && BottomPresentation == target) return;
+		if (!force && BottomPresentation == target && target != EBottomPresentation::Menu) return;
 		if (target == EBottomPresentation::Menu ||
 			target == EBottomPresentation::MenuDimmed)
 		{
@@ -2695,6 +2767,14 @@ void DrawBottomOverlay(bool force)
 			// lower LCD so opening Start/New Game feels like one two-screen UI.
 			DrawMenuBottomScreen(framebuffer,
 				target == EBottomPresentation::MenuDimmed ? 71u : 255u);
+			if (target == EBottomPresentation::Menu && (now / 600u) % 2u == 0u)
+			{
+				constexpr const char *Prompt = "PRESS START TO BEGIN";
+				constexpr float Scale = 1.28f;
+				const int x = (320 - std::lround(NativeFontTextWidth(NewSmallFont, Prompt) * Scale)) / 2;
+				DrawBottomScaledFontText(framebuffer, NewSmallFont, x, 180,
+					Prompt, Scale, OverlayIvory);
+			}
 		}
 		else
 		{
@@ -4694,6 +4774,26 @@ bool I_3DSDiagnosticTouch(float x, float y)
 	if (I_3DSNativeMenuVisible())
 	{
 		const int touchY = static_cast<int>(y * BottomScreenHeight);
+		if (NativeMenuChoiceDialog)
+		{
+			const int touchX = static_cast<int>(x * BottomScreenWidth);
+			if (touchY < 119 || touchY >= 150 || touchX < 60 || touchX >= 290) return true;
+			if (touchX >= 160 && touchX < 185) return true;
+			const int choice = touchX < 160 ? 0 : 1;
+			if (CurrentMenu->IsKindOf("LoadMenu"))
+			{
+				if (CurrentMenu->IntVar(FName("NativeActionStage")) != NativeMenuSaveActionStage) return true;
+				CurrentMenu->IntVar(FName("NativeActionChoice")) = choice;
+			}
+			else if (CurrentMenu->IsKindOf("MessageBoxMenu"))
+				CurrentMenu->IntVar(FName("messageSelection")) = choice;
+			else return true;
+			NativeMenuChoiceDialog = false;
+			NativeMenuTouchRowCount = 0;
+			CurrentMenu->CallMenuEvent(MKEY_Enter, true);
+			return true;
+		}
+
 		for (unsigned row = 0; row < NativeMenuTouchRowCount; ++row)
 		{
 			if (touchY < NativeMenuTouchRows[row].Top ||
@@ -4755,6 +4855,14 @@ bool I_3DSDiagnosticTouch(float x, float y)
 			event.subtype = EV_GUI_LButtonUp;
 			if (CurrentMenu != nullptr) CurrentMenu->CallResponder(&event);
 		}
+		return true;
+	}
+
+	if (gamestate == GS_DEMOSCREEN && menuactive == MENU_Off && !MenuStoryPage &&
+		x >= 0.06f && x <= 0.94f && y >= 0.68f && y <= 0.9f)
+	{
+		M_StartControlPanel(true);
+		M_SetMenu(NAME_Mainmenu, -1);
 		return true;
 	}
 
@@ -4854,4 +4962,17 @@ void I_3DSSetAudioReady(bool ready)
 void I_3DSSetMenuStoryPage(bool story)
 {
 	MenuStoryPage = story;
+}
+
+namespace { bool QuitWithoutSaving = false; }
+
+void I_3DSQuitWithoutSaving()
+{
+	QuitWithoutSaving = true;
+	throw CExitEvent(0);
+}
+
+bool I_3DSQuitWithoutSavingRequested()
+{
+	return QuitWithoutSaving;
 }

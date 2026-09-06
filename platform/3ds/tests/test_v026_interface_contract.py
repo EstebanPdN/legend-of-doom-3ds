@@ -135,7 +135,7 @@ class V026InterfaceContractTests(unittest.TestCase):
         self.assertNotIn('"LODPAUSE"', compose)
         self.assertIn("const int verticalOffset = (6 * height + 120) / 240", diagnostics)
         self.assertIn("stableListMenu", diagnostics)
-        self.assertIn("horizontalOffset = stableListMenu ? 10.0f", diagnostics)
+        self.assertIn("minimumX + maximumX - layoutMinimumX - layoutMaximumX", diagnostics)
         self.assertIn('Selector "M_SKULL1", -25, -5', patch)
         for label in ('"NEW GAME"', '"OPTIONS"', '"LOAD GAME"',
                       '"SAVE GAME"', '"QUIT GAME"'):

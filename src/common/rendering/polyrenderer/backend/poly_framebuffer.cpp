@@ -20,6 +20,8 @@
 **
 */
 
+#include "menu.h"
+
 #include "v_video.h"
 #include "m_png.h"
 #include "templates.h"
@@ -642,6 +644,8 @@ void PolyFrameBuffer::CaptureNativeMenuBase()
 		mNativeMenuBaseHeight);
 	std::memcpy(mNativeMenuBase.data(), mCanvas->GetPixels(),
 		mNativeMenuBase.size());
+	if (CurrentMenu != nullptr && CurrentMenu->IsKindOf("OptionMenu"))
+		std::memset(mCanvas->GetPixels(), 0, mNativeMenuBase.size());
 }
 #endif
 

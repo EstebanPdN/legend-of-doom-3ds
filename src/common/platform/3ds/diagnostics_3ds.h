@@ -98,3 +98,6 @@ void I_3DSRequestCleanDiagnosticDumps();
 // process-memory capture (map, player/camera, input command and render state).
 // Implemented in d_main.cpp, where the engine globals are already available.
 bool I_3DSWriteEngineDiagnosticSnapshot(const char *path);
+
+void I_3DSQuitWithoutSaving();
+bool I_3DSQuitWithoutSavingRequested();
