@@ -44,10 +44,6 @@
 #include "c_dispatch.h"
 #include "printf.h"
 
-#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
-#include "common/platform/3ds/stereo_3ds.h"
-CVAR(Bool, lod3ds_stereo, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
-#endif
 #include <cstring>
 
 #include "hardware.h"
@@ -308,10 +304,6 @@ namespace
 	constexpr int HybridTextureWidth = 512;
 	constexpr int HybridTextureHeight = 256;
 	C3D_RenderTarget *hybridTarget = nullptr;
-	C3D_RenderTarget *hybridRightTarget = nullptr;
-	C3D_Tex hybridRightTexture{};
-	uint32_t *hybridRightUpload = nullptr;
-	bool hybridStereoFailed = false;
 	C3D_Tex hybridTexture{};
 	Tex3DS_SubTexture hybridSubtexture{};
 	uint32_t *hybridUpload = nullptr;
@@ -371,13 +363,6 @@ namespace
 
 	void DeinitHybridPresenter()
 	{
-		gfxSet3D(false);
-		if (hybridRightTarget) C3D_RenderTargetDelete(hybridRightTarget);
-		if (hybridRightTexture.data) C3D_TexDelete(&hybridRightTexture);
-		if (hybridRightUpload) linearFree(hybridRightUpload);
-		hybridRightTarget=nullptr; hybridRightTexture={}; hybridRightUpload=nullptr;
-		hybridStereoFailed=false;
-		lod3ds::Stereo.Reset();
 		if (hybridTarget != nullptr)
 		{
 			C3D_RenderTargetDelete(hybridTarget);
@@ -486,39 +471,6 @@ namespace
 extern "C" void C3Di_RenderQueueWaitDone(void);
 #endif
 
-#ifdef LOD3DS_HYBRID_PERFORMANCE
-float I_3DSStereoStrength()
-{
-	if (!lod3ds_stereo || !hybridPresenterReady || hybridStereoFailed) return 0;
-	const float slider = osGet3DSliderState();
-	if (!std::isfinite(slider) || slider <= 0.01f) return 0;
-	if (!hybridRightTarget)
-	{
-		C3Di_RenderQueueWaitDone();
-		hybridRightUpload=static_cast<uint32_t *>(linearMemAlign(512*256*4,0x80));
-		if (hybridRightUpload && C3D_TexInitVRAM(&hybridRightTexture,512,256,GPU_RGBA8))
-		{
-			C3D_TexSetFilter(&hybridRightTexture,GPU_LINEAR,GPU_LINEAR);
-			C3D_TexSetWrap(&hybridRightTexture,GPU_CLAMP_TO_EDGE,GPU_CLAMP_TO_EDGE);
-			hybridRightTarget=C3D_RenderTargetCreate(240,400,GPU_RB_RGBA8,GPU_RB_DEPTH16);
-		}
-		if (!hybridRightTarget)
-		{
-			if (hybridRightTexture.data) C3D_TexDelete(&hybridRightTexture);
-			if (hybridRightUpload) linearFree(hybridRightUpload);
-			hybridRightTexture={}; hybridRightUpload=nullptr; hybridStereoFailed=true;
-			I_3DSStartupLog("stereo-allocation-failed-using-2d");
-			return 0;
-		}
-		std::memset(hybridRightUpload,0,512*256*4);
-		GSPGPU_FlushDataCache(hybridRightUpload,512*256*4);
-		C3D_RenderTargetSetOutput(hybridRightTarget,GFX_TOP,GFX_RIGHT,HybridOutputTransferFlags());
-		I_3DSStartupLog("stereo-presenter-ready");
-	}
-	return std::min(slider,1.f);
-}
-#endif
-
 void I_PolyWaitForPresent3DS()
 {
 #ifdef LOD3DS_HYBRID_PERFORMANCE
@@ -552,9 +504,6 @@ void I_PolyPresentInit()
 
 uint8_t *I_PolyPresentLock(int w, int h, bool vsync, int &pitch)
 {
-	#ifdef LOD3DS_HYBRID_PERFORMANCE
-	gfxSet3D(false);
-	#endif
 	// When vsync changes we need to reinitialize
 	if (polyrendertarget && polyvsync != vsync)
 	{
@@ -684,42 +633,35 @@ bool I_PolyPresentDirect3DS(const uint8_t *pixels, int pitch, int width,
 		return false;
 	}
 
-	const uint8_t *left = hybridRightTarget ? lod3ds::Stereo.ComposeLeft(pixels,width,height,pitch) : nullptr;
-	const bool stereo = left != nullptr;
 	const size_t uploadBytes = lod3ds::CopyPresentPixels(hybridUpload,
-		HybridTextureWidth, stereo ? left : pixels, pitch, width, height);
-	if (R_FAILED(GSPGPU_FlushDataCache(hybridUpload, uploadBytes))) { gfxSet3D(false); return false; }
-	if (stereo)
-	{
-		lod3ds::CopyPresentPixels(hybridRightUpload,HybridTextureWidth,pixels,pitch,width,height);
-		if (R_FAILED(GSPGPU_FlushDataCache(hybridRightUpload,uploadBytes))) { gfxSet3D(false); return false; }
-	}
-	if (!C3D_FrameBegin(0)) { gfxSet3D(false); return false; }
-	gfxSet3D(stereo);
+		HybridTextureWidth, pixels, pitch, width, height);
+	if (R_FAILED(GSPGPU_FlushDataCache(hybridUpload, uploadBytes))) return false;
+
+	if (!C3D_FrameBegin(0)) return false;
 	C3D_SyncDisplayTransfer(hybridUpload,
 		GX_BUFFER_DIM(HybridTextureWidth, HybridTextureHeight),
 		static_cast<u32 *>(hybridTexture.data),
-		GX_BUFFER_DIM(HybridTextureWidth, HybridTextureHeight),HybridTextureTransferFlags());
-	if (stereo) C3D_SyncDisplayTransfer(hybridRightUpload,
 		GX_BUFFER_DIM(HybridTextureWidth, HybridTextureHeight),
-		static_cast<u32 *>(hybridRightTexture.data),
-		GX_BUFFER_DIM(HybridTextureWidth, HybridTextureHeight),HybridTextureTransferFlags());
+		HybridTextureTransferFlags());
+
 	hybridSubtexture = Tex3DS_SubTexture{
-		static_cast<u16>(width), static_cast<u16>(height),0.0f,1.0f,
-		static_cast<float>(width)/HybridTextureWidth,1.0f-static_cast<float>(height)/HybridTextureHeight
+		static_cast<u16>(width), static_cast<u16>(height),
+		0.0f, 1.0f,
+		static_cast<float>(width) / HybridTextureWidth,
+		1.0f - static_cast<float>(height) / HybridTextureHeight
 	};
-	const C2D_DrawParams params{{0.0f,0.0f,400.0f,240.0f},{0.0f,0.0f},0.0f,0.0f};
-	for (int eye=0;eye<(stereo ? 2 : 1);++eye)
-	{
-		auto target=eye==0 ? hybridTarget : hybridRightTarget;
-		const C2D_Image image{eye==0 ? &hybridTexture : &hybridRightTexture,&hybridSubtexture};
-		C2D_TargetClear(target,C2D_Color32(0,0,0,255));
-		C2D_SceneBegin(target);
-		ConfigureHybridBgraTexture();
-		C2D_DrawImage(image, &params, nullptr);
-		C2D_Flush();
-	}
-	GSPGPU_FlushDataCache(hybridC2DFlushBase,hybridC2DFlushSize);
+	const C2D_Image image{ &hybridTexture, &hybridSubtexture };
+	const C2D_DrawParams params{
+		{ 0.0f, 0.0f, 400.0f, 240.0f },
+		{ 0.0f, 0.0f }, 0.0f, 0.0f
+	};
+	C2D_TargetClear(hybridTarget, C2D_Color32(0, 0, 0, 255));
+	C2D_SceneBegin(hybridTarget);
+	// Set BGRA swizzle before Citro2D snapshots the draw state.
+	ConfigureHybridBgraTexture();
+	C2D_DrawImage(image, &params, nullptr);
+	C2D_Flush();
+	GSPGPU_FlushDataCache(hybridC2DFlushBase, hybridC2DFlushSize);
 	C3D_FrameEnd(GX_CMDLIST_FLUSH);
 	return true;
 }

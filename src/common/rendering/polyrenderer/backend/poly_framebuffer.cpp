@@ -20,9 +20,6 @@
 **
 */
 
-#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
-#include "common/platform/3ds/stereo_3ds.h"
-#endif
 #include "menu.h"
 
 #include "v_video.h"
@@ -586,9 +583,6 @@ TArray<uint8_t> PolyFrameBuffer::GetScreenshotBuffer(int &pitch, ESSType &color_
 
 void PolyFrameBuffer::BeginFrame()
 {
-	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
-	lod3ds::Stereo.Reset();
-	#endif
 	#if defined(__3DS__) && defined(LOD3DS_HYBRID_PERFORMANCE)
 	// DFrameBuffer normally applies a requested virtual-size change at the end
 	// of the frame. Applying it before viewport setup prevents the first New
