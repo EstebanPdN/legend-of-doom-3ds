@@ -61,7 +61,7 @@ EXTERN_CVAR(Bool, lod3ds_top_hud)
 EXTERN_CVAR(Bool, crosshairon)
 
 CVAR(Bool, lod3ds_select_overlay, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
-CVAR(Bool, lod3ds_map_collisions, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, lod3ds_map_collisions, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 extern uint64_t LastCount;
 extern double LastFrameMilliseconds;
 

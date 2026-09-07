@@ -302,7 +302,7 @@ CVAR (Bool, autoloadwidescreen, true, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOB
 CVAR (Bool, r_debug_disable_vis_filter, false, 0)
 #ifdef __3DS__
 CVAR(Bool, vid_fps, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
-CVAR(Bool, lod3ds_top_hud, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, lod3ds_top_hud, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 #else
 CVAR(Bool, vid_fps, false, 0)
 static constexpr bool lod3ds_top_hud = true;
