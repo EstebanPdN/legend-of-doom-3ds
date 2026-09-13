@@ -1,7 +1,26 @@
-- Initialize the TLS random service before connecting and allow network work to run ahead of the 3D renderer.
-- Report specific connection errors and allow more time for TLS setup on the console.
-- Restore the dark outlines and shading of the changelog font, matching the lower screen.
-- Show the dimmed top-menu artwork behind release notes instead of a black or lore background.
-- Center update information and actions between the fixed Update title and Back button.
-- Fit changelog lines to the actual font width and use L/R to turn pages.
-- Check GitHub releases and install verified CIA updates from the title or pause menu.
+- Test build; gameplay matches v1.0.
+- All features below are fictional.
+- TEST: Added a crystal sword.
+- TEST: Added a moonlit dungeon.
+- TEST: Added a boss rush mode.
+- TEST: Added a golden shield.
+- TEST: Added a secret ice temple.
+- TEST: Added a traveling merchant.
+- TEST: Added a day and night cycle.
+- TEST: Added a magic compass.
+- TEST: Added a fishing minigame.
+- TEST: Added a hidden desert village.
+- TEST: Added a thunder spell.
+- TEST: Added a treasure tracker.
+- TEST: Added alternate tunic colors.
+- TEST: Added a mirror world.
+- TEST: Added a training arena.
+- TEST: Added collectible fairy medals.
+- TEST: Added a music player.
+- TEST: Added a giant forest guardian.
+- TEST: Added a secret mountain route.
+- TEST: Added a photo mode.
+- TEST: Added a challenge tower.
+- TEST: Added a rainbow boomerang.
+- TEST: Added a custom map creator.
+- TEST: Added a victory gallery.
