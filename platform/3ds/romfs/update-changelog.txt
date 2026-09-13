@@ -1,5 +1,5 @@
-- Update uses the same red title as Options and the same text font as Controls.
-- The changelog appears automatically on the top screen. Use L/R to turn pages.
-- Installed release notes remain available while offline or checking for updates.
-- Check stable and experimental releases from Update in the title or pause menu.
-- CIA downloads are verified before installation; saves and settings are kept.
+- Restore the dark outlines and shading of the changelog font, matching the lower screen.
+- Show the dimmed top-menu artwork behind release notes instead of a black or lore background.
+- Center update information and actions between the fixed Update title and Back button.
+- Fit changelog lines to the actual font width and use L/R to turn pages.
+- Check GitHub releases and install verified CIA updates from the title or pause menu.

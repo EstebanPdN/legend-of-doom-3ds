@@ -58,19 +58,19 @@ bool DrawUpdateMenu(unsigned char *framebuffer, const unsigned char *menu,
             ">", 1.28f, OverlayRed);
         return true;
     }
-    text(58, "INSTALLED " LOD3DS_PORT_VERSION, 1.28f, OverlayIvory);
+    text(48, "INSTALLED " LOD3DS_PORT_VERSION, 1.28f, OverlayIvory);
     char latest[72];
     std::snprintf(latest, sizeof(latest), "LATEST %s", status.version[0] ? status.version : "--");
-    text(78, latest, 1.28f, OverlayIvory);
-    text(105, status.message[0] ? status.message : "CHECK FOR A NEW VERSION", 1.15f, OverlayIvory);
+    text(68, latest, 1.28f, OverlayIvory);
+    text(95, status.message[0] ? status.message : "CHECK FOR A NEW VERSION", 1.15f, OverlayIvory);
     if (Updater_Busy())
     {
-        OverlayRect(framebuffer, 28, 139, 264, 7, OverlayInk);
-        OverlayRect(framebuffer, 29, 140, 262, 5, FOverlayColor{60,60,60});
-        OverlayRect(framebuffer, 29, 140, 262*status.progress/100, 5, OverlayRed);
+        OverlayRect(framebuffer, 28, 129, 264, 7, OverlayInk);
+        OverlayRect(framebuffer, 29, 130, 262, 5, FOverlayColor{60,60,60});
+        OverlayRect(framebuffer, 29, 130, 262*status.progress/100, 5, OverlayRed);
         char progress[24];
         std::snprintf(progress, sizeof(progress), "%u%%", status.progress);
-        if (status.state != UPDATE_CHECKING) text(158, progress, 1.28f, OverlayIvory);
+        if (status.state != UPDATE_CHECKING) text(148, progress, 1.28f, OverlayIvory);
         text(188, status.state == UPDATE_INSTALLING ? "PLEASE WAIT" : "B: CANCEL", 1.28f, OverlayIvory);
         return true;
     }
@@ -80,7 +80,8 @@ bool DrawUpdateMenu(unsigned char *framebuffer, const unsigned char *menu,
         "CHECK FOR UPDATES", "INSTALL UPDATE", "BACK" };
     for (int row=0; row<4; ++row)
     {
-        const int y = 139+row*25;
+        // Keep the title and Back fixed; center the intervening content.
+        const int y = row == 3 ? 214 : 129+row*25;
         const bool selected = descriptor && descriptor->mSelectedItem == row;
         auto color = row == 2 && status.state != UPDATE_AVAILABLE
             ? FOverlayColor{112,112,112} : OverlayIvory;
