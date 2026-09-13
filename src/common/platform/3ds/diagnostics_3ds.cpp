@@ -1850,8 +1850,12 @@ void DrawDeveloperOverlay(unsigned char *framebuffer)
 		static_cast<unsigned>(linearSpaceFree()),
 		static_cast<unsigned>(std::max<size_t>(1, envGetLinearHeapSize())), OverlayBlue);
 	char render[40] = {};
+#if defined(LOD3DS_HYBRID_PERFORMANCE)
 	std::snprintf(render, sizeof(render), "CPU0+2 %dX%d PICA",
 		I_3DSGameplayResolutionWidth(), I_3DSGameplayResolutionHeight());
+#else
+	std::snprintf(render, sizeof(render), "%s", LOD3DS_BUILD_PROFILE_NAME);
+#endif
 	OverlayText(framebuffer, 126, 109, render, 1, OverlayIvory);
 
 	OverlayFrame(framebuffer, 8, 138, 304, 33, 2, OverlayBlue);
