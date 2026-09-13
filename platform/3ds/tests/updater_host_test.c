@@ -1,9 +1,68 @@
 // Host I/O harness: real transfer/hash/control flow, fake console install service.
 #include <assert.h>
 #include <stdarg.h>
+#include <stdio.h>
+#include <unistd.h>
+static ssize_t test_sd_write(int fd, const void *data, size_t size);
+static int test_sd_close(FILE *file);
+#define write test_sd_write
+#define fclose test_sd_close
 #include "updater.c"
+#undef write
+#undef fclose
+static unsigned sd_writes;
+static bool fail_sd_write, fail_sd_close;
+static ssize_t test_sd_write(int fd, const void *data, size_t size) {
+  sd_writes++;
+  if (fail_sd_write) return write(fd, data, size - 1);
+  return write(fd, data, size);
+}
+static int test_sd_close(FILE *file) {
+  int result = fclose(file);
+  return fail_sd_close ? EOF : result;
+}
+// Exercise the real receive/flush/close path, including fragmented TLS records.
+static void test_buffered_download(void) {
+  const size_t total = 47u * 1024u * 1024u + 317;
+  unsigned char payload[16384], digest[32];
+  for (unsigned i=0;i<sizeof(payload);i++) payload[i]=(i*13)^0xa7;
+  Transfer t = {.expected=total};
+  assert(open_download(&t));
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);mbedtls_sha256_starts_ret(&sha,0);
+  sd_writes=0;
+  for (size_t offset=0, chunk=0;offset<total;chunk++) {
+    size_t n=(chunk % 3)?1459:sizeof(payload);
+    if(n>total-offset)n=total-offset;
+    assert(receive(payload,1,n,&t)==n);
+    mbedtls_sha256_update_ret(&sha,payload,n);
+    offset+=n;
+  }
+  assert(status.progress==99);
+  assert(close_download(&t,true));
+  assert(status.progress==100 && sd_writes==(total+UPDATE_IO_SIZE-1)/UPDATE_IO_SIZE);
+  mbedtls_sha256_finish_ret(&sha,digest);mbedtls_sha256_free(&sha);
+  release.size=total;
+  for(int i=0;i<32;i++)snprintf(release.sha256+i*2,3,"%02x",digest[i]);
+  assert(verify_file());assert(install_cia());free(t.data);
+  printf("PASS: %zu bytes in %u SD writes; exact SHA256, final partial block preserved.\n",total,sd_writes);
+  // A failed tail write or file close must not report a completed download.
+  for (int failure=0;failure<4;failure++) {
+    t=(Transfer){.expected=sizeof(payload)};assert(open_download(&t));
+    assert(receive(payload,1,sizeof(payload),&t)==sizeof(payload));
+    fail_sd_write=failure==0;fail_sd_close=failure==1;cancel=failure==2;
+    assert(!close_download(&t,failure!=3));
+    assert(status.progress!=100);
+    free(t.data);fail_sd_write=false;fail_sd_close=false;cancel=false;
+  }
+  t=(Transfer){.expected=UPDATE_IO_SIZE};assert(open_download(&t));
+  fail_sd_write=true;
+  for (unsigned i=0;i<7;i++)assert(receive(payload,1,sizeof(payload),&t)==sizeof(payload));
+  assert(!receive(payload,1,sizeof(payload),&t));
+  assert(!close_download(&t,false));free(t.data);fail_sd_write=false;
+}
 static bool close_request,wrong_title,short_write,no_space;
-static unsigned starts,finishes,cancels,written;
+static unsigned starts,finishes,cancels,written,install_writes;
 static FILE *input_file;
 static Result ac_result,soc_result,ssl_result;
 static unsigned ac_closed,soc_closed,ssl_closed;
@@ -27,7 +86,7 @@ Result AM_GetCiaFileInfo(int a,AM_TitleInfo*i,Handle h){i->titleID=wrong_title?1
 Result AM_GetCiaRequiredSpace(u64*r,int a,Handle h){*r=5000000;return 0;}
 Result AM_StartCiaInstallOverwrite(Handle*h,int a){starts++;*h=2;return 0;}
 Result FSFILE_Read(Handle h,u32*n,u64 off,void*b,u32 s){fseek(input_file,off,SEEK_SET);*n=fread(b,1,s,input_file);return 0;}
-Result FSFILE_Write(Handle h,u32*n,u64 off,const void*b,u32 s,u32 f){*n=short_write?s-1:s;written+=*n;return 0;}
+Result FSFILE_Write(Handle h,u32*n,u64 off,const void*b,u32 s,u32 f){install_writes++;*n=short_write?s-1:s;written+=*n;return 0;}
 Result AM_FinishCiaInstall(Handle h){finishes++;return 0;}
 Result AM_CancelCIAInstall(Handle h){cancels++;return 0;}
 Result FSFILE_Close(Handle h){fclose(input_file);return 0;}
@@ -41,6 +100,9 @@ int main(int argc,char**argv){
  // HTTP/TLS must not be scheduled behind the always-runnable 3D renderer.
  start(false);assert(created_priority==0x2f&&busy);busy=false;
  caller_priority=0x18;start(false);assert(created_priority==0x18);busy=false;
+ test_buffered_download();
+ assert(written==release.size && install_writes==377);
+ starts=finishes=cancels=written=install_writes=0;
  // Exercise the real bounded transfer and hash paths with deterministic bytes.
  unsigned char payload[8192];for(unsigned i=0;i<sizeof(payload);i++)payload[i]=i*13;
  release.size=sizeof(payload);
@@ -49,8 +111,8 @@ int main(int argc,char**argv){
  mbedtls_sha256_update_ret(&sha,payload,sizeof(payload));mbedtls_sha256_finish_ret(&sha,digest);
  mbedtls_sha256_free(&sha);
  for(int i=0;i<32;i++)snprintf(release.sha256+i*2,3,"%02x",digest[i]);
- Transfer t={.file=fopen(UPDATE_PART,"wb"),.expected=release.size};assert(t.file);
- assert(receive(payload,1,sizeof(payload),&t)==sizeof(payload));assert(!fclose(t.file));
+ Transfer t={.expected=release.size};assert(open_download(&t));
+ assert(receive(payload,1,sizeof(payload),&t)==sizeof(payload));assert(close_download(&t,true));free(t.data);
  assert(t.size==release.size && verify_file());
  // A wrong app or insufficient space must never start an install transaction.
  wrong_title=true;assert(!install_cia()&&starts==0);wrong_title=false;
@@ -71,7 +133,12 @@ int main(int argc,char**argv){
    UpdateRelease found;
    assert(Update_ParseRelease(live.data,live.size,false,false,&found)>=0);
    assert(Update_ParseRelease(live.data,live.size,true,false,&found)>=0);
-   free(live.data);curl_global_cleanup();
+   free(live.data);
+   live=(Transfer){0};assert(fetch("https://api.github.com/repos/" UPDATE_REPOSITORY "/releases?per_page=100",&live));
+   assert(Update_ParseRelease(live.data,live.size,false,false,&release)==1);free(live.data);
+   live=(Transfer){.expected=release.size};assert(open_download(&live));
+   assert(fetch(release.url,&live));assert(close_download(&live,true));free(live.data);assert(verify_file());
+   curl_global_cleanup();
    status.prerelease=false;download_job=false;
    run_job(NULL);assert(status.state==UPDATE_CURRENT||status.state==UPDATE_AVAILABLE||status.state==UPDATE_EMPTY);
    assert(ssl_closed==1&&soc_closed==2&&ac_closed==3&&!busy);
