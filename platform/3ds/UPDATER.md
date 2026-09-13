@@ -4,7 +4,11 @@ Start opens the existing menu. Update sits between Save Game and Quit Game in
 both the title menu and the pause menu (which retains Resume Game first).
 The Update caption is copied from the engine's Options renderer, preserving its
 font and red translation. Information uses NewSmallFont, like Controls. The
-changelog stays on the top screen, with bundled notes available offline.
+changelog stays on the top screen, with bundled notes available offline. Both
+screens retain the font shading and dark outlines at the same scale. Release
+notes use the dimmed TITLEPIC artwork, independently of the idle lore page or
+paused scene, and wrap to the measured font width. The lower information and
+actions are centered between the fixed Update heading and Back button.
 
 Opening Update checks GitHub. The selected stable/experimental channel persists
 under `sdmc:/3ds/legend-of-doom/update/channel.txt`. A selects, B returns or
@@ -68,3 +72,6 @@ release exists. Creating this build does not publish anything.
 The first local updater build used version 0.47. Install v0.8-E3 manually with
 FBI/QR: that older updater orders 0.47 above 0.8 and cannot migrate itself to
 this numbering. The 0.8-E series compares subsequent experiments numerically.
+
+Version 1.0 is a stable release. Select Stable in v0.8-E3 to receive it; the
+experimental channel only lists experimental releases.

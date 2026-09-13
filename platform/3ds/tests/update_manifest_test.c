@@ -16,6 +16,8 @@ static int parse(json_t *r,bool pre,bool hb,UpdateRelease *out) {
  char *s=json_dumps(list,JSON_COMPACT);json_decref(list);int result=Update_ParseRelease(s,strlen(s),pre,hb,out);free(s);return result;
 }
 int main(int argc,char **argv) {
+ assert(Update_IsNewer("v1.0", "0.8-E3"));
+ assert(Update_IsNewer("v1.0", "0.47"));
  assert(Update_IsNewer("v0.8-E3","0.8-E2"));
  assert(Update_IsNewer("v0.8-E4","0.8-E3"));
  assert(!Update_IsNewer("v0.8-E2","0.8-E3"));
