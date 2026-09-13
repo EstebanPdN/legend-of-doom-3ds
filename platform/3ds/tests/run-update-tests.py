@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='lod-updater-test-') as temporary:
     host = work / 'updater-test'
     version = (root / 'platform/3ds/version.txt').read_text().strip()
     subprocess.run(common + [f'-DLOD3DS_PORT_VERSION="{version}"', '-Wno-deprecated-declarations',
-        '-ffunction-sections', '-fdata-sections', '-I' + str(tests / 'update_host'),
+        '-fsanitize=address,undefined', '-ffunction-sections', '-fdata-sections', '-I' + str(tests / 'update_host'),
         str(tests / 'updater_host_test.c'), str(source / 'update_manifest.c'),
         str(prefix / 'lib/libjansson.a'), '-lcurl', '-Wl,-dead_strip', '-o', str(host)], check=True)
     (work / 'sdmc:/3ds/legend-of-doom/update').mkdir(parents=True)
