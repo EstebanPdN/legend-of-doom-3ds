@@ -1,3 +1,5 @@
+- Initialize the TLS random service before connecting and allow network work to run ahead of the 3D renderer.
+- Report specific connection errors and allow more time for TLS setup on the console.
 - Restore the dark outlines and shading of the changelog font, matching the lower screen.
 - Show the dimmed top-menu artwork behind release notes instead of a black or lore background.
 - Center update information and actions between the fixed Update title and Back button.
