@@ -13,6 +13,9 @@ This repository is a Nintendo 3DS adaptation of GZDoom 4.7.1. The main source tr
 | [NovaGL](https://github.com/efimandreev0/NovaGL) | revision `9cabf853fb57a1037bea55dbec81eea073b5ee6c` | OpenGL-to-Citro3D/PICA200 translation layer | Upstream README declares MIT; authors and contributors are credited there |
 | [OpenAL Soft/NDSP](https://github.com/efimandreev0/openal-soft-3ds) | revision `35420d558a001660140033aa70eeee88b0224f3a` | Nintendo 3DS sound backend | LGPL-2.0-or-later; LGPL text under `docs/licenses/` |
 | libctru | devkitPro package | Nintendo 3DS system API | zlib license |
+| curl | 8.4.0 with devkitPro 3DS patches | HTTPS updater transport | curl license, under `platform/3ds/update-dependencies/` |
+| mbedTLS | 2.28.8 with devkitPro 3DS patches | TLS and SHA-256 verification | Apache-2.0, under `platform/3ds/update-dependencies/` |
+| Jansson | 2.14 | Release metadata parsing | MIT, under `platform/3ds/update-dependencies/` |
 | Freedoom: Phase 2 | 0.13.0 | Free Doom-compatible IWAD | BSD-3-Clause; the SD package includes `FREEDOOM-COPYING.txt` |
 
 The build downloads source dependencies from their official repositories and applies the compatibility patches under `platform/3ds/patches/`.

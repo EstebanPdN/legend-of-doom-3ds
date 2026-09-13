@@ -102,6 +102,9 @@ AccessControlInfo:
     StoreProcessDataCache: 83
     FlushProcessDataCache: 84
   ServiceAccessControl:
+    - ac:u
+    - soc:U
+    - am:net
     - APT:U
     - cfg:u
     - dsp::DSP
@@ -115,6 +118,9 @@ SystemControlInfo:
   RemasterVersion: 1
   StackSize: 0x80000
   Dependency:
+    ac: 0x0004013000002402
+    am: 0x0004013000001502
+    socket: 0x0004013000002e02
     cfg: 0x0004013000001702
     dsp: 0x0004013000001a02
     gsp: 0x0004013000001c02

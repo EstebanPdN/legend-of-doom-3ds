@@ -1,0 +1,5 @@
+- Update uses the same red title as Options and the same text font as Controls.
+- The changelog appears automatically on the top screen. Use L/R to turn pages.
+- Installed release notes remain available while offline or checking for updates.
+- Check stable and experimental releases from Update in the title or pause menu.
+- CIA downloads are verified before installation; saves and settings are kept.

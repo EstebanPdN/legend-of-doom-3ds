@@ -530,6 +530,7 @@ void I_StartTic ()
 	I_CheckNativeMouse ();
 	I_GetEvent ();
 	#ifdef __3DS__
+	I_3DSServiceUpdater();
 	I_3DSServiceDiagnosticDump();
 	#endif
 }
