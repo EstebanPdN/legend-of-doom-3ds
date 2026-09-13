@@ -5,6 +5,17 @@
 static bool close_request,wrong_title,short_write,no_space;
 static unsigned starts,finishes,cancels,written;
 static FILE *input_file;
+static Result ac_result,soc_result,ssl_result;
+static unsigned ac_closed,soc_closed,ssl_closed;
+static int created_priority;
+static s32 caller_priority=0x30;
+Result acInit(void){return ac_result;}Result ACU_GetWifiStatus(u32*w){*w=1;return 0;}void acExit(void){ac_closed++;}
+void *memalign(size_t align,size_t n){return malloc(n);}
+Result socInit(void*p,u32 n){assert(n==1024*1024);return soc_result;}void socExit(void){soc_closed++;}
+Result sslcInit(Handle h){assert(h==0);return ssl_result;}void sslcExit(void){ssl_closed++;}
+Result svcGetThreadPriority(s32*p,Handle h){*p=caller_priority;return 0;}
+Thread threadCreate(void(*f)(void*),void*a,unsigned stack,int priority,int cpu,bool detached){created_priority=priority;return (Thread)1;}
+Result threadJoin(Thread t,u64 timeout){return 0;}void threadFree(Thread t){}bool envIsHomebrew(void){return false;}
 bool aptShouldClose(void){return close_request;}bool aptIsActive(void){return true;}
 bool aptIsHomeAllowed(void){return true;}bool aptIsSleepAllowed(void){return true;}
 void aptSetHomeAllowed(bool b){}void aptSetSleepAllowed(bool b){}
@@ -22,6 +33,14 @@ Result AM_CancelCIAInstall(Handle h){cancels++;return 0;}
 Result FSFILE_Close(Handle h){fclose(input_file);return 0;}
 int main(int argc,char**argv){
  initialized=true; status.state=UPDATE_CHECKING;
+ // Exercise the actual worker's partial initialization and cleanup paths.
+ ac_result=-1;run_job(NULL);assert(status.state==UPDATE_ERROR&&!ac_closed&&!soc_closed&&!ssl_closed);
+ ac_result=0;soc_result=-2;run_job(NULL);assert(!strcmp(status.message,"SOCKET SERVICE FAILED")&&ac_closed==1&&!soc_closed&&!ssl_closed);
+ soc_result=0;ssl_result=-3;run_job(NULL);assert(!strcmp(status.message,"TLS SERVICE FAILED")&&ac_closed==2&&soc_closed==1&&!ssl_closed);
+ ssl_result=0;
+ // HTTP/TLS must not be scheduled behind the always-runnable 3D renderer.
+ start(false);assert(created_priority==0x2f&&busy);busy=false;
+ caller_priority=0x18;start(false);assert(created_priority==0x18);busy=false;
  // Exercise the real bounded transfer and hash paths with deterministic bytes.
  unsigned char payload[8192];for(unsigned i=0;i<sizeof(payload);i++)payload[i]=i*13;
  release.size=sizeof(payload);
@@ -53,6 +72,9 @@ int main(int argc,char**argv){
    assert(Update_ParseRelease(live.data,live.size,false,false,&found)>=0);
    assert(Update_ParseRelease(live.data,live.size,true,false,&found)>=0);
    free(live.data);curl_global_cleanup();
+   status.prerelease=false;download_job=false;
+   run_job(NULL);assert(status.state==UPDATE_CURRENT||status.state==UPDATE_AVAILABLE||status.state==UPDATE_EMPTY);
+   assert(ssl_closed==1&&soc_closed==2&&ac_closed==3&&!busy);
    puts("PASS: live GitHub HTTPS with bundled CA, and both release channels");
  }
  puts("PASS: bounded transfer/SHA256; corruption/truncation/cancel/size; title/space/short-write/commit guards. AM is mocked, not console-tested.");

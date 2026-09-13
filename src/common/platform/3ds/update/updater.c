@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <errno.h>
 
 static void UpdateLog(const char *format, ...) {
   char line[256]; va_list args; va_start(args, format);
@@ -74,7 +75,10 @@ static int transfer_progress(void *p, curl_off_t total, curl_off_t now, curl_off
 static long last_http;
 static bool fetch(const char *url, Transfer *t) {
   last_http = 0;
-  CURL *c = curl_easy_init(); if (!c) return false;
+  CURL *c = curl_easy_init();
+  if (!c) { publish(UPDATE_ERROR, "HTTP MEMORY ERROR"); return false; }
+  char error[CURL_ERROR_SIZE] = {0};
+  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, error);
   curl_easy_setopt(c, CURLOPT_URL, url);
   curl_easy_setopt(c, CURLOPT_USERAGENT, "Legend-of-Doom-3DS/" LOD3DS_PORT_VERSION);
   curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -86,8 +90,8 @@ static bool fetch(const char *url, Transfer *t) {
   curl_easy_setopt(c, CURLOPT_CAINFO, "romfs:/update-ca.pem");
   curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
   curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
-  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 12L);
-  curl_easy_setopt(c, CURLOPT_TIMEOUT, t->file ? 1800L : 25L);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
+  curl_easy_setopt(c, CURLOPT_TIMEOUT, t->file ? 1800L : 90L);
   curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 128L);
   curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 15L);
   curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
@@ -101,7 +105,24 @@ static bool fetch(const char *url, Transfer *t) {
   last_http = http;
   curl_easy_cleanup(c);
   if (code != CURLE_OK || http != 200) {
-    UpdateLog("Updater transfer failed: curl=%d http=%ld", code, http);
+    UpdateLog("Updater transfer failed: curl=%d http=%ld: %s", code, http,
+              error[0] ? error : curl_easy_strerror(code));
+    char message[80];
+    const char *reason = "CONNECTION FAILED";
+    switch (code) {
+      case CURLE_COULDNT_RESOLVE_HOST: reason = "DNS LOOKUP FAILED"; break;
+      case CURLE_COULDNT_CONNECT: reason = "SERVER CONNECTION FAILED"; break;
+      case CURLE_OPERATION_TIMEDOUT: reason = "CONNECTION TIMED OUT"; break;
+      case CURLE_SSL_CONNECT_ERROR: reason = "TLS CONNECTION FAILED"; break;
+      case CURLE_PEER_FAILED_VERIFICATION: reason = "TLS CERTIFICATE REJECTED"; break;
+      case CURLE_SSL_CACERT_BADFILE: reason = "CA CERTIFICATE FILE ERROR"; break;
+      case CURLE_OUT_OF_MEMORY: reason = "HTTP MEMORY ERROR"; break;
+      case CURLE_ABORTED_BY_CALLBACK: reason = "UPDATE CANCELLED"; break;
+      default: break;
+    }
+    if (http >= 400) snprintf(message, sizeof(message), "GITHUB HTTP %ld", http);
+    else snprintf(message, sizeof(message), "%s (%d)", reason, code);
+    publish(UPDATE_ERROR, message);
     return false;
   }
   return true;
@@ -171,16 +192,25 @@ static bool install_3dsx(void) {
   remove(backup); return true;
 }
 static void run_job(void *arg) {
-  void *soc_buffer = NULL; bool soc_ready = false, curl_ready = false, ac_ready = false;
+  void *soc_buffer = NULL; bool soc_ready = false, curl_ready = false, ac_ready = false, ssl_ready = false;
   bool ok = false; Transfer t = {0};
   UpdateStatus s; Updater_GetStatus(&s);
-  if (R_FAILED(acInit())) goto done;
+  Result rc = acInit();
+  if (R_FAILED(rc)) { UpdateLog("acInit failed: %08lx", (unsigned long)rc); publish(UPDATE_ERROR, "WI-FI SERVICE FAILED"); goto done; }
   ac_ready = true; u32 wifi = 0;
-  if (R_FAILED(ACU_GetWifiStatus(&wifi)) || !wifi) { publish(UPDATE_ERROR, "NO WI-FI CONNECTION"); goto done; }
+  rc = ACU_GetWifiStatus(&wifi);
+  if (R_FAILED(rc) || !wifi) { UpdateLog("Wi-Fi status: result=%08lx wifi=%lu", (unsigned long)rc, (unsigned long)wifi); publish(UPDATE_ERROR, "NO WI-FI CONNECTION"); goto done; }
   soc_buffer = memalign(4096, 1024 * 1024);
-  if (!soc_buffer || R_FAILED(socInit(soc_buffer, 1024 * 1024))) goto done;
+  if (!soc_buffer) { publish(UPDATE_ERROR, "NETWORK MEMORY ERROR"); goto done; }
+  rc = socInit(soc_buffer, 1024 * 1024);
+  if (R_FAILED(rc)) { UpdateLog("socInit failed: %08lx errno=%d", (unsigned long)rc, errno); publish(UPDATE_ERROR, "SOCKET SERVICE FAILED"); goto done; }
   soc_ready = true;
-  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) goto done;
+  // The 3DS mbedTLS entropy callback uses sslcGenerateRandomData. Its service
+  // must be open before curl seeds its TLS generator, and stay open until cleanup.
+  rc = sslcInit(0);
+  if (R_FAILED(rc)) { UpdateLog("sslcInit failed: %08lx", (unsigned long)rc); publish(UPDATE_ERROR, "TLS SERVICE FAILED"); goto done; }
+  ssl_ready = true;
+  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) { publish(UPDATE_ERROR, "HTTP INITIALIZATION FAILED"); goto done; }
   curl_ready = true;
   if (!download_job) {
     const char *url = "https://api.github.com/repos/" UPDATE_REPOSITORY "/releases?per_page=100";
@@ -221,6 +251,7 @@ done:
   free(t.data);
   if (download_job) remove(UPDATE_PART);
   if (curl_ready) curl_global_cleanup();
+  if (ssl_ready) sslcExit();
   if (soc_ready) socExit();
   free(soc_buffer);
   if (ac_ready) acExit();
@@ -240,8 +271,15 @@ static void start(bool downloading) {
   __atomic_store_n(&busy, true, __ATOMIC_RELEASE);
   publish(downloading ? UPDATE_DOWNLOADING : UPDATE_CHECKING,
           downloading ? "DOWNLOADING UPDATE" : "CHECKING FOR UPDATES");
-  // Background priority on Core 0; the main thread never waits for HTTP.
-  worker = threadCreate(run_job, NULL, 96 * 1024, 0x31, 0, false);
+  // GZDoom's Core 0 renderer can remain runnable between frames. Unlike the
+  // lighter 2D ports, a worker below it can starve during the TLS handshake.
+  // Give this I/O-bound worker one priority step above its caller; socket waits
+  // still yield to rendering, and HTTP never blocks the menu thread.
+  s32 caller_priority = 0x30;
+  svcGetThreadPriority(&caller_priority, CUR_THREAD_HANDLE);
+  int network_priority = caller_priority > 0x18 ? caller_priority - 1 : caller_priority;
+  UpdateLog("Updater worker: caller_priority=%ld network_priority=%d", (long)caller_priority, network_priority);
+  worker = threadCreate(run_job, NULL, 96 * 1024, network_priority, 0, false);
   if (!worker) { __atomic_store_n(&busy, false, __ATOMIC_RELEASE); publish(UPDATE_ERROR, "CANNOT START UPDATE"); }
 }
 void Updater_Check(void) { start(false); }

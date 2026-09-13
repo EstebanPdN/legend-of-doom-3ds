@@ -75,3 +75,12 @@ this numbering. The 0.8-E series compares subsequent experiments numerically.
 
 Version 1.0 is a stable release. Select Stable in v0.8-E3 to receive it; the
 experimental channel only lists experimental releases.
+
+The rebuilt v1.0 initializes the SSL service used by the 3DS mbedTLS entropy
+callback, declares its CIA access/dependency, and closes it after curl cleanup.
+Network work runs one priority step above its caller (bounded at 0x18) so the
+Core 0 renderer cannot starve the TLS handshake. Connection setup allows 30
+seconds and release metadata allows 90 seconds. TLS verification remains on.
+Setup failures and curl errors are distinguished on screen, with details in
+update.log. Install the rebuilt v1.0 CIA through FBI to repair an existing copy;
+replacing a GitHub asset cannot repair the updater already on the console.
