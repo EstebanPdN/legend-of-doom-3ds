@@ -1489,3 +1489,14 @@ void UpdateVRModes(bool considerQuadBuffered)
 	}
 	vals = filteredValues;
 }
+
+DEFINE_ACTION_FUNCTION(DMenu, LODUpdateAction)
+{
+    PARAM_PROLOGUE;
+    PARAM_INT(action);
+#ifdef __3DS__
+    ACTION_RETURN_INT(I_3DSUpdateAction(action));
+#else
+    ACTION_RETURN_INT(0);
+#endif
+}

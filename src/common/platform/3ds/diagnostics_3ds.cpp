@@ -1,5 +1,6 @@
 #include "diagnostics_3ds.h"
 #include "cache_3ds.h"
+#include "update/updater.h"
 
 #include <3ds.h>
 #include <citro3d.h>
@@ -2115,6 +2116,8 @@ bool DrawNativeSaveLoadBottomFrame(unsigned char *framebuffer,
 	return true;
 }
 
+#include "update/menu_view.inc"
+
 void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 	const unsigned char *menuPixels, const unsigned char *basePixels,
 	int pitchBytes, int width, int height)
@@ -2143,6 +2146,7 @@ void DrawNativeMenuBottomFrame(unsigned char *framebuffer,
 		// over the waterfall artwork instead of mirroring the upper title panel.
 		DrawMenuBottomScreen(framebuffer, brightness);
 	}
+	if (DrawUpdateMenu(framebuffer, menuPixels, pitchBytes, width, height)) return;
 	// Route every menu through the engine renderer used by the approved Volume
 	// screen. This keeps SmallFont, sliders, Link and spacing consistent instead
 	// of mixing them with the former bespoke 5x7 menu renderer.
@@ -2708,9 +2712,12 @@ void ComposeNativeMenuFps(unsigned char *pixels, int pitchBytes, int width, int 
 	NativeTopText(pixels, pitchBytes, width, height, x + 4, 7, label, OverlayIvory);
 }
 
+#include "update/changelog_view.inc"
+
 void ComposeNativeMenuTop(unsigned char *pixels, int pitchBytes, int width, int height,
 	const unsigned char *menuSource = nullptr, const unsigned char *basePixels = nullptr)
 {
+	if (DrawUpdateChangelogTop(pixels, pitchBytes, width, height)) return;
 	const unsigned brightness = NativeMenuCurrentBrightness();
 	for (int y = 0; y < height; ++y)
 	{
@@ -4813,6 +4820,26 @@ bool I_3DSDiagnosticTouch(float x, float y)
 	if (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f) return false;
 	if (I_3DSNativeMenuVisible())
 	{
+        if (CurrentMenu->IsKindOf("LegendUpdateMenu"))
+        {
+            if (Updater_Busy())
+            {
+                if (y * 240 >= 178 && y * 240 <= 213)
+                    CurrentMenu->CallMenuEvent(MKEY_Back, true);
+                return true;
+            }
+            if (CurrentMenu->IntVar(FName("NativeUpdateConfirm")))
+            {
+                if (y*240 >= 160 && y*240 <= 193)
+                {
+                    CurrentMenu->IntVar(FName("NativeUpdateChoice")) = x < .5f ? 0 : 1;
+                    CurrentMenu->CallMenuEvent(MKEY_Enter, true);
+                }
+                return true;
+            }
+
+        }
+
 		const int touchY = static_cast<int>(y * BottomScreenHeight);
 		if (NativeMenuChoiceDialog)
 		{
@@ -4967,6 +4994,7 @@ bool I_3DSDiagnosticTouch(float x, float y)
 
 void I_3DSServiceDiagnosticDump()
 {
+	if (Updater_Busy()) return;
 	const EDiagnosticDumpMode pendingMode = static_cast<EDiagnosticDumpMode>(
 		DumpRequestedMode.load(std::memory_order_acquire));
 	if (pendingMode == EDiagnosticDumpMode::None) return;
@@ -5015,4 +5043,22 @@ void I_3DSQuitWithoutSaving()
 bool I_3DSQuitWithoutSavingRequested()
 {
 	return QuitWithoutSaving;
+}
+
+int I_3DSUpdateAction(int action)
+{
+    UpdateStatus status;
+    Updater_GetStatus(&status);
+    if (action == 0 || action == 1) Updater_Check();
+    if (action == 2) Updater_SetChannel(!status.prerelease);
+    if (action == 3 && CurrentMenu && CurrentMenu->IsKindOf("LegendUpdateMenu"))
+        Updater_Download();
+    if (action == 4 && status.state != UPDATE_INSTALLING) Updater_Cancel();
+    Updater_GetStatus(&status);
+    return int(status.state) | (Updater_Busy() ? 256 : 0);
+}
+
+void I_3DSServiceUpdater()
+{
+    if (Updater_ShouldClose() && !Updater_Busy()) I_3DSQuitWithoutSaving();
 }

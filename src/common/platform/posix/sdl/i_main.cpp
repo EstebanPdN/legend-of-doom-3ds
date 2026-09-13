@@ -1,3 +1,6 @@
+#ifdef __3DS__
+#include "common/platform/3ds/update/updater.h"
+#endif
 /*
 ** i_main.cpp
 ** System-specific startup code. Eventually calls D_DoomMain.
@@ -529,7 +532,13 @@ int main (int argc, char **argv)
 	I_3DSStartupLog("game-main-enter");
 #endif
 
+	#ifdef __3DS__
+	Updater_Init(argc > 0 ? argv[0] : nullptr);
+	#endif
 	const int result = GameMain();
+	#ifdef __3DS__
+	Updater_Shutdown();
+	#endif
 
 	#ifdef __3DS__
 	I_3DSStartupLog("game-main-returned");

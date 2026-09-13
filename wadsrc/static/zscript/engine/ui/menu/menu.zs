@@ -138,6 +138,7 @@ class Menu : Object native ui version("2.4")
 	native static void StartMessage(String msg, int mode = 0, Name command = 'none');
 	native static void SetMouseCapture(bool on);
 	native void Close();
+	native static int LODUpdateAction(int operation);
 	native void ActivateMenu();
 	
 	//=============================================================================

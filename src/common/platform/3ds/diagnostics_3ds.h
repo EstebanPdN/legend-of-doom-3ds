@@ -101,3 +101,6 @@ bool I_3DSWriteEngineDiagnosticSnapshot(const char *path);
 
 void I_3DSQuitWithoutSaving();
 bool I_3DSQuitWithoutSavingRequested();
+
+int I_3DSUpdateAction(int action);
+void I_3DSServiceUpdater();

@@ -180,32 +180,26 @@ index 029f40d..fbd3247 100644
          let isReady =
              players[consoleplayer].AttackDown == false ||
 diff --git a/MENUDEF b/MENUDEF
-index c7c6d33..4f27467 100644
+index c7c6d33..9ddcbc3 100644
 --- a/MENUDEF
 +++ b/MENUDEF
-@@ -1,48 +1,113 @@
+@@ -1,50 +1,117 @@
  DEFAULTLISTMENU
  {
--	// Font "ZeldFNT", "Untranslated"
+ 	// Font "ZeldFNT", "Untranslated"
 -	Font "BigFont", "White"
 -	Selector "M_SKULL1", -25, -10
--	Linespacing 16
-+	// Font "ZeldFNT", "Untranslated"
 +	Font "NewSmallFont", "White"
 +	Selector "M_SKULL1", -25, -5
-+	Linespacing 16
+ 	Linespacing 16
  }
  
  LISTMENU "MainMenu"
  {
 -	StaticPatch 110, 25, "M_DOOM"
 -	Position 125, 100
-+	Position 125, 76
-+	Font "NewSmallFont", "White"
-+	Linespacing 16
- 
+-
 -    TextItem "$MNU_NEWGAME", "n", "PlayerclassMenu"
-+    TextItem "NEW GAME", "n", "PlayerclassMenu"
 -    ifOption(SwapMenu)
 -    {
 -        TextItem  "$MNU_LOADGAME", "l", "LoadGameMenu", 0
@@ -222,13 +216,19 @@ index c7c6d33..4f27467 100644
 -    {
 -        TextItem  "$MNU_INFO","r", "ReadThisMenu", 0
 -    }
+-    TextItem  "$MNU_QUITGAME", "q", "QuitMenu", 0
++	Position 125, 76
++	Font "NewSmallFont", "White"
++	Linespacing 16
++
++    TextItem "NEW GAME", "n", "PlayerclassMenu"
 +    TextItem "OPTIONS", "o", "LegendOptionsMenu", 0
 +    TextItem "LOAD GAME", "l", "LoadGameMenu", 0
 +    TextItem "SAVE GAME", "s", "SaveGameMenu", 0
--    TextItem  "$MNU_QUITGAME", "q", "QuitMenu", 0
++    TextItem "UPDATE", "u", "LegendUpdateMenu", 0
 +    TextItem  "QUIT GAME", "q", "QuitMenu", 0
- }
- 
++}
++
 +LISTMENU "LegendPauseMenu"
 +{
 +    Position 125, 60
@@ -240,6 +240,7 @@ index c7c6d33..4f27467 100644
 +    TextItem "OPTIONS", "o", "LegendOptionsMenu", 0
 +    TextItem "LOAD GAME", "l", "LoadGameMenu", 0
 +    TextItem "SAVE GAME", "s", "SaveGameMenu", 0
++    TextItem "UPDATE", "u", "LegendUpdateMenu", 0
 +    TextItem "QUIT GAME", "q", "QuitMenu", 0
 +}
 +
@@ -304,13 +305,13 @@ index c7c6d33..4f27467 100644
 +    Command "QUICK DUMP", "lod3ds_dump"
 +    Command "FULL DUMP", "lod3ds_fulldump"
 +    Option "OVERLAY WITH SELECT", "lod3ds_select_overlay", "OnOff"
-+}
-+
+ }
+ 
  ListMenu "SkillMenu"
  {
 -	Font "BigFont", "White"
-+	Font "NewSmallFont", "White"
 -    StaticText 74, 16, "$MNU_CHOOSESKILL"
++	Font "NewSmallFont", "White"
 +    StaticText 74, 16, "CHOOSE SKILL LEVEL"
      Position 160, 44
      centermenu
@@ -327,6 +328,22 @@ index c7c6d33..4f27467 100644
 +    StaticText 95, 38, "CHOOSE ADVENTURE"
 +    // items will be filled in by MAPINFO
  }
+ 
+ // //-------------------------------------------------------------------------------------------
+@@ -57,3 +124,13 @@ ListMenu "EpisodeMenu"
+ // {
+ // 	Option "High Resolution Voxel Graphics",		"r_drawvoxels", "OnOff"
+ // }
++
++OPTIONMENU "LegendUpdateMenu"
++{
++    Class "LegendUpdateMenu"
++    Title "UPDATE"
++    Command "CHANNEL", ""
++    Command "CHECK FOR UPDATES", ""
++    Command "INSTALL UPDATE", ""
++    Command "BACK", ""
++}
 diff --git a/ZMAPINFO b/ZMAPINFO
 index c3ad34f..852fc07 100644
 --- a/ZMAPINFO
@@ -429,10 +446,10 @@ index f9342af..b4b976f 100644
  #include "actors/Decorations.zs"
 diff --git a/actors/LegendPauseMenu.zs b/actors/LegendPauseMenu.zs
 new file mode 100644
-index 0000000..dbb6b87
+index 0000000..5364849
 --- /dev/null
 +++ b/actors/LegendPauseMenu.zs
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,133 @@
 +class ListMenuItemResume : ListMenuItemTextItem
 +{
 +    override bool Activate()
@@ -504,6 +521,66 @@ index 0000000..dbb6b87
 +            Menu.DrawOptionText(actionLeft, y, OptionMenuSettings.mFontColorValue, actions[row]);
 +            y += rowHeight;
 +        }
++    }
++}
++
++class LegendUpdateMenu : LegendSplitOptionMenu
++{
++    int NativeUpdateConfirm;
++    int NativeUpdateChoice;
++    int NativeUpdatePage;
++    int NativeUpdatePages;
++
++    override void Init(Menu parent, OptionMenuDescriptor desc)
++    {
++        Super.Init(parent, desc);
++        NativeUpdatePage = 0;
++        NativeUpdatePages = 1;
++        NativeUpdateChoice = 1;
++        LODUpdateAction(0);
++    }
++
++    override bool MenuEvent(int mkey, bool fromcontroller)
++    {
++        int state = LODUpdateAction(-1);
++        if (mkey == MKEY_PageUp || mkey == MKEY_PageDown)
++        {
++            NativeUpdatePage = clamp(NativeUpdatePage + (mkey == MKEY_PageUp ? -1 : 1), 0, NativeUpdatePages - 1);
++            return true;
++        }
++        if (state & 256)
++        {
++            if (mkey == MKEY_Back) LODUpdateAction(4);
++            return true;
++        }
++        if (NativeUpdateConfirm)
++        {
++            if (mkey == MKEY_Back) NativeUpdateConfirm = 0;
++            if (mkey == MKEY_Left || mkey == MKEY_Right || mkey == MKEY_Up || mkey == MKEY_Down)
++                NativeUpdateChoice = 1 - NativeUpdateChoice;
++            if (mkey == MKEY_Enter)
++            {
++                NativeUpdateConfirm = 0;
++                if (NativeUpdateChoice == 0) LODUpdateAction(3);
++            }
++            return true;
++        }
++        if (mkey == MKEY_Back) { Close(); return true; }
++        if (mkey == MKEY_Up) mDesc.mSelectedItem = (mDesc.mSelectedItem + 3) % 4;
++        if (mkey == MKEY_Down) mDesc.mSelectedItem = (mDesc.mSelectedItem + 1) % 4;
++        if (mkey == MKEY_Enter || ((mkey == MKEY_Left || mkey == MKEY_Right) && mDesc.mSelectedItem == 0))
++        {
++            switch (mDesc.mSelectedItem)
++            {
++            case 0: LODUpdateAction(2); break;
++            case 1: LODUpdateAction(1); break;
++            case 2:
++                if (state == 3) { NativeUpdateConfirm = 1; NativeUpdateChoice = 1; }
++                break;
++            case 3: Close(); break;
++            }
++        }
++        return true;
 +    }
 +}
 diff --git a/actors/monsters/SnakeMonster.zs b/actors/monsters/SnakeMonster.zs

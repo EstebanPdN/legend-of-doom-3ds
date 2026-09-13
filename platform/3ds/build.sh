@@ -321,7 +321,13 @@ cmake -S "${NOVAGL_SOURCE}" -B "${NOVAGL_BUILD}" \
 cmake --build "${NOVAGL_BUILD}" --target NovaGL --parallel "${JOBS}"
 cmake --install "${NOVAGL_BUILD}"
 
+UPDATE_DEPS="${LOD3DS_UPDATE_DEPS:-${BUILD_ROOT}/update-deps/prefix}"
+if [[ ! -f "${UPDATE_DEPS}/lib/libcurl.a" ]]; then
+  python3 "${ROOT}/platform/3ds/tools/build_update_deps.py" "${BUILD_ROOT}/update-deps"
+fi
+
 cmake -S "${ROOT}" -B "${GAME_BUILD}" \
+  -DLOD3DS_UPDATE_DEPS="${UPDATE_DEPS}" \
   -DCMAKE_TOOLCHAIN_FILE="${DEVKITPRO}/cmake/3DS.cmake" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -416,7 +422,9 @@ THREEDSX="${DIST}/${ARTIFACT_STEM}.3dsx"
   "Esteban PDN / DeTwelve Games" \
   "${ROOT}/platform/3ds/assets/icon-48.png" "${SMDH}"
 python3 "${ROOT}/platform/3ds/tools/cia-memory.py" smdh "${SMDH}"
-"${THREEDSXTOOL}" "${GAME_BUILD}/gzdoom.elf" "${THREEDSX}" --smdh="${SMDH}"
+mkdir -p "${PACKAGE_TMP}/update-romfs"
+cmake -E copy_directory "${ROOT}/platform/3ds/romfs" "${PACKAGE_TMP}/update-romfs"
+"${THREEDSXTOOL}" "${GAME_BUILD}/gzdoom.elf" "${THREEDSX}" --smdh="${SMDH}" --romfs="${PACKAGE_TMP}/update-romfs"
 
 MOD_PK3="${BUILD_ROOT}/LegendOfDoom.pk3"
 cmake -E rm -f "${MOD_PK3}"
@@ -440,6 +448,7 @@ SD_APP="${STAGE}/3ds/legend-of-doom"
 SD_DATA="${SD_APP}/data"
 SD_LICENSES="${SD_APP}/licenses"
 mkdir -p "${SD_DATA}" "${SD_LICENSES}/ZMusic"
+cmake -E copy_directory "${ROOT}/platform/3ds/update-dependencies" "${SD_LICENSES}/Updater"
 cmake -E copy "${THREEDSX}" "${SD_APP}/legend-of-doom-3ds.3dsx"
 cmake -E copy "${ROOT}/platform/3ds/SD-README.txt" "${SD_APP}/README.txt"
 cmake -E copy "${ROOT}/CREDITS.md" "${SD_APP}/CREDITS.md"
@@ -659,6 +668,7 @@ if [[ "${LOD3DS_SKIP_CIA:-0}" != "1" && -n "${MAKEROM_PATH}" && -n "${BANNERTOOL
   CIA_ROMFS="${PACKAGE_TMP}/cia-romfs"
   CIA_ROMFS_DATA="${CIA_ROMFS}/data"
   mkdir -p "${CIA_ROMFS_DATA}"
+  cmake -E copy_directory "${ROOT}/platform/3ds/romfs" "${CIA_ROMFS}"
   # Embed matching game data for self-contained CIA installation.
   cmake -E copy "${GAME_BUILD}/gzdoom.pk3" "${CIA_ROMFS_DATA}/gzdoom.pk3"
   cmake -E copy "${GAME_BUILD}/game_support.pk3" "${CIA_ROMFS_DATA}/game_support.pk3"

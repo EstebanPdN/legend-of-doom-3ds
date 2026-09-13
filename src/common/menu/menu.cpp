@@ -694,7 +694,9 @@ bool M_Responder (event_t *ev)
 			{
 #ifdef __3DS__
 			case KEY_PAD_START:
-				if (gamestate == GS_LEVEL && !keyup) M_ClearMenus();
+				if (!keyup && CurrentMenu && CurrentMenu->IsKindOf("LegendUpdateMenu"))
+                    CurrentMenu->CallMenuEvent(MKEY_Back, true);
+                else if (gamestate == GS_LEVEL && !keyup) M_ClearMenus();
 				return true;
 #endif
 

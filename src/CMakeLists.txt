@@ -479,6 +479,8 @@ if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
 		common/platform/3ds/i_input_3ds.cpp
 		common/platform/3ds/lifecycle_3ds.cpp
 		common/platform/3ds/memory.cpp
+		common/platform/3ds/update/updater.c
+		common/platform/3ds/update/update_manifest.c
 		common/platform/3ds/st_start.cpp )
 endif()
 set( PLAT_UNIX_SOURCES
@@ -1317,6 +1319,14 @@ if( CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS" )
 	if( LOD3DS_HYBRID_PERFORMANCE )
 		target_compile_definitions( zdoom PRIVATE LOD3DS_HYBRID_PERFORMANCE=1 )
 	endif()
+	set(LOD3DS_UPDATE_DEPS "" CACHE PATH "Updater static library prefix")
+	target_include_directories(zdoom PRIVATE "${LOD3DS_UPDATE_DEPS}/include")
+	foreach(lib curl jansson mbedtls mbedx509 mbedcrypto)
+		if(NOT EXISTS "${LOD3DS_UPDATE_DEPS}/lib/lib${lib}.a")
+			message(FATAL_ERROR "Missing updater library ${lib}")
+		endif()
+		target_link_libraries(zdoom "${LOD3DS_UPDATE_DEPS}/lib/lib${lib}.a")
+	endforeach()
 	target_link_libraries( zdoom "${NOVAGL_LIBRARY}" citro2d citro3d )
 	target_link_directories( zdoom PRIVATE "$ENV{DEVKITPRO}/libctru/lib" )
 	target_link_options( zdoom PRIVATE "-Wl,-Map,${CMAKE_BINARY_DIR}/gzdoom.map" )
