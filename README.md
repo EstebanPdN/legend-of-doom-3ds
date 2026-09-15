@@ -1,6 +1,7 @@
 # Legend of Doom 3DS
 
-![Legend of Doom 3DS](platform/3ds/assets/splash.png)
+<img width="1672" height="941" alt="template" src="https://github.com/user-attachments/assets/a84919c8-ce45-4549-b2d3-89fdf45f2999" />
+
 
 [![Build Nintendo 3DS packages](https://github.com/EstebanPdN/legend-of-doom-3ds/actions/workflows/build-3ds.yml/badge.svg)](https://github.com/EstebanPdN/legend-of-doom-3ds/actions/workflows/build-3ds.yml)
 
