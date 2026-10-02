@@ -139,7 +139,11 @@ See [CREDITS.md](CREDITS.md) and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.
 
 ## License and legal notice
 
-The GZDoom-derived source is distributed under GPL-3.0. See [LICENSE](LICENSE).
+The GZDoom-derived source is distributed under **GNU GPL v3.0**. See
+[LICENSE](LICENSE) for the complete terms and
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for component notices.
+Each release tag provides its corresponding source through GitHub's source
+archives. The engine license does not grant redistribution rights to game data.
 
 Third-party code and data retain their respective terms. Legend of Doom's upstream repository does not declare a general license; its data is downloaded only while building and is not committed here. Redistribution must be reviewed separately before any release is published.
 
