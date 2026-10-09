@@ -7,13 +7,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for testing the hardware bring-up build. Please search existing issues before opening a new one. Emulator-only reports are currently outside the validation scope.
+        Thanks for reporting a problem with Legend of Doom 3DS. Please search existing issues first and identify the exact release and console used. Hardware validation targets the New Nintendo 3DS family; emulator results do not establish physical-console compatibility or performance.
 
   - type: input
     id: version
     attributes:
       label: Port version
-      placeholder: "v0.1-hardware-diagnostic-<build-id>"
+      placeholder: "v1.0 (include the build ID/profile from BUILD-MANIFEST.txt for a source build)"
     validations:
       required: true
 
@@ -61,7 +61,7 @@ body:
     id: attachments
     attributes:
       label: Diagnostic files
-      description: Attach gpu-diagnostic.log, novagl-stage.log, startup.log and novagl.log when available. Never upload a ROM, commercial IWAD or full memory dump without reviewing its contents.
+      description: Press L + R + A while the issue is visible and attach the complete quick diagnostic folder from sdmc:/3ds/legend-of-doom/dumps/. For updater errors, also include sdmc:/3ds/legend-of-doom/update.log. Review full memory dumps before sharing them; do not attach ROMs or commercial IWADs.
 
   - type: textarea
     id: notes
