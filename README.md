@@ -28,7 +28,7 @@ The supported target is the New Nintendo 3DS family: New Nintendo 3DS, New Ninte
 
 Join the Discord for project updates, testing, support and other Nintendo 3DS homebrew projects:
 
-https://discord.gg/SMW49UMkw
+https://discord.gg/zy8BqH5ss
 
 ## Installation
 
