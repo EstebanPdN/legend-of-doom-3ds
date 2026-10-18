@@ -160,7 +160,7 @@ Join [Esteban's Forge on Discord](https://discord.gg/BjbzfRYpV) for updates, sup
 | [3DS build guide](platform/3ds/README.md) | Profiles, dependencies, package layout and checks. |
 | [Built-in updater](platform/3ds/UPDATER.md) | CIA channels, installation and troubleshooting. |
 | [Maintenance roadmap](docs/ROADMAP.md) | Project documentation and development history. |
-| [Credits](CREDITS.md) | Original game conversion and platform contributors. |
+| [Credits](docs/CREDITS.md) | Original game conversion and platform contributors. |
 | [Third-party licenses](THIRD-PARTY-LICENSES.md) | Component and game-data notices. |
 
 ## Building from source
@@ -186,7 +186,7 @@ See the [3DS build guide](platform/3ds/README.md) for all profiles, dependencies
 - SDL, ZMusic, OpenAL Soft/NDSP, Citro2D/Citro3D, devkitPro and libctru contributors — platform stack
 - Esteban PDN — Nintendo 3DS port and project maintenance
 
-See [CREDITS.md](CREDITS.md) and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for additional notices.
+See [CREDITS.md](docs/CREDITS.md) and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for additional notices.
 
 ## License and game content
 
