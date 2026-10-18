@@ -1,9 +1,32 @@
-# Legend of Doom 3DS
+<h1 align="center">Legend of Doom 3DS</h1>
 
-<img width="1672" height="941" alt="Legend of Doom 3DS" src="https://github.com/user-attachments/assets/a84919c8-ce45-4549-b2d3-89fdf45f2999" />
+<p align="center">
+  <strong>Explore Hyrule from a new perspective.</strong><br>
+  The Legend of Zelda meets first-person adventure on New Nintendo 3DS.
+</p>
 
-[![Latest release](https://img.shields.io/github/v/release/EstebanPdN/legend-of-doom-3ds?label=latest%20release)](https://github.com/EstebanPdN/legend-of-doom-3ds/releases/latest)
-[![Build Nintendo 3DS packages](https://github.com/EstebanPdN/legend-of-doom-3ds/actions/workflows/build-3ds.yml/badge.svg)](https://github.com/EstebanPdN/legend-of-doom-3ds/actions/workflows/build-3ds.yml)
+<p align="center">
+  <a href="#download-and-installation">Download</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="#community-and-bug-reports">Community</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/EstebanPdN/legend-of-doom-3ds/releases/tag/v1.0"><img src="docs/badges/version.svg" alt="Stable release: v1.0" height="22"></a>
+  <a href="#download-and-installation"><img src="docs/badges/platform.svg" alt="New Nintendo 3DS" height="22"></a>
+  <a href="platform/3ds/UPDATER.md"><img src="docs/badges/updater.svg" alt="Updates: built in" height="22"></a>
+  <a href="THIRD-PARTY-LICENSES.md"><img src="docs/badges/license.svg" alt="Component-specific licenses" height="22"></a>
+</p>
+
+<p align="center">
+  <img width="1200" alt="Legend of Doom 3DS" src="https://github.com/user-attachments/assets/a84919c8-ce45-4549-b2d3-89fdf45f2999" />
+</p>
+
+<p align="center">
+  <a href="https://estebanpdn.github.io/"><img src="docs/images/website.svg" alt="Visit Esteban’s Forge" width="142" height="46"></a>
+  <a href="https://discord.gg/BjbzfRYpV"><img src="docs/images/discord-official.svg" alt="Join our Discord community" width="166" height="46"></a>
+</p>
 
 Nintendo 3DS port of [Legend of Doom](https://github.com/emawind84/legend-of-doom), the first-person GZDoom conversion of the original *The Legend of Zelda* created by DeTwelve Games.
 
@@ -12,6 +35,13 @@ Nintendo 3DS port of [Legend of Doom](https://github.com/emawind84/legend-of-doo
 The port uses GZDoom 4.7.1 and Freedoom: Phase 2. No NES ROM or commercial Doom IWAD is required.
 
 ## Download and installation
+
+<p>
+  <a href="https://github.com/EstebanPdN/legend-of-doom-3ds/releases/download/v1.0/legend-of-doom-3ds-v1.0.cia"><img src="docs/images/download-cia.svg" alt="Download Legend of Doom 3DS CIA" width="210" height="46"></a>
+  <a href="https://github.com/EstebanPdN/legend-of-doom-3ds/releases/download/v1.0/legend-of-doom-3ds-v1.0.zip"><img src="docs/images/download-homebrew.svg" alt="Download complete Homebrew ZIP" width="210" height="46"></a>
+</p>
+
+**Stable: [v1.0](https://github.com/EstebanPdN/legend-of-doom-3ds/releases/tag/v1.0).**
 
 Download the published packages from [GitHub Releases](https://github.com/EstebanPdN/legend-of-doom-3ds/releases/latest).
 
@@ -56,6 +86,19 @@ sdmc:/3ds/legend-of-doom/
 Audio on a real console requires its own DSP firmware at `sdmc:/3ds/dspfirm.cdc`. With Luma3DS, open the Rosalina menu, choose **Miscellaneous options...**, then **Dump DSP firmware**. This system file is not distributed with the port.
 
 ## Features
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><strong>A different view of Hyrule</strong><br>The first-person Legend of Doom conversion, powered by GZDoom and Freedoom: Phase 2.</td>
+    <td width="50%" valign="top"><strong>Made for two screens</strong><br>Touch menus, bottom-screen map and item selection, with Circle Pad and C-Stick controls.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><strong>Choose your setup</strong><br>Install the CIA with its data, or use the complete Homebrew Launcher ZIP.</td>
+    <td width="50%" valign="top"><strong>Keep it current</strong><br>Built-in CIA updates, save previews, native keyboard and quick diagnostic captures.</td>
+  </tr>
+</table>
+
+### Feature details
 
 - Dual-screen menus, touch controls, a bottom-screen map and item selection.
 - Circle Pad movement and configurable C-Stick / touch camera input.
@@ -105,7 +148,17 @@ sdmc:/3ds/legend-of-doom/dumps/
 
 For updater errors, also attach `sdmc:/3ds/legend-of-doom/update.log`.
 
-Join [Esteban's Forge on Discord](https://discord.gg/zy8BqH5ss) for updates, support and other Nintendo 3DS homebrew projects.
+Join [Esteban's Forge on Discord](https://discord.gg/BjbzfRYpV) for updates, support and other Nintendo 3DS homebrew projects.
+
+## Documentation
+
+| Guide | Purpose |
+| --- | --- |
+| [3DS build guide](platform/3ds/README.md) | Profiles, dependencies, package layout and checks. |
+| [Built-in updater](platform/3ds/UPDATER.md) | CIA channels, installation and troubleshooting. |
+| [Maintenance roadmap](ROADMAP.md) | Project documentation and development history. |
+| [Credits](CREDITS.md) | Original game conversion and platform contributors. |
+| [Third-party licenses](THIRD-PARTY-LICENSES.md) | Component and game-data notices. |
 
 ## Building from source
 
@@ -141,3 +194,20 @@ Each release tag provides its corresponding source through GitHub's source archi
 Legend of Doom's upstream repository does not declare a general open-source license. Its data is downloaded during the build and is not committed here; the original credits and component notices are preserved in the packages.
 
 *The Legend of Zelda* and related names and content are owned by Nintendo. *Doom* and related names are owned by id Software and their respective rights holders. This unofficial fan project is not affiliated with or endorsed by Nintendo, id Software or Bethesda.
+
+## Community and bug reports
+
+[Join the project Discord](https://discord.gg/BjbzfRYpV) for updates, testing,
+suggestions and support. Use [GitHub issues](https://github.com/EstebanPdN/legend-of-doom-3ds/issues)
+for reproducible reports, including your version, console model and steps to
+reproduce the problem. Review diagnostic captures before sharing them.
+
+---
+
+<p align="center">
+  <a href="https://estebanpdn.github.io/">Esteban’s Forge</a> ·
+  <a href="https://discord.gg/BjbzfRYpV">Discord</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="THIRD-PARTY-LICENSES.md">License and notices</a><br>
+  <sub>An independent fan project. Game names and content belong to their respective owners.</sub>
+</p>
