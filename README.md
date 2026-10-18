@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img width="1200" alt="Legend of Doom 3DS" src="https://github.com/user-attachments/assets/a84919c8-ce45-4549-b2d3-89fdf45f2999" />
+  <img width="1200" alt="Legend of Doom 3DS" src="docs/images/showcase-rounded.svg" />
 </p>
 
 <p align="center">
