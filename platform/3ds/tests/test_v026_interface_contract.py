@@ -64,7 +64,7 @@ class V026InterfaceContractTests(unittest.TestCase):
         self.assertIn("A_OverlayOffset(OverlayID(), 51, 170)", patch)
 
     def test_controller_menu_fixed_layout_and_expanded_map(self):
-        controls = (ROOT / "wadsrc/static/engine/3dsbinds.txt").read_text()
+        controls = (ROOT / "resources/wadsrc/static/engine/3dsbinds.txt").read_text()
         input_source = (ROOT / "src/common/platform/3ds/i_input_3ds.cpp").read_text()
         diagnostics = (ROOT / "src/common/platform/3ds/diagnostics_3ds.cpp").read_text()
         patch = (ROOT / "platform/3ds/patches/legend-of-doom-3ds.patch").read_text()
@@ -81,8 +81,8 @@ class V026InterfaceContractTests(unittest.TestCase):
     def test_v030_controls_alignment_and_touch_inventory(self):
         diagnostics = (ROOT / "src/common/platform/3ds/diagnostics_3ds.cpp").read_text()
         patch = (ROOT / "platform/3ds/patches/legend-of-doom-3ds.patch").read_text()
-        option_menu = (ROOT / "wadsrc/static/zscript/engine/ui/menu/optionmenu.zs").read_text()
-        option_items = (ROOT / "wadsrc/static/zscript/engine/ui/menu/optionmenuitems.zs").read_text()
+        option_menu = (ROOT / "resources/wadsrc/static/zscript/engine/ui/menu/optionmenu.zs").read_text()
+        option_items = (ROOT / "resources/wadsrc/static/zscript/engine/ui/menu/optionmenuitems.zs").read_text()
         self.assertIn("class LegendSplitOptionMenu : OptionMenu", patch)
         self.assertIn("override bool UseSplitOptionLayout() { return true; }", patch)
         self.assertIn("override bool UseCompactSplitSliders() { return true; }", patch)
@@ -100,7 +100,7 @@ class V026InterfaceContractTests(unittest.TestCase):
     def test_v030_save_load_uses_independent_screens_and_native_keyboard(self):
         diagnostics = (ROOT / "src/common/platform/3ds/diagnostics_3ds.cpp").read_text()
         manager = (ROOT / "src/common/menu/savegamemanager.cpp").read_text()
-        menu = (ROOT / "wadsrc/static/zscript/engine/ui/menu/loadsavemenu.zs").read_text()
+        menu = (ROOT / "resources/wadsrc/static/zscript/engine/ui/menu/loadsavemenu.zs").read_text()
         self.assertIn("DrawNativeSaveLoadBottomFrame", diagnostics)
         self.assertIn("ComposeNativeSaveLoadTop", diagnostics)
         bottom = diagnostics[diagnostics.index("bool DrawNativeSaveLoadBottomFrame") :]

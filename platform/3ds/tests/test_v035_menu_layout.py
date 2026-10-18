@@ -14,7 +14,7 @@ class MenuLayoutTests(unittest.TestCase):
         left = position('GetSplitLabelLeft')
         slider = position('GetSplitValueLeft')
         right = position('GetSplitValueRight')
-        items = (ROOT / 'wadsrc/static/zscript/engine/ui/menu/optionmenuitems.zs').read_text()
+        items = (ROOT / 'resources/wadsrc/static/zscript/engine/ui/menu/optionmenuitems.zs').read_text()
         cell = int(re.search(r'mSliderCellWidth = .*?\? (\d+) :', items).group(1))
         self.assertLessEqual(slider + 7 * cell, right)
         self.assertGreaterEqual(slider - (left + 14 * 8), 8)

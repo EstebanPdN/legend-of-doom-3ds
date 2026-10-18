@@ -37,3 +37,6 @@ __pycache__/
 *.bnr
 *.icn
 SHA256SUMS.txt
+
+# Maintained repository organization check.
+!scripts/check-repository.py

@@ -1,0 +1,32 @@
+{
+  "root_entries": [
+    ".gitattributes",
+    ".github",
+    ".gitignore",
+    "CMakeLists.txt",
+    "CREDITS.md",
+    "LICENSE",
+    "README.md",
+    "THIRD-PARTY-LICENSES.md",
+    "cmake",
+    "docs",
+    "libraries",
+    "platform",
+    "resources",
+    "scripts",
+    "src",
+    "tools"
+  ],
+  "current_documents": [
+    "README.md",
+    "docs/REPOSITORY.md",
+    "docs/CONTRIBUTING.md"
+  ],
+  "required_paths": [
+    "README.md",
+    "docs/REPOSITORY.md",
+    "scripts/check-repository.py",
+    "CMakeLists.txt",
+    "platform/3ds/build.sh"
+  ]
+}

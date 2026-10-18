@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class SaveActionTests(unittest.TestCase):
     def test_action_transitions_require_explicit_confirmation(self):
-        script = (ROOT / 'wadsrc/static/zscript/engine/ui/menu/loadsavemenu.zs').read_text()
+        script = (ROOT / 'resources/wadsrc/static/zscript/engine/ui/menu/loadsavemenu.zs').read_text()
         body = script.split('private bool NativeSaveEvent(int mkey)', 1)[1].split('\n\toverride bool MouseEvent', 1)[0]
         cpp = r'''
 #include <algorithm>

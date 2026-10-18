@@ -1,70 +1,41 @@
 name: Bug report
-description: Report a problem with Legend of Doom 3DS
-title: "[Bug] "
+description: Report a reproducible problem in this port.
+title: "[Bug]: "
 labels: [bug]
-
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for reporting a problem with Legend of Doom 3DS. Please search existing issues first and identify the exact release and console used. Hardware validation targets the New Nintendo 3DS family; emulator results do not establish physical-console compatibility or performance.
-
   - type: input
     id: version
     attributes:
       label: Port version
-      placeholder: "v1.0 (include the build ID/profile from BUILD-MANIFEST.txt for a source build)"
+      description: Include the release tag or source commit.
     validations:
       required: true
-
   - type: dropdown
-    id: hardware
+    id: console
     attributes:
-      label: System
+      label: Environment
       options:
-        - New Nintendo 3DS
-        - New Nintendo 3DS XL
-        - New Nintendo 2DS XL
+        - Old Nintendo 3DS family
+        - New Nintendo 3DS family
+        - Emulator
+        - Host build or build tools
     validations:
       required: true
-
-  - type: dropdown
-    id: install
-    attributes:
-      label: Installation
-      options:
-        - CIA
-        - Homebrew Launcher 3DSX
-    validations:
-      required: true
-
   - type: textarea
-    id: description
-    attributes:
-      label: What happened?
-      description: Explain the problem and what you expected instead.
-    validations:
-      required: true
-
-  - type: textarea
-    id: steps
+    id: reproduction
     attributes:
       label: Steps to reproduce
-      placeholder: |
-        1. Start the game
-        2. ...
-        3. ...
+      description: Describe the scene, settings and exact actions.
     validations:
       required: true
-
   - type: textarea
-    id: attachments
+    id: result
     attributes:
-      label: Diagnostic files
-      description: Press L + R + A while the issue is visible and attach the complete quick diagnostic folder from sdmc:/3ds/legend-of-doom/dumps/. For updater errors, also include sdmc:/3ds/legend-of-doom/update.log. Review full memory dumps before sharing them; do not attach ROMs or commercial IWADs.
-
+      label: Expected and actual behavior
+    validations:
+      required: true
   - type: textarea
-    id: notes
+    id: evidence
     attributes:
-      label: Additional context
-      description: Include any setting changes or other details that may help reproduce the problem.
+      label: Evidence
+      description: Use the diagnostic instructions in the README when available. Review captures before sharing. Do not upload ROMs, extracted game data, credentials or personal saves.

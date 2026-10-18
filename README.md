@@ -152,11 +152,14 @@ Join [Esteban's Forge on Discord](https://discord.gg/BjbzfRYpV) for updates, sup
 
 ## Documentation
 
+- [Repository map and maintenance conventions](docs/REPOSITORY.md)
+
+
 | Guide | Purpose |
 | --- | --- |
 | [3DS build guide](platform/3ds/README.md) | Profiles, dependencies, package layout and checks. |
 | [Built-in updater](platform/3ds/UPDATER.md) | CIA channels, installation and troubleshooting. |
-| [Maintenance roadmap](ROADMAP.md) | Project documentation and development history. |
+| [Maintenance roadmap](docs/ROADMAP.md) | Project documentation and development history. |
 | [Credits](CREDITS.md) | Original game conversion and platform contributors. |
 | [Third-party licenses](THIRD-PARTY-LICENSES.md) | Component and game-data notices. |
 
@@ -172,7 +175,7 @@ Build the same renderer profile used by the published v1.0:
 
 Calling the script without a profile builds the `hardware-safe` CPU-only recovery profile. GitHub Actions also builds that recovery profile; its artifacts are separate from the published v1.0 download. Output packages are written to `build-3ds/dist/` by default.
 
-See the [3DS build guide](platform/3ds/README.md) for all profiles, dependencies, package names and checks, and the [maintenance roadmap](ROADMAP.md) for the documentation history.
+See the [3DS build guide](platform/3ds/README.md) for all profiles, dependencies, package names and checks, and the [maintenance roadmap](docs/ROADMAP.md) for the documentation history.
 
 ## Credits
 
