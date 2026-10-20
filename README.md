@@ -30,7 +30,7 @@
 
 Nintendo 3DS port of [Legend of Doom](https://github.com/emawind84/legend-of-doom), the first-person GZDoom conversion of the original *The Legend of Zelda* created by DeTwelve Games.
 
-This project was developed with the help of [OpenAI Codex](https://openai.com/codex/). Learn more about the development process [here](AI_DEVELOPMENT.md).
+This project was developed with the help of [OpenAI Codex](https://openai.com/codex/) and [Claude Code](https://claude.com/product/claude-code). Learn more about the development process [here](AI_DEVELOPMENT.md).
 
 **[v1.0 is available now](https://github.com/EstebanPdN/legend-of-doom-3ds/releases/tag/v1.0)** for **New Nintendo 3DS, New Nintendo 3DS XL and New Nintendo 2DS XL**. Old Nintendo 3DS, Old Nintendo 3DS XL and Nintendo 2DS are not supported.
 
