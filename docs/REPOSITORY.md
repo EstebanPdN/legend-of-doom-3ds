@@ -9,6 +9,7 @@ notices. Implementation, resources and supporting documents are grouped below.
 
 | Location | Responsibility |
 | --- | --- |
+| `AI_DEVELOPMENT.md` | The owner’s explanation of Codex use, development decisions, tests and community discussions. |
 | `src/` | GZDoom engine and native integration. |
 | `platform/` | Nintendo 3DS adapters, patches, build scripts and tests. |
 | `resources/` | Redistributable engine resource sources, soundfonts and instrument banks. |
