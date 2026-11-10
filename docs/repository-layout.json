@@ -15,7 +15,8 @@
     "resources",
     "scripts",
     "src",
-    "tools"
+    "tools",
+    "assets"
   ],
   "current_documents": [
     "README.md",

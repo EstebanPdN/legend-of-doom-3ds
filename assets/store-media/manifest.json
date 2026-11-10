@@ -1,0 +1,11 @@
+{
+  "format": "FVID1",
+  "videos": [
+    {
+      "id": "doom/forest",
+      "file": "doom-forest.fvid",
+      "bytes": 4814771,
+      "sha256": "6404f0cfec66d1881681ee3cf45341e5ce250f4b861fdea2b9a9185f139abdd0"
+    }
+  ]
+}
