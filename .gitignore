@@ -40,3 +40,10 @@ SHA256SUMS.txt
 
 # Maintained repository organization check.
 !scripts/check-repository.py
+
+# Local environment and private signing containers
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
