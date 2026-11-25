@@ -91,7 +91,7 @@ only. It does not delete saves or configuration.
 Downloads and reports:
   https://github.com/EstebanPdN/legend-of-doom-3ds
 Community:
-  https://discord.gg/zy8BqH5ss
+  https://discord.com/servers/esteban-s-forge-1533248895663210506
 
 Legend of Doom was created by DeTwelve Games. See CREDITS.md and
 THIRD-PARTY-LICENSES.md; component notices are preserved under licenses/.
